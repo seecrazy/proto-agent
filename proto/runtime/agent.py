@@ -36,7 +36,8 @@ from proto.state.agent_state import AgentState, StateManager
 from proto.state.desires import DesireDynamics
 from proto.state.emotion import PAD
 from proto.state.modulation import AttributionAccumulator, ModulationPipeline
-from proto.state.store import FileSystemStore
+from proto.storage.mongo_store import create_store
+from proto.storage.store import FileSystemStore
 
 SYSTEM_PROMPT = (
     "你是 PROTO，一个能力完整、内在状态可被主人塑造的成长型 Agent。"
@@ -61,7 +62,7 @@ class ProtoAgent:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.llm = llm
 
-        store = FileSystemStore(self.data_dir / "data")
+        store = create_store(self.data_dir)   # 文件默认；PROTO_STORE=mongo 切换
         self.spine = AuditSpine(store)
 
         # ---- 主人密钥：首次生成并注册（本地控制台 = OWNER 通道）----
@@ -268,7 +269,7 @@ class ProtoAgent:
         from proto.evolution.archive import VariantArchive
         from proto.evolution.testset import OwnedTestSet
 
-        store = FileSystemStore(self.data_dir / "data")
+        store = create_store(self.data_dir)
         archive = VariantArchive(store)
         testset = OwnedTestSet(store, self.anchor, self.spine)
         return {

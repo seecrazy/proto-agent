@@ -496,8 +496,8 @@ LangGraph 编排与 MongoDB 适配按 §4 的接口约定在后续阶段接入�
 | §7.3 机制五 兴趣强化收敛 | `proto/metacog/interest.py`（学习权重进仲裁） | `test_round4_dynamics.py` | ✅ |
 | §6.2 dormant 参数冻结 | `proto/evalx/dormancy.py` + StateManager | `test_round4_dynamics.py` | ✅ |
 | §6.1 欲望动态增长 | `proto/state/desires.py`（1h 宽限） | `test_round4_dynamics.py` | ✅ |
-| §4 LangGraph 编排 | 节点签名按 LangGraph 约定设计 | — | 📋 接入阶段 |
-| §4 MongoDB 适配 | `proto/storage/store.py` 接口（get/put/delete/find） | `test_store.py` | ⚗️ 文件实现已交付，Mongo 适配位 |
+| §4 LangGraph 编排 | `proto/adapters/langgraph_runner.py`（attribute→modulate→respond→proactive 单轮图） | `test_integrations.py`（装 langgraph 后激活，图内调制实测） | ✅ 适配器 |
+| §4 MongoDB 适配 | `proto/storage/mongo_store.py`（pymongo 懒连接 + `create_store` 工厂，`PROTO_STORE=mongo` 启用） | `test_integrations.py`（装 pymongo 后激活） | ✅ 适配器 |
 | LLM 接入（OpenAI 兼容客户端） | `proto/llm/client.py`（方舟/OpenAI/DeepSeek/Ollama） | `test_llm.py`（本地 HTTP 假服务实测） | ✅ |
 | §7.1 LLMAttributor（白名单+回退） | `proto/metacog/attribution.py` | `test_llm.py` | ✅ |
 | LLM 任务规划器（工具白名单） | `proto/exec/planner.py` | `test_llm.py` | ✅ |
@@ -505,10 +505,13 @@ LangGraph 编排与 MongoDB 适配按 §4 的接口约定在后续阶段接入�
 | 活的 Agent 运行时 + REPL | `proto/runtime/agent.py` + `proto/run.py` | `test_runtime.py`（注册/对话/调制/主动提议/阻尼/审批执行） | ✅ |
 | §3.2 密钥托管 / 多设备 | 注册仪式已实现 | — | 📋 产品化阶段 |
 
-**验证基线**：`python3 -m pytest -q` → 241 项全绿；`python3 -m proto.demo` → 12 段全链路演示，退出码 0；`python3 -m proto.run` → 离线冒烟通过。
+**验证基线**：`python3 -m pytest -q` → 246 项全绿（+2 可选跳过）；`python3 -m proto.demo` → 12 段全链路演示，退出码 0；`python3 -m proto.run` → 离线冒烟通过。
 
 **v2.3（2026-11-11）**：活的 Agent 运行时——`python -m proto.run` 即得：主人密钥首次注册/持久化（本地控制台 = OWNER 通道，每条输入走完整 HMAC 认证）、对话（状态注入 + LLM，未配 key 自动离线模式）、LLM 归因（参数白名单 + 强度夹紧 + 解析失败回退启发式）、主动提议（欲望缺口 × 调度器 × 仲裁 × 审批，拒绝即阻尼）、任务执行（LLM 规划过工具白名单 → Router 安全管线）。
 
 **v2.4（2026-11-11）**：Web 管理控制台——`python -m proto.web` 一条命令部署与管理：对话、内在状态仪表盘（含锁定/覆写）、主动提议审批、任务指派、主人优先级、静音、审计链实时视图。仅绑定 127.0.0.1；一次性令牌置于 URL 片段（不发给服务器），受保护 API 强制请求头校验，防本机跨站调用。
 
 **v2.2（2026-11-11）**：引擎完全体补完——参数调制回滚（级联内化降级）、阻尼控制接入审批队列、Router/Worker 执行器骨架（工具注册、逐步检查点、审批暂停/恢复、批准后 scratch 晋升）、L3 调度器（每任务蒸馏/定时目标生成/每日深度回顾，时钟可注入）、确定性策略蒸馏、兴趣强化收敛进目标仲裁、dormant 参数冻结看门狗、欲望缺口随闲置增长（1 小时宽限期）。设计内机制至此全部落地；剩余项均为外部系统接入（LLM/LangGraph/MongoDB/gVisor/密钥托管）。
+
+
+**v2.5（2026-11-11）**：外部系统接入适配器——MongoStore（懒连接+环境变量工厂）、LangGraph 单轮对话图（节点=内置调度器等价物）、Sandbox runsc 后端（Linux 自动探测/macOS 回退）、Web 控制台固定令牌（长驻部署）。核心运行时保持零三方依赖，可选依赖组 `.[mongo]` / `.[graph]`。
