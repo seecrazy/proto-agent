@@ -29,9 +29,34 @@ PERSONA_PRESETS = [
 
 WIZARD_STEPS = ["provider", "api_key", "llm_detail", "token", "persona", "priority", "confirm"]
 
+PRIORITY_EXAMPLES = [
+    "补齐支付模块的单元测试",
+    "学习 agent 编排框架",
+    "把个人博客迁移到新框架",
+    "调研数据备份方案",
+]
+
 
 def mask_key(key: str) -> str:
     return f"{key[:3]}****{key[-4:]}" if len(key) > 8 else "****"
+
+
+_pos_index = [0]  # 当前步骤序号（_run_step 内的 UI 输出用）
+
+
+def step_ui(n: int, total: int, text: str) -> str:
+    from proto import ui
+    return ui.step(n, total, text)
+
+
+def dim_text(text: str) -> str:
+    from proto import ui
+    return ui.dim(text)
+
+
+def ok_line(text: str) -> str:
+    from proto import ui
+    return ui.ok(text)
 
 
 def run_wizard(ask, secure_ask, initial=None) -> dict:
@@ -47,6 +72,7 @@ def run_wizard(ask, secure_ask, initial=None) -> dict:
     i = 0
     while i < len(WIZARD_STEPS):
         step = WIZARD_STEPS[i]
+        _pos_index[0] = i + 1
         pos = f"[{i + 1}/{len(WIZARD_STEPS)}]"
         result = _run_step(step, pos, values, ask, secure_ask)
         if result == "back":
@@ -62,7 +88,8 @@ def run_wizard(ask, secure_ask, initial=None) -> dict:
 def _run_step(step, pos, values, ask, secure_ask):
     if step == "provider":
         hint = {"zhipu-coding": "（已选 智谱 Coding Plan）", "": ""}.get(values["provider"], "")
-        print(f"\n{pos} 选择 LLM 提供商 {hint}")
+        print()
+        print(step_ui(_pos_index[0], len(WIZARD_STEPS), f"选择 LLM 提供商 {hint}"))
         print("  1) 智谱 Coding Plan（GLM-5.3 系列，推荐）")
         print("  2) 自定义 OpenAI 兼容端点")
         print("  3) 离线模式（稍后配置）")
@@ -70,18 +97,20 @@ def _run_step(step, pos, values, ask, secure_ask):
         answer = ask("选择 [1/2/3，回车保持默认]（< 回上一步）: ", default)
         if answer == "<":
             return "back"
-        values["provider"] = {"1": "zhipu-coding", "2": "", "3": ""}[answer]
-        values["offline_menu"] = answer == "3"
+        values["provider"] = {"1": "zhipu-coding", "2": "", "3": ""}.get(
+            answer, values["provider"] or "")
+        values["offline_menu"] = answer == "3" or not values["provider"]
         return None
 
     if step == "api_key":
         if not values["provider"]:
             return None                   # 离线/自定义无 key 步（自定义在 llm_detail 问）
-        key = secure_ask(f"{pos} 粘贴 API Key（getpass 输入，屏幕不回显；< 回上一步）: ")
+        print(step_ui(_pos_index[0], len(WIZARD_STEPS), "API Key（getpass 输入，屏幕不回显）"))
+        key = secure_ask("粘贴 API Key（< 回上一步）: ")
         if key == "<":
             return "back"
         values["api_key"] = key
-        print(f"    已收到 key：{mask_key(key)}（确认页可回改）")
+        print(ok_line(f"已收到 key：{mask_key(key)}（确认页可回改）"))
         return None
 
     if step == "llm_detail":
@@ -116,15 +145,17 @@ def _run_step(step, pos, values, ask, secure_ask):
         # 离线模式：跳过
 
     if step == "token":
-        token = ask(f"{pos} 控制台固定访问令牌 [{values['token']}]（< 回上一步）: ",
-                    values["token"])
+        print()
+        print(step_ui(_pos_index[0], len(WIZARD_STEPS), "控制台固定访问令牌（重启不变的访问口令）"))
+        token = ask(f"令牌 [{values['token']}]（< 回上一步）: ", values["token"])
         if token == "<":
             return "back"
         values["token"] = token
         return None
 
     if step == "persona":
-        print(f"\n{pos} 人设（数字选预设，或 6 自由填写；回车跳过）")
+        print()
+        print(step_ui(_pos_index[0], len(WIZARD_STEPS), "人设（数字选预设，或 6 自由填写；回车跳过）"))
         for idx, (name, text) in enumerate(PERSONA_PRESETS, 1):
             mark = " ←当前" if values["persona"] == text else ""
             print(f"  {idx}) {name}{mark}")
@@ -144,26 +175,42 @@ def _run_step(step, pos, values, ask, secure_ask):
         return None
 
     if step == "priority":
-        priority = ask("主人优先级（回车跳过）: ", values["priority"])
+        from proto import ui
+        print()
+        print(step_ui(_pos_index[0], len(WIZARD_STEPS), "主人优先级 —— 它最近围绕什么为你工作？"))
+        print(dim_text(
+            "优先级会注入三处：独处学习的选题（GitHub 搜索词）、目标仲裁的对齐项"
+            "（0.35 第一权重，跑偏的事它不做）、工作草稿的方向。\n"
+            "写你『最近在意的事』即可——一句话，不追求正式；随时可在控制台修改。"))
+        print("示例：")
+        for idx, example in enumerate(PRIORITY_EXAMPLES, 1):
+            mark = " ←当前" if values["priority"] == example else ""
+            print(f"  {idx}) {example}{mark}")
+        priority = ask("输入数字选示例，或直接输入你的优先级（回车=暂不设置）: ",
+                       values["priority"])
         if priority == "<":
             return "back"
-        values["priority"] = priority
+        if priority.isdigit() and 1 <= int(priority) <= len(PRIORITY_EXAMPLES):
+            values["priority"] = PRIORITY_EXAMPLES[int(priority) - 1]
+        else:
+            values["priority"] = priority
         return None
 
     # confirm
-    print("\n" + "=" * 46)
-    print("确认配置（回车=写入并完成；数字=跳回该步重选；< =上一步）")
+    from proto import ui
+    print()
+    print(ui.bold(ui.cyan("确认配置")))
+    print(ui.dim("回车=写入并完成 · 数字=跳回该步重选 · < =上一步"))
     provider_label = values["provider"] or (values["base_url"] or "离线模式")
-    rows = [
-        f"  1) 提供商 : {provider_label}",
-        f"  2) API Key: {mask_key(values['api_key']) if values['api_key'] else '（无）'}",
-        f"  3) 模型   : {values['model'] or '默认'}"
-        + (f" / 快: {values['fast_model']}" if values['fast_model'] else ""),
-        f"  4) 令牌   : {values['token']}",
-        f"  5) 人设   : {values['persona'] or '（未设置）'}",
-        f"  6) 优先级 : {values['priority'] or '（未设置）'}",
-    ]
-    print("\n".join(rows))
+    print(ui.kv_table([
+        ("1 提供商", provider_label, None),
+        ("2 API Key", mask_key(values["api_key"]) if values["api_key"] else "（无）", ui.yellow),
+        ("3 模型", (values["model"] or "默认")
+         + (f" / 快: {values['fast_model']}" if values["fast_model"] else ""), None),
+        ("4 令牌", values["token"], None),
+        ("5 人设", values["persona"] or "（未设置）", None),
+        ("6 优先级", values["priority"] or "（未设置）", None),
+    ], key_width=12))
     answer = ask("确认 [回车/1-6/<]: ", "")
     if answer == "<":
         return "back"
@@ -294,9 +341,8 @@ def main() -> int:
     parser.add_argument("--yes", action="store_true", help="非交互模式")
     args = parser.parse_args()
 
-    print("=" * 58)
-    print(" PROTO 部署向导（任意步输入 < 回上一步）")
-    print("=" * 58)
+    from proto import ui
+    print(ui.banner("PROTO 部署向导", f"v{_version()} · 任意步输入 < 回上一步"))
 
     cli_complete = (args.provider or args.base_url or args.api_key) and args.yes
     if cli_complete:
@@ -321,7 +367,8 @@ def main() -> int:
                      "fast_model": args.fast_model, "token": args.token,
                      "persona": args.persona, "priority": args.priority})
 
-    print("\n写入配置并自检……")
+    print()
+    print(ui.step(7, 7, "写入配置并自检"))
     result = run_setup(data_dir=Path(args.data_dir),
                        provider=values.get("provider"),
                        base_url=values.get("base_url"),
@@ -331,24 +378,39 @@ def main() -> int:
                        token=values.get("token"), persona=values.get("persona"),
                        priority=values.get("priority"), yes=True,
                        check_llm=not args.skip_llm_check)
-    print(f"  配置文件 : {result['env_file']}（0600）")
+    print(ui.ok(f"配置文件 {result['env_file']}（权限 0600）"))
     if result["llm_configured"]:
-        print(f"  LLM 自检 : {'通过' if result['llm_ok'] else '失败——请检查 key/网络，可重跑本向导'}")
+        if result["llm_ok"]:
+            print(ui.ok("LLM 自检通过"))
+        else:
+            print(ui.warn("LLM 自检失败——请检查 key/网络，可重跑向导（配置已写入）"))
     else:
-        print("  LLM     : 离线模式")
+        print(ui.warn("离线模式（无 LLM 配置）——功能受限，建议稍后配置"))
     if args.install_service:
         if sys.platform == "darwin":
             env_values = {k: os.environ[k] for k in ENV_KEYS if os.environ.get(k)}
             plist = install_launchd(Path(args.data_dir), result["token"], env_values)
-            print(f"  开机自启 : 已安装 {plist}")
-            print("            停止: launchctl unload " + str(plist))
+            print(ui.ok(f"开机自启已安装：{plist}"))
+            print(ui.dim(f"    停止：launchctl unload {plist}"))
         else:
-            print("  开机自启 : 当前平台不支持（macOS 专用），跳过")
-    print("\n日常启动：")
-    print(f"  source {result['env_file']} && python3 -m proto.web --data-dir {args.data_dir}")
-    print(f"  控制台  : http://127.0.0.1:8420/#token={result['token']}")
-    print(f"  备份提醒: python3 -m proto.backup --data-dir {args.data_dir}（owner.key 即身份）")
+            print(ui.warn("当前平台不支持 launchd（macOS 专用），跳过"))
+    print()
+    print(ui.bold("日常启动"))
+    print(ui.kv_table([
+        ("命令行", f"python3 -m proto.web --data-dir {args.data_dir}", None),
+        ("控制台", f"http://127.0.0.1:8420/#token={result['token']}", ui.cyan),
+        ("备份", f"python3 -m proto.backup --data-dir {args.data_dir}", None),
+        ("身份", "owner.key 即主人身份，请备份", ui.yellow),
+    ]))
     return 0
+
+
+def _version():
+    from importlib.metadata import version, PackageNotFoundError
+    try:
+        return version("proto-agent")
+    except PackageNotFoundError:
+        return "dev"
 
 
 if __name__ == "__main__":
