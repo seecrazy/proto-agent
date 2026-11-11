@@ -118,6 +118,11 @@
     </div>
 
     <div class="card">
+      <h3>记忆（它记住的）</h3>
+      <div id="memory-facts" class="empty">（暂无——它会把你的称呼/偏好/项目记成事实，独处时反思经历）</div>
+    </div>
+
+    <div class="card">
       <h3>它最近在学什么（scratch 学习笔记）</h3>
       <div id="scratch-notes" class="empty">（暂无——独处时它会带着人设去 GitHub 研读开源项目）</div>
     </div>
@@ -274,6 +279,24 @@ async function savePersona() {
   const text = document.getElementById("persona-input").value.trim();
   const r = await api("POST", "/api/persona", { text });
   addMsg(`人设已设为：「${r.persona}」——独处学习将围绕这个人设展开。`, "system");
+}
+async function refreshMemory() {
+  const r = await api("GET", "/api/memory", {});
+  const box = document.getElementById("memory-facts");
+  if (!r.facts.length && !r.reflections.length) return;
+  box.innerHTML = `<div style="color:var(--dim);font-size:11px;margin-bottom:6px">情景 ${r.episodes} 条 · 事实 ${r.facts.length} 条 · 反思 ${r.reflections.length} 条</div>`;
+  for (const f of r.facts.slice(-8).reverse()) {
+    const d = document.createElement("div");
+    d.style.cssText = "font-size:12px;margin-bottom:4px;line-height:1.5";
+    d.innerHTML = `<span class="badge">事实</span> ${esc(f)}`;
+    box.appendChild(d);
+  }
+  for (const t of r.reflections.slice(-3).reverse()) {
+    const d = document.createElement("div");
+    d.style.cssText = "font-size:12px;margin-bottom:4px;line-height:1.5;border-left:2px solid var(--warn);padding-left:6px";
+    d.innerHTML = `<span class="badge lock">反思</span> ${esc(t)}`;
+    box.appendChild(d);
+  }
 }
 async function refreshScratch() {
   const r = await api("GET", "/api/scratch", {});
@@ -440,7 +463,7 @@ function esc(s) { const d = document.createElement("i"); d.textContent = s; retu
     await api("POST", "/api/tick", {});   // 驱动欲望动态/调度器
     const inbox = await api("GET", "/api/inbox", {});
     for (const m of inbox.messages) addMsg(m, "agent");
-    await refreshState(); await refreshProposals(); await refreshAudit(); await refreshRules(); await refreshEvolution(); await refreshScratch();
+    await refreshState(); await refreshProposals(); await refreshAudit(); await refreshRules(); await refreshEvolution(); await refreshScratch(); await refreshMemory();
   } catch (e) {}
   setTimeout(loop, 8000);
 })();

@@ -45,9 +45,9 @@ class TestLifecycle:
         # 归因→累积→调制：0.6 ≥ 0.30 触发一次 +0.02
         assert agent.state.get("instincts.social_initiative") == pytest.approx(0.52)
         # LLM 看到的上下文包含注入的内在状态与用户话语
-        call = agent.llm.calls[-1]
-        assert "内在状态" in call["system"]
-        assert "以后更主动一点" in call["user"]
+        chat_calls = [c for c in agent.llm.calls if "内在状态" in c["system"]]
+        assert chat_calls
+        assert "以后更主动一点" in chat_calls[-1]["user"]
 
     def test_offline_mode_still_modulates_and_replies(self, tmp_path):
         agent = ProtoAgent(data_dir=tmp_path / "offline")  # 无 LLM

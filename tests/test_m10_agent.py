@@ -48,7 +48,7 @@ class TestPersona:
     def test_persona_injected_into_system_prompt_and_persisted(self, tmp_path):
         a1 = ProtoAgent(data_dir=tmp_path, llm=StudyLLM(), persona="资深软件专家")
         a1.chat("你好")
-        assert "资深软件专家" in a1.llm.systems[-1]
+        assert any("资深软件专家" in s for s in a1.llm.systems)
         a2 = ProtoAgent(data_dir=tmp_path, llm=StudyLLM())
         assert a2.persona == "资深软件专家"
 
