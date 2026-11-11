@@ -19,6 +19,159 @@ from pathlib import Path
 
 from proto.config import load_env_file
 
+PERSONA_PRESETS = [
+    ("软件专家", "资深软件专家，重视工程质量与可验证性，喜欢把复杂问题拆解清楚"),
+    ("技术导师", "耐心的技术导师，善于把复杂概念讲得通俗易懂，重视学习者的理解节奏"),
+    ("安全研究员", "严谨的安全研究员，关注攻击面与缓解措施，对信任边界敏感"),
+    ("产品全栈", "产品型全栈工程师，关注用户体验与交付价值，反对过度设计"),
+    ("毒舌评审", "毒舌但公正的代码评审员，直言不讳但每句批评都给出依据"),
+]
+
+WIZARD_STEPS = ["provider", "api_key", "llm_detail", "token", "persona", "priority", "confirm"]
+
+
+def mask_key(key: str) -> str:
+    return f"{key[:3]}****{key[-4:]}" if len(key) > 8 else "****"
+
+
+def run_wizard(ask, secure_ask, initial=None) -> dict:
+    """可回退多步向导：任意步输入 < 回上一步；确认页掩码显示并支持数字跳步。
+
+    ask(prompt, default)  普通输入（回车取默认）
+    secure_ask(prompt)    机密输入（getpass，不回显）
+    """
+    values = {"provider": "", "base_url": "", "api_key": "", "model": "",
+              "fast_model": "", "token": "proto-console",
+              "persona": "", "priority": ""}
+    values.update({k: v for k, v in (initial or {}).items() if v})
+    i = 0
+    while i < len(WIZARD_STEPS):
+        step = WIZARD_STEPS[i]
+        pos = f"[{i + 1}/{len(WIZARD_STEPS)}]"
+        result = _run_step(step, pos, values, ask, secure_ask)
+        if result == "back":
+            i = max(0, i - 1)
+            continue
+        if isinstance(result, int):      # 确认页跳步
+            i = result
+            continue
+        i += 1
+    return values
+
+
+def _run_step(step, pos, values, ask, secure_ask):
+    if step == "provider":
+        hint = {"zhipu-coding": "（已选 智谱 Coding Plan）", "": ""}.get(values["provider"], "")
+        print(f"\n{pos} 选择 LLM 提供商 {hint}")
+        print("  1) 智谱 Coding Plan（GLM-5.3 系列，推荐）")
+        print("  2) 自定义 OpenAI 兼容端点")
+        print("  3) 离线模式（稍后配置）")
+        default = {"zhipu-coding": "1", "": "3"}.get(values["provider"], "2")
+        answer = ask("选择 [1/2/3，回车保持默认]（< 回上一步）: ", default)
+        if answer == "<":
+            return "back"
+        values["provider"] = {"1": "zhipu-coding", "2": "", "3": ""}[answer]
+        values["offline_menu"] = answer == "3"
+        return None
+
+    if step == "api_key":
+        if not values["provider"]:
+            return None                   # 离线/自定义无 key 步（自定义在 llm_detail 问）
+        key = secure_ask(f"{pos} 粘贴 API Key（getpass 输入，屏幕不回显；< 回上一步）: ")
+        if key == "<":
+            return "back"
+        values["api_key"] = key
+        print(f"    已收到 key：{mask_key(key)}（确认页可回改）")
+        return None
+
+    if step == "llm_detail":
+        if not values["provider"] and values.get("offline_menu"):
+            return None                    # 离线模式：跳过
+        if values["provider"] == "zhipu-coding":
+            model = ask("主模型 [glm-5.3]: ", values["model"] or "glm-5.3")
+            if model == "<":
+                return "back"
+            fast = ask("快模型（抽取/反思/学习/规划）[glm-5.3-flash]: ",
+                       values["fast_model"] or "glm-5.3-flash")
+            if fast == "<":
+                return "back"
+            values["model"], values["fast_model"] = model, fast
+            return None
+        if values["provider"]:
+            return None
+        base = ask("Base URL（OpenAI 兼容，如 https://api.deepseek.com/v1）: ",
+                   values["base_url"])
+        if base == "<":
+            return "back"
+        values["base_url"] = base
+        key = secure_ask("API Key（不回显，本地服务直接回车）: ")
+        if key == "<":
+            return "back"
+        values["api_key"] = key
+        model = ask("模型名: ", values["model"] or "gpt-4o-mini")
+        if model == "<":
+            return "back"
+        values["model"] = model
+        return None
+        # 离线模式：跳过
+
+    if step == "token":
+        token = ask(f"{pos} 控制台固定访问令牌 [{values['token']}]（< 回上一步）: ",
+                    values["token"])
+        if token == "<":
+            return "back"
+        values["token"] = token
+        return None
+
+    if step == "persona":
+        print(f"\n{pos} 人设（数字选预设，或 6 自由填写；回车跳过）")
+        for idx, (name, text) in enumerate(PERSONA_PRESETS, 1):
+            mark = " ←当前" if values["persona"] == text else ""
+            print(f"  {idx}) {name}{mark}")
+        print("  6) 其他（自由填写）")
+        answer = ask("选择 [1-6]: ", "")
+        if answer == "<":
+            return "back"
+        if answer.isdigit() and 1 <= int(answer) <= len(PERSONA_PRESETS):
+            values["persona"] = PERSONA_PRESETS[int(answer) - 1][1]
+        elif answer == "6":
+            free = ask("描述你的人设（一句话即可）: ", values["persona"])
+            if free == "<":
+                return "back"
+            values["persona"] = free
+        elif answer:                        # 菜单处直接输入文本 = 自由人设
+            values["persona"] = answer
+        return None
+
+    if step == "priority":
+        priority = ask("主人优先级（回车跳过）: ", values["priority"])
+        if priority == "<":
+            return "back"
+        values["priority"] = priority
+        return None
+
+    # confirm
+    print("\n" + "=" * 46)
+    print("确认配置（回车=写入并完成；数字=跳回该步重选；< =上一步）")
+    provider_label = values["provider"] or (values["base_url"] or "离线模式")
+    rows = [
+        f"  1) 提供商 : {provider_label}",
+        f"  2) API Key: {mask_key(values['api_key']) if values['api_key'] else '（无）'}",
+        f"  3) 模型   : {values['model'] or '默认'}"
+        + (f" / 快: {values['fast_model']}" if values['fast_model'] else ""),
+        f"  4) 令牌   : {values['token']}",
+        f"  5) 人设   : {values['persona'] or '（未设置）'}",
+        f"  6) 优先级 : {values['priority'] or '（未设置）'}",
+    ]
+    print("\n".join(rows))
+    answer = ask("确认 [回车/1-6/<]: ", "")
+    if answer == "<":
+        return "back"
+    if answer.isdigit() and 1 <= int(answer) <= 6:
+        return int(answer) - 1            # 跳到对应步骤（WIZARD_STEPS 前 6 项）
+    return None
+
+
 ENV_KEYS = ("PROTO_LLM_PROVIDER", "PROTO_LLM_BASE_URL", "PROTO_LLM_API_KEY",
             "PROTO_LLM_MODEL", "PROTO_LLM_FAST_MODEL", "PROTO_WEB_TOKEN",
             "PROTO_CAFFEINATE")
@@ -142,45 +295,41 @@ def main() -> int:
     args = parser.parse_args()
 
     print("=" * 58)
-    print(" PROTO 部署向导")
+    print(" PROTO 部署向导（任意步输入 < 回上一步）")
     print("=" * 58)
 
-    def ask(prompt: str, default: str = "") -> str:
-        if args.yes:
-            return default
-        try:
-            answer = input(prompt).strip()
-        except EOFError:
-            return default
-        return answer or default
+    cli_complete = (args.provider or args.base_url or args.api_key) and args.yes
+    if cli_complete:
+        values = {"provider": args.provider, "base_url": args.base_url,
+                  "api_key": args.api_key, "model": args.model,
+                  "fast_model": args.fast_model, "token": args.token,
+                  "persona": args.persona, "priority": args.priority}
+    else:
+        import getpass
 
-    provider = args.provider
-    if not provider:
-        print("\n[1/4] 选择 LLM 提供商：")
-        print("  1) 智谱 Coding Plan（GLM-5.3 系列，推荐）")
-        print("  2) 自定义 OpenAI 兼容端点")
-        print("  3) 离线模式（稍后配置）")
-        choice = ask("选择 [1/2/3，默认1]: ", "1")
-        provider = {"1": "zhipu-coding", "2": "", "3": "offline"}[choice]
-        if provider == "offline":
-            provider = ""
-    api_key = args.api_key
-    if provider and not api_key:
-        api_key = ask("API Key（输入后不回显，直接粘贴）: ")
-    model = args.model or ("glm-5.3" if provider == "zhipu-coding" else "")
-    fast_model = args.fast_model
-    if provider == "zhipu-coding" and not fast_model:
-        fast_model = "glm-5.3-flash"
-    token = args.token or ask("[2/4] 控制台固定访问令牌（直接回车自动生成）: ",
-                              "proto-console")
-    persona = args.persona or ask("[3/4] 人设（如：资深软件专家，回车跳过）: ")
-    priority = args.priority or ask("      主人优先级（回车跳过）: ")
+        def ask(prompt: str, default: str = "") -> str:
+            try:
+                answer = input(prompt).strip()
+            except EOFError:
+                answer = ""
+            return answer or default
 
-    print("\n[4/4] 写入配置并自检……")
-    result = run_setup(data_dir=Path(args.data_dir), provider=provider,
-                       base_url=args.base_url, api_key=api_key, model=model,
-                       fast_model=fast_model, token=token, persona=persona,
-                       priority=priority, yes=True,
+        values = run_wizard(
+            ask=ask, secure_ask=getpass.getpass,
+            initial={"provider": args.provider, "base_url": args.base_url,
+                     "api_key": args.api_key, "model": args.model,
+                     "fast_model": args.fast_model, "token": args.token,
+                     "persona": args.persona, "priority": args.priority})
+
+    print("\n写入配置并自检……")
+    result = run_setup(data_dir=Path(args.data_dir),
+                       provider=values.get("provider"),
+                       base_url=values.get("base_url"),
+                       api_key=values.get("api_key"),
+                       model=values.get("model"),
+                       fast_model=values.get("fast_model"),
+                       token=values.get("token"), persona=values.get("persona"),
+                       priority=values.get("priority"), yes=True,
                        check_llm=not args.skip_llm_check)
     print(f"  配置文件 : {result['env_file']}（0600）")
     if result["llm_configured"]:
