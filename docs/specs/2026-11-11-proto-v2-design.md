@@ -2,6 +2,8 @@
 
 > 一个可控内在状态、主动工作、能自我进化的成长型 Agent。
 > 本文档为 v1.0 评审后的完整修订版。v1 的五层架构与六条设计原则保留，所有修订均可追溯到评审结论（见 §0）。
+>
+> **v2.1（2026-11-11）**：落地路径阶段 1–8 核心全部实现（见 §14 实施状态）；新增架构总图、调制管线时序、审批时序、进化两轨闭环四张 Mermaid 图。
 
 ---
 
@@ -52,6 +54,39 @@
 | L3 元认知层 | 反馈归因、规则内化、策略蒸馏、目标生成与仲裁 | 周期性 LLM 调用 + 规则引擎 | 逻辑可自我改进（受 L1 约束） |
 | L4 执行层 | 任务规划、工具调用、子 Agent 调度、状态注入 | Harness + Worker 架构 | 代码可自我修改（受 L1 验证） |
 | L5 进化层 | 代码变体生成、沙盒评估、档案库管理 | 进化闭环 + 分级授权 + 两轨证据 | 受 L1 验证器约束 |
+
+#### 2.1 架构总图
+
+```mermaid
+flowchart TB
+    OWNER(("主人")) ==>|"OWNER 通道 HMAC 签名 权重 1.0"| L1
+    EXT(("外部内容")) -.->|"CONTENT 通道 权重 0.05 + 累积 50% 硬顶"| L3
+
+    subgraph L1 ["L1 内核层 · 不可变 · 不经 LLM"]
+        anchor["主人锚定 / 三通道认证"] --- rules["硬规则 / 边界 / 高危拦截"] --- budget["预算三分池 / 熔断"] --- audit["审计脊柱 · 哈希链"]
+    end
+    subgraph L2 ["L2 状态层 · 显式状态文件 · 有界可调制"]
+        params["本能 / 欲望 / 性格参数 · 权威界 + 行为代理"] --- accum["分池归因累积器"] --- pad["PAD 情绪引擎"]
+    end
+    subgraph L3 ["L3 元认知层 · 周期运行"]
+        attr["归因器 可插拔"] --- intern["内化台账 · 双向"] --- strat["策略库 · ε 多样性"] --- arb["目标仲裁 · 主人对齐"]
+    end
+    subgraph L4 ["L4 执行层"]
+        router["Router / Worker"] --- inject["状态注入 + 认知调制器"] --- ws["Scratch 工作区 + 审批队列"] --- cp["检查点 · 绑定变体"]
+    end
+    subgraph L5 ["L5 进化层 · 受约束"]
+        code["代码轨 · 沙盒"] --- shadow["行为轨 · 影子双跑"] --- auth["分级授权"] --- arc["变体档案库 · 进化树"]
+    end
+
+    L1 -->|"约束 · 最高否决"| L2
+    L1 -->|"约束"| L3
+    L1 -->|"约束"| L4
+    L1 -->|"验证器"| L5
+    L4 -->|"上行 · 执行结果"| L3
+    L3 -->|"调制"| L2
+    L2 -->|"下行 · 状态注入"| L4
+    L5 -->|"变体"| L4
+```
 
 **层间协议**：
 
@@ -175,6 +210,27 @@
 
 归因器为可插拔接口：`HeuristicAttributor`（关键词规则，离线可用）与 `LLMAttributor`（接模型 API）。两者输出统一为 `[(param, direction, strength)]`，权重与池逻辑在归因器之外，LLM 误判无法放大权限。
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant O as 主人 OWNER 1.0
+    participant S as 交互轨迹 SESSION 0.3
+    participant C as 外部内容 CONTENT 0.05
+    participant A as 归因器 L3
+    participant P as 分池累积器 L2
+    participant K as 内核 L1
+    participant F as 状态文件 L2
+    O->>A: 签名反馈
+    S->>A: 隐式反馈
+    C--xA: 注入的"反馈"形状信号
+    A->>P: (param, 方向, 强度) × 通道权重
+    P->>P: 分池累积 · CONTENT 池饱和于 50% 阈值
+    P->>K: 达阈值 → 调制提案
+    K->>K: 边界检查 + 锁检查
+    K->>F: clamp 写入 + modulation_log + 审计
+    Note over C,P: 洪泛一万次也无法触发调制<br/>触顶即写 saturation_alert 审计
+```
+
 ### 7.2 规则内化（双向门，R2）
 
 - 台账条目：`{rule_id, text, status: external|internal, applications[], internalized_at, origin, cooldown}`。
@@ -218,6 +274,31 @@
 - **Harness = Router-Worker**：Router 维护任务队列与检查点；Worker 独立会话/工作目录；中间结果持久化，上下文摘要压缩。
 - **状态注入**：每次调用模型前注入——L2 当前状态（自然语言化）+ 调制器导出的当前认知参数（k、ε、bias、th）+ ε 多样性检索的 top-N 策略。同一任务不同状态行为不同（由 §6.2 代理指标验证）。
 - **主动行为 = 静默执行 + 提交审查（修订 R9）**：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as Worker 后台执行
+    participant WS as Scratch 工作区
+    participant Q as 审批队列
+    participant K as 内核 L1
+    participant H as 人类
+    W->>WS: 静默产出(草稿/搜索/整理)
+    Note over WS: 对外可见产物 = 零外部性
+    W->>Q: 对外动作候选 + 暂停于检查点
+    Q->>K: 分级审查
+    alt 只读/草稿
+        K-->>Q: 自动通过
+    else 对外可见写
+        K-->>Q: 必须人类批准
+        Q->>H: 提交审查
+        H-->>Q: 批准 / 拒绝(理由)
+    else 不可逆(删除/支付/权限)
+        K-->>Q: 仅人类 · 独立审查只作附注
+        Q->>H: 强制人工审批
+    end
+    Q->>W: 批准→检查点恢复 / 拒绝→回退安全状态
+```
   - 静默阶段的一切产出限定在 **scratch 工作区**（独立目录，对主人可见产物为零外部性）。
   - 晋升到可见工作区/对外动作 = 按 §3.3 走审批。
   - 审批通过从检查点恢复；拒绝则回退上一安全状态并记录拒绝原因。
@@ -250,6 +331,27 @@
 - **checkpoint schema 版本绑定变体 ID**：每个变体的中间状态带 `schema_version@variant_id`，旧 checkpoint 由产生它的变体分支续跑，杜绝"升级后断点续传断掉"。
 - 合并后 **canary 期**：新变体默认影子运行，期满无回归才切默认。
 - 权限解锁依据仍是行为稳定性而非运行时长。
+
+#### 9.4 进化两轨闭环
+
+```mermaid
+flowchart LR
+    arc[("变体档案库 · 进化树")] --> sample["采样变体"]
+    sample --> cand["生成候选变体"]
+    cand --> gate{"修改目标分级"}
+    gate -->|"低风险 · 代码"| sbx["沙盒: 人类所有测试集 + 私有评分器"]
+    gate -->|"中风险 · 行为"| both["沙盒 + 影子双跑 ≥ 2 周"]
+    gate -->|"高风险"| deny["永远拒绝 · VETO 审计"]
+    sbx -->|"全用例通过 且 评分提升"| canary["入档 canary"]
+    sbx -->|"否则"| rej["拒绝 · 记录失败原因"]
+    both -->|"clean 报告"| pr["人工 PR"]
+    both -->|"regressions"| rej
+    pr -->|"批准"| canary
+    canary --> ship["canary 影子期观察"]
+    ship -->|"无回归"| def["设为 default"]
+    ship -->|"回归"| rej
+    def --> arc
+```
 
 ---
 
@@ -325,6 +427,10 @@ hash   = sha256(seq ‖ ts ‖ event_type ‖ canonical(payload) ‖ prev_hash)
 
 每阶段收尾跑**行为回归基线**（固定情境集），防累积漂移。
 
+> **实施状态（v2.1）**：阶段 1–8 的核心引擎已全部实现并入 main（组件级映射见 §14）。
+> 阶段 7 的本地沙盒为 subprocess 隔离形态，gVisor/microVM 为生产目标；阶段 8 的
+> 影子双跑以行为代理指标对比实现，LLM 策略接入后同一接口测真实分布。
+
 ### 12.1 本轮实现范围（本次交付）
 
 落地阶段 1–5 的核心引擎（L5 不写代码，仅本设计）：
@@ -351,3 +457,39 @@ LangGraph 编排与 MongoDB 适配按 §4 的接口约定在后续阶段接入�
 7. **（v2）信任按通道分级**：未认证的信号永远无法以全权重影响倾向。
 8. **（v2）一切倾向可逆**：参数、内化、进化合并都有台账与回滚；不可逆的只有内核。
 9. **（v2）一切可审计**：决策链哈希串联，事后可完整重构。
+
+---
+
+## 14. 实施状态（v2.1，2026-11-11）
+
+> 状态：✅ 已实现并有测试钉死 · ⚗️ 接口就绪待外部系统接入 · 📋 仅设计
+
+| 设计章节 | 模块 | 测试 | 状态 |
+|---|---|---|---|
+| §3.2 主人锚定 / 三通道认证 | `proto/kernel/anchor.py` | `test_anchor.py`（伪造/过期/重放/轮换会签/恢复仪式） | ✅ |
+| §5 预算三分池 / 熔断 | `proto/kernel/budgets.py` | `test_kernel.py`（含未知单位不熔断） | ✅ |
+| §3.3 高危拦截 / 静音 | `proto/kernel/kernel.py` | `test_kernel.py` | ✅ |
+| §10 审计脊柱 | `proto/kernel/audit.py` | `test_audit.py`（篡改/删除断链检测，O(1) 追加） | ✅ |
+| §6 参数体系 / 权威界 / 单一写者 | `proto/state/{schema,agent_state}.py` | `test_agent_state.py`（含权威界校验） | ✅ |
+| §6.3 / §7.1 分池归因 / CONTENT 50% 硬顶 | `proto/state/modulation.py` | `test_modulation.py`（万次洪泛零触发） | ✅ |
+| §7.4 PAD 情绪 | `proto/state/emotion.py` | `test_emotion.py` | ✅ |
+| §7.2 双向内化台账 | `proto/metacog/internalize.py` | `test_metacog.py` | ✅ |
+| §7.3 ε 多样性策略库 | `proto/metacog/strategies.py` | `test_metacog.py` | ✅ |
+| §7.5 目标仲裁 / 预算隔离 | `proto/metacog/goals.py` | `test_metacog.py` | ✅ |
+| §7.1 归因器（LLM 适配） | `proto/metacog/attribution.py` | `test_metacog.py` | ⚗️ 启发式已实现，`LLMAttributor` 接口位 |
+| §7.4 / §8 情绪→认知调制器 / 注入器 | `proto/exec/{modulators,injector}.py` | `test_injector.py`（golden 全文锁定） | ✅ |
+| §8 Scratch 工作区 / 审批队列 / 日上限 | `proto/exec/{workspace,approval}.py` | `test_stage6.py` | ✅ |
+| §8 / §9.3 检查点（schema@variant 绑定） | `proto/exec/checkpoints.py` | `test_stage6.py` | ✅ |
+| §6.2 行为评估 harness | `proto/evalx/harness.py` | `test_evalx.py`（ParametricPolicy 仿真策略） | ⚗️ LLM 策略适配位 |
+| §9.1 测试集治理（OWNER 签名追加、无删除 API） | `proto/evolution/testset.py` | `test_stage7.py` | ✅ |
+| §9.1 代码轨沙盒 | `proto/evolution/sandbox.py` | `test_stage7.py`（清洁环境/CPU 限制/超时） | ⚗️ 本地 subprocess 形态；gVisor/microVM 生产目标 |
+| §5 私有评分器 | `proto/evolution/scorer.py` | `test_stage7.py` | ✅ |
+| §9.3 变体档案库 / 进化树 | `proto/evolution/archive.py` | `test_stage7.py` | ✅ |
+| §9 代码轨进化引擎（分数门+全过门→canary） | `proto/evolution/engine.py` | `test_stage7.py` / `test_stage8.py` | ✅ |
+| §9.1 行为轨影子双跑 | `proto/evolution/shadow.py` | `test_stage8.py`（回归规则） | ✅ |
+| §9.2 分级授权（低/中/高） | `proto/evolution/authorization.py` | `test_stage8.py` | ✅ |
+| §4 LangGraph 编排 | 节点签名按 LangGraph 约定设计 | — | 📋 接入阶段 |
+| §4 MongoDB 适配 | `proto/storage/store.py` 接口（get/put/delete/find） | `test_store.py` | ⚗️ 文件实现已交付，Mongo 适配位 |
+| §3.2 密钥托管 / 多设备 | 注册仪式已实现 | — | 📋 产品化阶段 |
+
+**验证基线**：`python3 -m pytest -q` → 176 项全绿；`python3 -m proto.demo` → 11 段全链路演示，退出码 0。
