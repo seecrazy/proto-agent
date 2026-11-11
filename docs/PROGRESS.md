@@ -43,3 +43,7 @@
 ## 下一步（设计 §12 之后）
 
 LLMAttributor 接入模型 API → LangGraph 编排接入（节点签名已兼容）→ MongoDB 适配 DocumentStore → 生产沙盒（gVisor/microVM）。
+
+### M4 — 引擎完全体补完（进行中，feat/engine-completion）
+
+范围：①参数回滚+阻尼控制 ②Router/Worker 执行器骨架 ③L3 调度器+策略蒸馏接线 ④兴趣收敛+dormant 冻结+欲望动态（⑤ LLM 接入待用户提供 API 方式）。

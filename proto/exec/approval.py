@@ -21,6 +21,7 @@ class ActionProposal:
     payload: dict
     task_id: str
     self_initiated: bool = False
+    desire_dim: Optional[str] = None  # 自主动作关联的欲望维度（阻尼控制用）
 
 
 @dataclass
@@ -49,10 +50,12 @@ class _Pending:
 
 
 class ApprovalQueue:
-    def __init__(self, kernel: Kernel, audit: AuditSpine, daily_cap: int = 5):
+    def __init__(self, kernel: Kernel, audit: AuditSpine, daily_cap: int = 5,
+                 damping=None):
         self.kernel = kernel
         self._audit = audit
         self.daily_cap = daily_cap
+        self._damping = damping  # DampingController：拒绝/接受回报给 L3 阻尼
         self._pending: Dict[str, _Pending] = {}
         self._today = time.strftime("%Y-%m-%d")
         self._self_initiated_today = 0
@@ -89,8 +92,17 @@ class ApprovalQueue:
     def pending(self) -> List[ActionProposal]:
         return [p.proposal for p in sorted(self._pending.values(), key=lambda x: x.submitted_at)]
 
+    def _notify_damping(self, proposal: ActionProposal, accepted: bool) -> None:
+        if (self._damping is not None and proposal.self_initiated
+                and proposal.desire_dim):
+            if accepted:
+                self._damping.record_accepted(proposal.desire_dim)
+            else:
+                self._damping.record_ignored(proposal.desire_dim)
+
     def approve(self, proposal_id: str) -> ApprovalRecord:
         pending = self._pending.pop(proposal_id)
+        self._notify_damping(pending.proposal, accepted=True)
         record = ApprovalRecord(proposal_id=proposal_id, granted=True,
                                 description=pending.proposal.description,
                                 decided_at=time.time())
@@ -102,6 +114,7 @@ class ApprovalQueue:
 
     def deny(self, proposal_id: str, reason: str) -> ApprovalRecord:
         pending = self._pending.pop(proposal_id)
+        self._notify_damping(pending.proposal, accepted=False)
         record = ApprovalRecord(proposal_id=proposal_id, granted=False,
                                 description=pending.proposal.description,
                                 decided_at=time.time(), reason=reason)
