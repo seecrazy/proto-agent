@@ -5,3 +5,4 @@ data/
 .superpowers/
 dist/
 *.egg-info/
+proto_data/

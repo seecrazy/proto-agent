@@ -6,7 +6,7 @@
 
 | 项 | 状态 |
 |---|---|
-| 版本 | 0.3.0（引擎完全体：设计内机制全部落地） |
+| 版本 | 0.4.0（活的 Agent 运行时：clone 即可对话） |
 | 测试 | 见下方里程碑记录 |
 | 分支 | main（feat/engine-completion 已并入） |
 | 远程 | 仅本地提交，未推送（用户指示） |
@@ -55,6 +55,12 @@ LLMAttributor 接入模型 API → LangGraph 编排接入（节点签名已兼�
 
 **验证**：210 项测试全绿；demo 12 段退出码 0。设计内机制全部落地，无遗留引擎欠账。
 
-### M5 — 活的 Agent 运行时（进行中，feat/live-agent-runtime）
+### M5 — 活的 Agent 运行时（已完成，feat/live-agent-runtime）
 
-范围：LLM 客户端（OpenAI 兼容，零依赖 urllib）+ LLMAttributor/LLMPlanner（带离线回退）+ ProtoAgent 运行时（首次注册/对话/调制/主动提议/审批）+ `python -m proto.run` REPL + README 快速上手。
+- [x] LLM 客户端：OpenAI 兼容（urllib 零依赖），环境变量配置（PROTO_LLM_BASE_URL/API_KEY/MODEL），方舟/OpenAI/DeepSeek/Ollama 通用；本地 HTTP 假服务实测。
+- [x] LLMAttributor：参数白名单 + 方向归一 + 强度夹紧 + JSON 围栏容错解析 + 失败回退启发式——LLM 误判无法放大权限。
+- [x] LLMPlanner：规划输出过工具白名单与分级白名单，未知工具丢弃，失败返回空。
+- [x] ProtoAgent 运行时：主人密钥首次生成/持久化（0600），锚定不符即拒绝（防静默换钥）；对话全链路（签名认证→归因→调制→状态注入→LLM/离线回复）；主动提议（欲望×调度×仲裁×审批，拒绝即阻尼 N=1）；任务执行（规划→Router→蒸馏回调）；/state /audit /goals 可观测。
+- [x] `python3 -m proto.run` REPL（离线冒烟通过）；README "五分钟得到一个活的 Agent"；v0.4.0。
+
+**验证**：228 项测试全绿。

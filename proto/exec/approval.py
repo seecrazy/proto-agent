@@ -22,6 +22,7 @@ class ActionProposal:
     task_id: str
     self_initiated: bool = False
     desire_dim: Optional[str] = None  # 自主动作关联的欲望维度（阻尼控制用）
+    proposal_id: Optional[str] = None  # 入队时由队列回填，供外部寻址
 
 
 @dataclass
@@ -84,6 +85,7 @@ class ApprovalQueue:
                                     description=proposal.description, decided_at=time.time())
             return Submission(None, True, approval=record)
         pid = uuid.uuid4().hex[:12]
+        proposal.proposal_id = pid
         self._pending[pid] = _Pending(proposal=proposal, proposal_id=pid)
         if proposal.self_initiated:
             self._self_initiated_today += 1
