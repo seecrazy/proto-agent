@@ -33,6 +33,9 @@ class StateInjector:
         lines.append(" ".join(
             f"{name}:{_fmt(spec['value'])}/{_fmt(spec['bounds'][1])}"
             for name, spec in state.instincts.items()))
+        lines.append(" ".join(
+            f"{name}:{_fmt(spec['value'])}"
+            for name, spec in state.personality.items()))
         desire_parts = []
         for name, spec in state.desires.items():
             mark = "(高)" if spec["value"] >= spec["threshold"] else ""

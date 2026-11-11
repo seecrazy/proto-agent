@@ -48,12 +48,12 @@ class TestParameterSystem:
 class TestBoundedWrite:
     def test_set_beyond_upper_truncates_and_marks(self, env):
         mgr, state, _, _ = env
-        result = state.set_within_bounds("instincts.exploration", 1.5, "owner_channel")
+        result = state.set_within_bounds("instincts.exploration", 1.5)
         assert result.value == 0.9 and result.clamped
 
     def test_set_below_lower_truncates(self, env):
         mgr, state, _, _ = env
-        result = state.set_within_bounds("instincts.exploration", -1.0, "owner_channel")
+        result = state.set_within_bounds("instincts.exploration", -1.0)
         assert result.value == 0.1 and result.clamped
 
     def test_locked_param_rejects_modulation(self, env):

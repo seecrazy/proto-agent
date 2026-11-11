@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from proto.kernel.audit import AuditEvent, AuditSpine
-from proto.state.store import DocumentStore
+from proto.storage.store import DocumentStore
 
 FRESHNESS_WINDOW_S = 300.0
 _NONCE_CACHE_LIMIT = 1024
@@ -65,11 +65,14 @@ class OwnerAnchor:
         self._recent_nonces: List[str] = []
 
     @classmethod
-    def enroll(cls, store: DocumentStore, audit: AuditSpine, secret: bytes) -> "OwnerAnchor":
-        """注册仪式：生成锚定记录并写审计。重复 enroll 会得到不同指纹的平行锚，
-        verify 只认自己的钥——即同一存储可存在多个 Agent 实例互不冒充。"""
-        anchor = cls(secret, fingerprint_of(secret), audit)
+    def enroll(cls, store: DocumentStore, audit: AuditSpine, secret: bytes,
+               recovery: bool = False) -> "OwnerAnchor":
+        """注册仪式：生成锚定记录并写审计。已有锚定时拒绝静默替换（设计 §3.2
+        "锚定不可重写"）——恢复须显式 recovery=True（线下仪式），且审计记录被替换指纹。"""
         existing = store.get("anchor", "owner")
+        if existing is not None and not recovery:
+            raise PermissionError("锚定已存在；恢复需显式 recovery=True（线下仪式）")
+        anchor = cls(secret, fingerprint_of(secret), audit)
         record = {
             "channel": Channel.OWNER.value,
             "fingerprint": anchor.fingerprint,
@@ -78,7 +81,10 @@ class OwnerAnchor:
         if existing is not None:
             record["replaced"] = existing["fingerprint"]
         store.put("anchor", "owner", record)
-        audit.append(AuditEvent.ANCHOR_INIT, {"fingerprint": anchor.fingerprint})
+        audit.append(AuditEvent.ANCHOR_INIT, {
+            "fingerprint": anchor.fingerprint,
+            **({"replaced": existing["fingerprint"]} if existing is not None else {}),
+        })
         return anchor
 
     @staticmethod
@@ -135,6 +141,8 @@ class OwnerAnchor:
             raise PermissionError("轮换缺少有效旧钥会签")
         if countersigned_by_old["payload"].get("rotate_to") != fingerprint_of(new_secret):
             raise PermissionError("会签目标指纹不匹配")
+        if abs(time.time() - countersigned_by_old["ts"]) > FRESHNESS_WINDOW_S:
+            raise PermissionError("会签消息过期（捕获的旧会签不可重放）")
         old_fingerprint = self.fingerprint
         self._secret = new_secret
         self.fingerprint = fingerprint_of(new_secret)

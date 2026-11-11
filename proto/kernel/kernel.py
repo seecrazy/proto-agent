@@ -52,6 +52,10 @@ class Kernel:
         lo, hi = bounds
         return max(lo, min(hi, value))
 
+    def trip_breaker(self, reason: str = "kernel_manual") -> None:
+        """公开的手动熔断入口（资源治理工具）。"""
+        self.pools.trip(reason)
+
     def set_mute(self, on: bool) -> None:
         self.muted = on
         self.audit.append(AuditEvent.MUTE_ON if on else AuditEvent.MUTE_OFF, {})

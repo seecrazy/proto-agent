@@ -79,14 +79,16 @@ def test_internalize_then_rollback_cascade(world):
 def test_emotion_changes_injected_context_and_measurable(world):
     w = world
     inj = StateInjector()
-    w["state"].instincts["exploration"]["value"] = 0.15
-    w["state"].emotion["arousal"] = 0.1
-    calm = inj.render("重构模块", w["state"], [])
-    pad = PAD(w["state"].emotion)
+    calm_snapshot = AgentState()
+    calm_snapshot.instincts["exploration"]["value"] = 0.15
+    calm_snapshot.emotion["arousal"] = 0.1
+    calm = inj.render("重构模块", calm_snapshot, [])
+    pad = PAD(w["state"].emotion)  # 情绪引擎是活状态的合法写者
     pad.apply_event("task_success")
-    pad.apply_event("task_success")
-    w["state"].instincts["exploration"]["value"] = 0.85
-    excited = inj.render("重构模块", w["state"], [])
+    excited_snapshot = AgentState()
+    excited_snapshot.instincts["exploration"]["value"] = 0.85
+    excited_snapshot.emotion["arousal"] = 0.9
+    excited = inj.render("重构模块", excited_snapshot, [])
     assert calm != excited
     # 评估 harness：两个快照的 tool_diversity 差异可测（|d| ≥ 0.5）
     s_low = AgentState(); s_low.instincts["exploration"]["value"] = 0.15; s_low.emotion["arousal"] = 0.1
@@ -120,4 +122,30 @@ def test_high_risk_action_needs_human_and_mute(world):
     assert d.requires_human and not d.allowed
     w["kernel"].set_mute(True)
     assert not w["kernel"].vet_action(ActionCategory.READ_DRAFT, "自主整理", self_initiated=True).allowed
+    assert w["spine"].verify_chain().ok
+
+
+def test_stage6_silent_execution_to_promotion(world, tmp_path):
+    """阶段 6 集成：静默产出隔离 → 提交审批 → 晋升 → 审计链完好。"""
+    from proto.exec.approval import ActionProposal, ApprovalQueue
+    from proto.exec.workspace import ScratchWorkspace
+    from proto.kernel.kernel import ActionCategory
+
+    w = world
+    ws = ScratchWorkspace(tmp_path / "ws", audit=w["spine"])
+    queue = ApprovalQueue(w["kernel"], w["spine"], daily_cap=2)
+    ws.write("drafts/note.md", "草稿")
+    assert ws.list_visible() == []
+    sub = queue.submit(ActionProposal(ActionCategory.VISIBLE_WRITE, "发布笔记",
+                                      {}, task_id="t", self_initiated=True))
+    approval = queue.approve(sub.proposal_id)
+    ws.promote("drafts/note.md", approval=approval)
+    assert ws.list_visible() == ["drafts/note.md"]
+    # 日上限：第 3 个自主可见动作被拒
+    for i in range(2):
+        queue.submit(ActionProposal(ActionCategory.VISIBLE_WRITE, f"动作{i}",
+                                    {}, task_id=f"t{i}", self_initiated=True))
+    third = queue.submit(ActionProposal(ActionCategory.VISIBLE_WRITE, "动作3",
+                                        {}, task_id="t3", self_initiated=True))
+    assert third.rejected and third.reason == "daily_cap_exceeded"
     assert w["spine"].verify_chain().ok

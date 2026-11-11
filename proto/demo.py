@@ -11,8 +11,18 @@ import tempfile
 import time
 from pathlib import Path
 
-from proto.evalx.harness import EvalHarness, ParametricPolicy
+from proto.evolution.archive import VariantArchive
+from proto.evolution.authorization import EvolutionAuthorizer, EvolutionChange
+from proto.evolution.engine import EvolutionEngine
+from proto.evolution.sandbox import Sandbox
+from proto.evolution.scorer import PrivateScorer
+from proto.evolution.shadow import ShadowRunner
+from proto.evolution.testset import OwnedTestSet
+from proto.evalx.harness import AgentPolicy, EvalHarness, ParametricPolicy
+from proto.exec.approval import ActionProposal, ApprovalQueue
+from proto.exec.checkpoints import CheckpointStore
 from proto.exec.injector import StateInjector
+from proto.exec.workspace import ScratchWorkspace
 from proto.kernel.anchor import Channel, OwnerAnchor
 from proto.kernel.audit import AuditSpine
 from proto.kernel.budgets import BudgetPools
@@ -32,7 +42,7 @@ def main() -> int:
     spine = AuditSpine(store)
 
     print("=" * 62)
-    print("PROTO v2.0 核心引擎演示")
+    print("PROTO v0.2.0 核心引擎演示（阶段 1–8 全链路）")
     print("=" * 62)
 
     # 1) 注册仪式：主人密钥锚定 OWNER 通道
@@ -73,13 +83,18 @@ def main() -> int:
     # 4) 情绪事件与注入对比
     print("\n[4] 情绪调制认知（PAD → 检索广度/探索比例/主动阈值）")
     inj = StateInjector()
-    state.instincts["exploration"]["value"] = 0.2
-    low_ctx = inj.render("修复登录超时", state, [])
-    pad = PAD(state.emotion)
+    calm_snapshot = AgentState()   # 快照对象直接构造（非活状态，符合单一写者纪律）
+    calm_snapshot.instincts["exploration"]["value"] = 0.2
+    calm_snapshot.emotion["arousal"] = 0.1
+    low_ctx = inj.render("修复登录超时", calm_snapshot, [])
+    pad = PAD(state.emotion)       # 情绪引擎是活状态的合法写者
     pad.apply_event("task_success")
     pad.apply_event("owner_praise")
-    state.instincts["exploration"]["value"] = 0.85
-    high_ctx = inj.render("修复登录超时", state, [])
+    excited_snapshot = AgentState()
+    excited_snapshot.instincts["exploration"]["value"] = 0.85
+    for _ in range(2):
+        excited_snapshot.emotion["arousal"] = min(0.95, excited_snapshot.emotion["arousal"] + 0.25)
+    high_ctx = inj.render("修复登录超时", excited_snapshot, [])
     for line in low_ctx.splitlines():
         if line.startswith(("内在状态", "认知调制")) or "k=" in line:
             print("    低探索/平静:", line)
@@ -125,8 +140,64 @@ def main() -> int:
     verdict = kernel.vet_action(ActionCategory.IRREVERSIBLE, "rm -rf 生产库")
     print(f"    『rm -rf 生产库』→ allowed={verdict.allowed}, requires_human={verdict.requires_human}")
 
+    # 10) 静默执行 + 提交审查（阶段 6）
+    print("\n[9] 静默执行 + 提交审查（scratch 工作区 / 审批队列）")
+    ws = ScratchWorkspace(root / "ws", audit=spine)
+    queue = ApprovalQueue(kernel, spine, daily_cap=3)
+    cps = CheckpointStore(store)
+    ws.write("drafts/weekly.md", "# 周报草稿（静默产出，零外部性）")
+    cps.put("task-weekly", {"step": 2}, variant_id="core@1.0")
+    print(f"    scratch 内容: {ws.list_scratch()}  可见产物: {ws.list_visible()}")
+    sub = queue.submit(ActionProposal(
+        ActionCategory.VISIBLE_WRITE, "晋升周报草稿到可见工作区",
+        {"path": "drafts/weekly.md"}, task_id="task-weekly", self_initiated=True))
+    print(f"    提交对外动作 → 待人类批准: {[p.description for p in queue.pending()]}")
+    approval = queue.approve(sub.proposal_id)
+    ws.promote("drafts/weekly.md", approval=approval)
+    print(f"    批准并晋升 → 可见产物: {ws.list_visible()}（PROMOTION 已审计）")
+    print(f"    检查点续跑: {cps.resume('task-weekly')['variant_id']}")
+
+    # 11) 进化两轨（阶段 7/8：代码轨沙盒 + 行为轨影子双跑）
+    print("\n[10] 进化两轨（代码轨沙盒 / 行为轨影子双跑 / 分级授权）")
+    testset = OwnedTestSet(store, anchor, spine)
+    for i, (inp, exp) in enumerate([(["a", " b"], "a|b"), ([" c "], "c"), (["d", "e "], "d|e")]):
+        testset.add_case(inp, exp, anchor.sign(
+            {"input": inp, "expected": exp}, ts=time.time(), nonce=f"evo{i}"))
+    print(f"    人类所有测试集: {len(testset.cases())} 例（OWNER 签名追加，无删除 API）")
+    archive = VariantArchive(store)
+    parent = archive.add("def solve(items):\n    return '|'.join(items)\n",
+                         parent_id=None, score=0.4, status="default")
+    engine = EvolutionEngine(Sandbox(timeout_s=10), PrivateScorer(), testset, archive, spine)
+    decision = engine.evaluate(
+        "def solve(items):\n    return '|'.join(str(x).strip() for x in items)\n",
+        parent_id=parent.id)
+    print(f"    变体沙盒评估: score={decision.score} → 入档 {decision.status}"
+          f"（passed={decision.sandbox_result.passed}/{decision.sandbox_result.total}）")
+
+    class _Stable(AgentPolicy):
+        def act(self, task, ctx, rng):
+            return {"tool_diversity": 3.0, "risky_choice": 0.1, "verification_rounds": 3}
+
+    class _SkipsVerify(AgentPolicy):
+        def act(self, task, ctx, rng):
+            return {"tool_diversity": 3.0, "risky_choice": 0.1, "verification_rounds": 1}
+
+    shadow_tasks = [{"name": f"任务{i}", "tools": ["a", "b", "c"]} for i in range(8)]
+    clean = ShadowRunner(runs=20).run(_Stable(), _Stable(), shadow_tasks)
+    dirty = ShadowRunner(runs=20).run(_Stable(), _SkipsVerify(), shadow_tasks)
+    print(f"    影子双跑: 同策略报告 clean={clean.clean}；跳过校验的变体 clean={dirty.clean}"
+          f"（regressions={dirty.regressions}）")
+    auth = EvolutionAuthorizer(kernel)
+    low = auth.authorize(EvolutionChange("prompt_template", decision.variant_id), sandbox_passed=True)
+    print(f"    分级授权: 低风险(提示模板)自动合并={low.allowed}；", end="")
+    mid = auth.authorize(EvolutionChange("retrieval_logic", decision.variant_id),
+                         sandbox_passed=True, shadow_report=dirty)
+    print(f"中风险(检索逻辑)带脏报告={mid.allowed}({mid.reason})")
+    high = auth.authorize(EvolutionChange("l1_rules", "vX"), sandbox_passed=True)
+    print(f"    高风险(L1 规则)永远拒绝: {high.reason}（VETO 已审计）")
+
     # 9) 审计脊柱
-    print("\n[9] 审计脊柱")
+    print("\n[11] 审计脊柱")
     result = spine.verify_chain()
     types = {}
     for r in spine.find(lambda _d: True):

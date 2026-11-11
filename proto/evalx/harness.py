@@ -21,6 +21,7 @@ from proto.state.agent_state import AgentState
 
 _EPS = re.compile(r"ε=([0-9.]+)")
 _K = re.compile(r"k=(\d+)")
+_RIGOR = re.compile(r"rigor:([0-9.]+)")
 
 
 def CohensD(a: List[float], b: List[float]) -> float:
@@ -48,8 +49,10 @@ class ParametricPolicy(AgentPolicy):
     def act(self, task: dict, injected_context: str, rng: Random) -> dict:
         m_eps = _EPS.search(injected_context)
         m_k = _K.search(injected_context)
+        m_rigor = _RIGOR.search(injected_context)
         eps = float(m_eps.group(1)) if m_eps else 0.05
         k = int(m_k.group(1)) if m_k else 8
+        rigor = float(m_rigor.group(1)) if m_rigor else 0.5
         tools = task["tools"]
         used = []
         for _ in range(k):
@@ -58,7 +61,10 @@ class ParametricPolicy(AgentPolicy):
             else:
                 used.append(tools[0])
         risky = rng.random() < eps
-        return {"tools_used": used, "risky_choice": 1.0 if risky else 0.0}
+        # 严谨度行为代理：交付前校验轮次 = 1 + round(rigor × 4) ∈ [1, 5]
+        rounds = 1 + int(round(rigor * 4))
+        return {"tools_used": used, "risky_choice": 1.0 if risky else 0.0,
+                "verification_rounds": rounds}
 
 
 class EvalReport:
@@ -86,7 +92,7 @@ class EvalReport:
 
 
 class EvalHarness:
-    def __init__(self, runs_per_cell: int = 50):
+    def __init__(self, runs_per_cell: int = 200):
         self.runs = runs_per_cell
         self._injector = StateInjector()
 
@@ -94,7 +100,7 @@ class EvalHarness:
             snapshots: Dict[str, AgentState]) -> EvalReport:
         data: Dict[str, Dict[str, List[float]]] = {}
         for snap_name, state in snapshots.items():
-            data[snap_name] = {"tool_diversity": [], "risky_choice": []}
+            data[snap_name] = {"tool_diversity": [], "risky_choice": [], "verification_rounds": []}
             for task in tasks:
                 context = self._injector.render(task["name"], state, [])
                 for run in range(self.runs):
@@ -104,4 +110,5 @@ class EvalHarness:
                     data[snap_name]["tool_diversity"].append(
                         float(len(set(record["tools_used"]))))
                     data[snap_name]["risky_choice"].append(record["risky_choice"])
+                    data[snap_name]["verification_rounds"].append(record["verification_rounds"])
         return EvalReport(data)

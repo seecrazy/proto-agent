@@ -38,8 +38,12 @@ class BudgetPools:
             return BudgetDecision(False, "breaker_tripped")
         if pool not in self._remaining:
             return BudgetDecision(False, f"unknown_pool:{pool}")
+        for unit in amounts:
+            if unit not in self._remaining["global"]:
+                # 配置错误/打错的单位名：拒绝但不熔断（熔断是真实资源耗尽的语义）
+                return BudgetDecision(False, f"unknown_unit:{unit}")
         for unit, amount in amounts.items():
-            if self._remaining["global"].get(unit, 0.0) < amount:
+            if self._remaining["global"][unit] < amount:
                 return self._trip(f"global_shortfall:{unit}")
         for unit, amount in amounts.items():
             if pool != "global" and self._remaining[pool].get(unit, 0.0) < amount:
@@ -54,6 +58,10 @@ class BudgetPools:
         if pool not in self._remaining:
             return None
         return self._remaining[pool].get(unit)
+
+    def trip(self, reason: str = "manual") -> BudgetDecision:
+        """手动熔断（Kernel 公开接口）。"""
+        return self._trip(reason)
 
     def reset_cycle(self) -> None:
         self._remaining = {name: dict(units) for name, units in self._config.items()}

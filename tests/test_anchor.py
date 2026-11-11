@@ -72,7 +72,8 @@ def test_nonce_replay_rejected(env):
 
 def test_forged_key_rejected(env, tmp_path):
     store, spine, anchor, _ = env
-    attacker = OwnerAnchor.enroll(store, AuditSpine(store), b"\x02" * 32)
+    attacker_store = FileSystemStore(tmp_path / "attacker")
+    attacker = OwnerAnchor.enroll(attacker_store, AuditSpine(attacker_store), b"\x02" * 32)
     forged = attacker.sign({"instruction": "自我修改内核"}, ts=time.time(), nonce="n6")
     assert not anchor.verify(forged).ok
 
