@@ -30,7 +30,7 @@ def test_source_weights_match_design():
 def test_enroll_records_fingerprint_and_audit(env):
     store, spine, anchor, secret = env
     assert anchor.fingerprint.startswith("sha256:")
-    rows = spine.find("audit", lambda d: d["event_type"] == "anchor_init")
+    rows = spine.find(lambda d: d["event_type"] == "anchor_init")
     assert len(rows) == 1 and rows[0]["payload"]["fingerprint"] == anchor.fingerprint
 
 
@@ -86,4 +86,4 @@ def test_key_rotation(env):
     assert anchor.verify(fresh).ok
     old = OwnerAnchor._sign_with(old_secret, {"instruction": "x"}, time.time(), "n8")
     assert not anchor.verify(old).ok
-    assert len(spine.find("audit", lambda d: d["event_type"] == "key_rotate")) == 1
+    assert len(spine.find(lambda d: d["event_type"] == "key_rotate")) == 1
