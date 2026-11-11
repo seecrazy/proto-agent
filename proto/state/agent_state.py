@@ -52,6 +52,7 @@ class AgentState:
         for group in (self.instincts, self.desires, self.personality):
             for spec in group.values():
                 spec.setdefault("owner_locked", False)
+                spec.setdefault("dormant", False)
 
     # ---- 寻址 ----
     def _resolve(self, path: str) -> Tuple[Dict[str, Dict], str]:
@@ -180,6 +181,10 @@ class StateManager:
     def apply_modulation(self, param: str, delta: float, source: str,
                          accumulated: float = None) -> ModulationResult:
         spec = self.state.spec(param)
+        if spec.get("dormant"):
+            self._audit.append(AuditEvent.VETO, {
+                "param": param, "reason": "dormant", "source": source, "delta": delta})
+            return ModulationResult(False, spec["value"], reason="dormant")
         if spec.get("owner_locked"):
             self._audit.append(AuditEvent.VETO, {
                 "param": param, "reason": "owner_locked", "source": source, "delta": delta})
@@ -202,6 +207,49 @@ class StateManager:
         self.state.modulation_log.append(entry)
         self.save()
         return ModulationResult(True, result.value, result.clamped)
+
+    def rollback(self, since_ts: float, ledger=None) -> dict:
+        """把窗口内（ts ≥ since_ts）的参数调制反演回窗口起点的取值（设计 §11.2）。
+        每个参数恢复为窗口内第一条调制的 pre；owner_locked 跳过；可选级联内化台账。"""
+        def _ts(entry):
+            try:
+                return datetime.fromisoformat(entry["ts"]).timestamp()
+            except (KeyError, ValueError, TypeError):
+                return 0.0
+        targets = {}
+        for entry in self.state.modulation_log:
+            if "delta" in entry and _ts(entry) >= since_ts and entry["param"] not in targets:
+                targets[entry["param"]] = entry["pre"]
+        restored = []
+        for param, value in targets.items():
+            if self.state.spec(param).get("owner_locked"):
+                continue
+            result = self.state.set_within_bounds(param, value)
+            restored.append({"param": param, "restored": result.value})
+        self._audit.append(AuditEvent.ROLLBACK, {"since_ts": since_ts, "restored": restored})
+        if ledger is not None:
+            ledger.rollback(since_ts)
+        self.save()
+        return {"restored": restored}
+
+    def adjust_desire_threshold(self, desire_dim: str, delta: float) -> float:
+        """阻尼控制的唯一写入口：阈值在 threshold_bounds 内 clamp。"""
+        spec = self.state.desires[desire_dim]
+        lo, hi = spec.get("threshold_bounds", (0.3, 0.95))
+        spec["threshold"] = _round4(max(lo, min(hi, spec["threshold"] + delta)))
+        self.save()
+        return spec["threshold"]
+
+    def freeze_dormant(self, param: str, reason: str) -> None:
+        """A/B 测不出行为差异的参数冻结（设计 §6.2），拒绝后续调制。"""
+        self.state.spec(param)["dormant"] = True
+        self._audit.append(AuditEvent.DORMANT_FREEZE, {"param": param, "reason": reason})
+        self.save()
+
+    def unfreeze_dormant(self, param: str) -> None:
+        self.state.spec(param)["dormant"] = False
+        self._audit.append(AuditEvent.DORMANT_UNFREEZE, {"param": param})
+        self.save()
 
     def owner_override(self, path: str, value: float) -> SetResult:
         if self.state.spec(path).get("owner_locked"):

@@ -39,6 +39,7 @@ class Goal:
     feasibility: float
     interest: float
     verification: str
+    domain: str = ""  # 兴趣收敛模型可识别的领域标签
 
     def __post_init__(self):
         # 设计 §7.5 硬约束：每个目标必须能被外部验证
@@ -61,24 +62,31 @@ class PushDecision:
 
 
 class GoalArbiter:
-    def __init__(self, kernel: Kernel, owner_priority: str = ""):
+    def __init__(self, kernel: Kernel, owner_priority: str = "",
+                 interest_model=None):
         self._kernel = kernel
         self.owner_priority = owner_priority
+        self._interest_model = interest_model  # InterestModel：学习到的兴趣覆盖静态值
         self.goal_stack: List[Goal] = []
         self.consideration_queue: List[Goal] = []
 
     def score_goal(self, goal: Goal) -> ArbitratedGoal:
         alignment = _jaccard(goal.description, self.owner_priority)
+        # 兴趣收敛（§7.3 机制五）：有领域标签且模型已学习 → 学习权重优先
+        if self._interest_model is not None and goal.domain:
+            interest = self._interest_model.weight(goal.domain, default=goal.interest)
+        else:
+            interest = goal.interest
         breakdown = {
             "alignment": round(alignment, 4),
             "feasibility": round(goal.feasibility, 4),
             "gap": round(goal.gap, 4),
-            "interest": round(goal.interest, 4),
+            "interest": round(interest, 4),
         }
         score = (WEIGHTS["alignment"] * alignment
                  + WEIGHTS["feasibility"] * goal.feasibility
                  + WEIGHTS["gap"] * goal.gap
-                 + WEIGHTS["interest"] * goal.interest)
+                 + WEIGHTS["interest"] * interest)
         return ArbitratedGoal(goal=goal, score=round(score, 4), breakdown=breakdown)
 
     def arbitrate(self, candidates: List[Goal]) -> ArbitratedGoal:

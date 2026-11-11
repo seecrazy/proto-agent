@@ -37,6 +37,9 @@ class AuditEvent:
     EVOLUTION_MERGE = "evolution_merge"
     SHADOW_REPORT = "shadow_report"
     PROMOTION = "promotion"
+    DAMPEN = "dampen"
+    DORMANT_FREEZE = "dormant_freeze"
+    DORMANT_UNFREEZE = "dormant_unfreeze"
 
 
 def _canonical(payload: dict) -> str:

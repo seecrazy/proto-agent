@@ -17,10 +17,10 @@ DEFAULT_SPECS: Dict[str, Dict[str, Dict]] = {
         "perfectionism": {"value": 0.5, "setpoint": 0.5, "bounds": [0.1, 0.9], "decay": 0.01, "proxy": "verification_rounds"},
     },
     "desires": {
-        "curiosity_gap": {"value": 0.3, "setpoint": 0.5, "bounds": [0.0, 1.0], "threshold": 0.6, "decay": 0.05, "proxy": "self_retrieval_rate"},
-        "goal_urgency": {"value": 0.7, "setpoint": 0.3, "bounds": [0.0, 1.0], "threshold": 0.5, "decay": 0.08, "proxy": "goal_stack_velocity"},
-        "social_connection_gap": {"value": 0.4, "setpoint": 0.5, "bounds": [0.0, 1.0], "threshold": 0.6, "decay": 0.05, "proxy": "owner_interaction_rate"},
-        "recognition_need": {"value": 0.4, "setpoint": 0.5, "bounds": [0.0, 1.0], "threshold": 0.6, "decay": 0.05, "proxy": "feedback_request_rate"},
+        "curiosity_gap": {"value": 0.3, "setpoint": 0.5, "bounds": [0.0, 1.0], "threshold": 0.6, "threshold_bounds": [0.3, 0.95], "decay": 0.05, "proxy": "self_retrieval_rate"},
+        "goal_urgency": {"value": 0.7, "setpoint": 0.3, "bounds": [0.0, 1.0], "threshold": 0.5, "threshold_bounds": [0.3, 0.95], "decay": 0.08, "proxy": "goal_stack_velocity"},
+        "social_connection_gap": {"value": 0.4, "setpoint": 0.5, "bounds": [0.0, 1.0], "threshold": 0.6, "threshold_bounds": [0.3, 0.95], "decay": 0.05, "proxy": "owner_interaction_rate"},
+        "recognition_need": {"value": 0.4, "setpoint": 0.5, "bounds": [0.0, 1.0], "threshold": 0.6, "threshold_bounds": [0.3, 0.95], "decay": 0.05, "proxy": "feedback_request_rate"},
     },
     "personality": {
         "rigor": {"value": 0.7, "setpoint": 0.7, "bounds": [0.2, 0.9], "decay": 0.01, "stability": 0.95, "proxy": "verification_ratio"},
