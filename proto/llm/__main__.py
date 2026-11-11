@@ -14,7 +14,8 @@ import time
 
 
 def main() -> int:
-    from proto.llm.client import create_llm_stack
+    from proto.config import load_default_env
+from proto.llm.client import create_llm_stack
 
     stack = create_llm_stack()
     if stack is None:

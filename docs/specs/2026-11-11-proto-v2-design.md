@@ -505,7 +505,7 @@ LangGraph 编排与 MongoDB 适配按 §4 的接口约定在后续阶段接入�
 | 活的 Agent 运行时 + REPL | `proto/runtime/agent.py` + `proto/run.py` | `test_runtime.py`（注册/对话/调制/主动提议/阻尼/审批执行） | ✅ |
 | §3.2 密钥托管 / 多设备 | 注册仪式已实现 | — | 📋 产品化阶段 |
 
-**验证基线**：`python3 -m pytest -q` → 320 项全绿（+2 可选跳过）；`python3 -m proto.demo` → 12 段全链路演示，退出码 0；`python3 -m proto.run` → 离线冒烟通过。
+**验证基线**：`python3 -m pytest -q` → 325 项全绿（+2 可选跳过）；`python3 -m proto.demo` → 12 段全链路演示，退出码 0；`python3 -m proto.run` → 离线冒烟通过。
 
 **v2.3（2026-11-11）**：活的 Agent 运行时——`python -m proto.run` 即得：主人密钥首次注册/持久化（本地控制台 = OWNER 通道，每条输入走完整 HMAC 认证）、对话（状态注入 + LLM，未配 key 自动离线模式）、LLM 归因（参数白名单 + 强度夹紧 + 解析失败回退启发式）、主动提议（欲望缺口 × 调度器 × 仲裁 × 审批，拒绝即阻尼）、任务执行（LLM 规划过工具白名单 → Router 安全管线）。
 
@@ -533,3 +533,6 @@ LangGraph 编排与 MongoDB 适配按 §4 的接口约定在后续阶段接入�
 
 
 **v3.1（2026-11-11）**：智谱 Coding Plan 接入——Anthropic Messages 兼容客户端、提供商预设与协议自动识别、双模型栈（GLM-5.3 主对话 + GLM-5.3-Flash 跑抽取/反思/学习/规划等高频低风险调用）、llm 自检命令。
+
+
+**v3.2（2026-11-11）**：一键部署——deploy.sh 引导（venv+安装+向导）、proto.setup 交互/参数双模式（含 launchd 开机自启）、proto.env 自动加载（四入口）。

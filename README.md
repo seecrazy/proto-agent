@@ -46,6 +46,22 @@ flowchart TB
     L5 -->|"变体"| L4
 ```
 
+## 一键部署（推荐入口）
+
+```bash
+git clone https://github.com/seecrazy/proto-agent && cd proto-agent
+bash scripts/deploy.sh
+```
+
+脚本依次完成：Python 检查（≥3.9）→ 独立 venv（`.venv`，不污染系统）→ 安装 → **部署向导**。向导引导你：选 LLM（智谱 Coding Plan 默认推荐，粘贴 key 即可）→ 连通性自检 → 固定控制台令牌 → 人设/优先级 → 可选 `--install-service` 安装 macOS 开机自启（launchd，KeepAlive）。全部产物是 `proto_data/proto.env`（0600）——之后 **proto-web 启动时自动加载它，零环境变量心智负担**：
+
+```bash
+python3 -m proto.web          # 日常启动，一条命令
+# 或装机即活：bash scripts/deploy.sh --install-service --yes
+```
+
+纯参数式（CI/脚本）：`python3 -m proto.setup --provider zhipu-coding --api-key $KEY --model glm-5.3 --fast-model glm-5.3-flash --token t --persona "资深软件专家" --yes`。
+
 ## 五分钟得到一个活的 Agent
 
 **第 1 步，跑起来（30 秒）**——命令行或 Web 界面任选：
