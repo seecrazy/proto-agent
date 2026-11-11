@@ -22,6 +22,10 @@ from proto.evalx.harness import AgentPolicy, EvalHarness, ParametricPolicy
 from proto.exec.approval import ActionProposal, ApprovalQueue
 from proto.exec.checkpoints import CheckpointStore
 from proto.exec.injector import StateInjector
+from proto.exec.router import Router, Task, ToolRegistry
+from proto.metacog.damping import DampingController
+from proto.metacog.scheduler import MetacogScheduler
+from proto.state.desires import DesireDynamics
 from proto.exec.workspace import ScratchWorkspace
 from proto.kernel.anchor import Channel, OwnerAnchor
 from proto.kernel.audit import AuditSpine
@@ -42,7 +46,7 @@ def main() -> int:
     spine = AuditSpine(store)
 
     print("=" * 62)
-    print("PROTO v0.2.0 核心引擎演示（阶段 1–8 全链路）")
+    print("PROTO v0.3.0 引擎完全体演示（阶段 1–8 + 自驱执行）")
     print("=" * 62)
 
     # 1) 注册仪式：主人密钥锚定 OWNER 通道
@@ -196,8 +200,49 @@ def main() -> int:
     high = auth.authorize(EvolutionChange("l1_rules", "vX"), sandbox_passed=True)
     print(f"    高风险(L1 规则)永远拒绝: {high.reason}（VETO 已审计）")
 
-    # 9) 审计脊柱
-    print("\n[11] 审计脊柱")
+    # 11) 自驱执行与长期动态（M4 引擎完全体）
+    print("\n[11] 自驱执行与长期动态（Router 执行器 / 阻尼 / 欲望 / 调度）")
+    tools = ToolRegistry()
+    tools.register("search", lambda q: f"结果:{q}")
+    tools.register("summarize", lambda text: f"摘要({len(text)}字)")
+    from proto.exec.checkpoints import CheckpointStore as _CPS
+    router = Router(kernel, queue, ws, _CPS(store), tools)
+    ro = Task(id="t-ro", description="调研并总结", steps=[
+        {"tool": "search", "args": {"q": "agent 安全"}, "category": "read_draft"},
+        {"tool": "summarize", "args": {"text": "abcd"}, "category": "read_draft"},
+    ])
+    r1 = router.run(ro)
+    print(f"    只读任务: {r1.status}（{len(r1.step_results)} 步，零审批打扰）")
+    vw = Task(id="t-vw", description="产出周报", steps=[
+        {"tool": "write_file", "args": {"path": "weekly2.md", "content": "# 周报"},
+         "category": "visible_write"},
+    ], owner_assigned=False, desire_dim="curiosity_gap")
+    r2 = router.run(vw)
+    print(f"    自主可见写: {r2.status}（暂停于检查点，等待人类）")
+    r2f = router.resume(vw, human_approved=True)
+    print(f"    人类批准后恢复: {r2f.status}（scratch→visible 晋升）")
+
+    damping = DampingController(mgr, spine, consecutive=3, bump=0.05)
+    for _ in range(3):
+        damping.record_ignored("curiosity_gap")
+    print(f"    阻尼: 3 次提议被拒 → curiosity 触发阈值 → "
+          f"{state.desires['curiosity_gap']['threshold']}（越被无视越少打扰）")
+
+    DesireDynamics(mgr).evolve(now_ts=10 * 3600, last_owner_interaction_ts=0)
+    print(f"    欲望动态: 10h 无交互(9h 有效) → 好奇缺口 {state.get('desires.curiosity_gap')}"
+          f" 社交缺口 {state.get('desires.social_connection_gap')}")
+
+    fake_now = [1000.0]
+    sched = MetacogScheduler(clock=lambda: fake_now[0])
+    fired_at = []
+    sched.register("goal_generation", lambda: fired_at.append("goal"))
+    sched.start()
+    fake_now[0] += 4 * 3600 + 1
+    sched.tick()
+    print(f"    调度器: 4h 周期到点触发 {fired_at}（每任务蒸馏/每日回顾同理，时钟可注入）")
+
+    # 12) 审计脊柱
+    print("\n[12] 审计脊柱")
     result = spine.verify_chain()
     types = {}
     for r in spine.find(lambda _d: True):

@@ -2,10 +2,10 @@
 
 > **能力完整 · 内在状态显式可调制 · 行为主动但受约束 · 能自我进化但边界不可逾越**
 
-[![tests](https://img.shields.io/badge/tests-176%20passed-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-210%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
-[![version](https://img.shields.io/badge/version-0.2.0-orange.svg)]()
+[![version](https://img.shields.io/badge/version-0.3.0-orange.svg)]()
 
 PROTO 不假装无能来换取可塑性——第一天就能完整干活；成长发生在**倾向维度**而非能力维度：本能、欲望、性格是显式状态文件中的有界参数，被主人反馈缓慢塑造，被不可变内核锁死边界。v2.0 设计定稿 + 落地路径阶段 1–8 核心全部实现。
 
@@ -50,8 +50,8 @@ flowchart TB
 
 ```bash
 cd proto-agent
-python3 -m pytest -q      # 176 项测试全绿（零三方依赖，仅需 pytest）
-python3 -m proto.demo     # 11 段全链路演示：锚定→调制→毒化拒收→评估→审批→进化两轨→审计
+python3 -m pytest -q      # 210 项测试全绿（零三方依赖，仅需 pytest）
+python3 -m proto.demo     # 12 段全链路演示：锚定→调制→毒化拒收→评估→审批→进化两轨→自驱执行→审计
 ```
 
 要求 Python ≥ 3.9。
@@ -67,9 +67,11 @@ python3 -m proto.demo     # 11 段全链路演示：锚定→调制→毒化拒�
 | 基础设施 | `proto/storage/store.py` | DocumentStore 抽象（Mongo 语义），文件实现零依赖 |
 | L2 | `proto/state/` | 参数体系（权威界 + 行为代理）、单一写者、分池归因累积（CONTENT 50% 硬顶）、PAD 情绪 |
 | L3 | `proto/metacog/` | 可插拔归因器、双向内化台账（可降级/回滚级联）、ε 多样性策略库、主人对齐仲裁 |
-| L4 | `proto/exec/` | 情绪→认知有界调制器、确定性注入器、Scratch 工作区、审批队列（日上限）、变体绑定检查点 |
+| L4 | `proto/exec/` | 情绪→认知有界调制器、确定性注入器、Scratch 工作区、审批队列（日上限+阻尼回报）、变体绑定检查点、Router 执行器（工具注册/逐步检查点/审批暂停恢复） |
 | L5 | `proto/evolution/` | OWNER 签名只增测试集、subprocess 沙盒（生产 gVisor/microVM）、私有评分器、进化树、影子双跑、分级授权 |
-| 评估 | `proto/evalx/` | 行为代理 harness：同一任务 × 不同状态快照 → Cohen's d ≥ 0.5 判可测 |
+| 评估 | `proto/evalx/` | 行为代理 harness（Cohen's d ≥ 0.5 判可测）、dormant 冻结看门狗（测不出差异自动冻结调制） |
+| L3 节奏 | `proto/metacog/{scheduler,distill,interest}.py` | 调度器（每任务蒸馏/定时目标/每日回顾，时钟可注入）、确定性策略蒸馏、兴趣强化收敛（学习权重进仲裁） |
+| L2 动态 | `proto/state/{desires}.py` + `StateManager` | 欲望缺口随闲置增长（1h 宽限）、参数调制回滚（级联内化降级）、阻尼阈值调制 |
 
 ## 安全模型
 
@@ -87,7 +89,7 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 
 ## 验证
 
-- **176 项测试**覆盖全部安全边界输入类：伪造签名 / nonce 重放 / ts 过期 / CONTENT 洪泛 / 越界调制 / owner_locked / 审计篡改 / 预算侵占 / 状态文件损坏拒载 / 沙盒逃逸探针 / 影子回归规则。
+- **210 项测试**覆盖全部安全边界输入类：伪造签名 / nonce 重放 / ts 过期 / CONTENT 洪泛 / 越界调制 / owner_locked / 审计篡改 / 预算侵占 / 状态文件损坏拒载 / 沙盒逃逸探针 / 影子回归规则。
 - 两轮独立上下文代码评审（核心引擎 + 阶段 6–8 前 minor 批），全部发现项 TDD 修复。
 - 测试全为真实行为断言，零 mock；沙盒用真实 subprocess 验证清洁环境与资源限制。
 
@@ -99,6 +101,7 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 | 6 | 静默执行 scratch 工作区 + 审批 + 检查点 | ✅ feat/stages-6-8 |
 | 7 | 代码轨：测试集治理 + 沙盒 + 进化引擎 | ✅ feat/stages-6-8 |
 | 8 | 行为轨：影子双跑 + 分级授权 | ✅ feat/stages-6-8 |
+| M4 | 引擎完全体：参数回滚+阻尼、Router 执行器骨架、L3 调度+蒸馏、兴趣收敛+dormant+欲望动态 | ✅ feat/engine-completion |
 | — | LLMAttributor / LangGraph 编排 / MongoDB 适配 / gVisor 生产沙盒 | ⚗️ 接口就绪，待接入 |
 
 ## 许可

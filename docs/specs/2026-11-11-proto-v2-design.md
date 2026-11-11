@@ -427,7 +427,7 @@ hash   = sha256(seq ‖ ts ‖ event_type ‖ canonical(payload) ‖ prev_hash)
 
 每阶段收尾跑**行为回归基线**（固定情境集），防累积漂移。
 
-> **实施状态（v2.1）**：阶段 1–8 的核心引擎已全部实现并入 main（组件级映射见 §14）。
+> **实施状态（v2.2）**：阶段 1–8 的核心引擎 + 引擎完全体（v2.2）已全部实现并入 main（组件级映射见 §14）。
 > 阶段 7 的本地沙盒为 subprocess 隔离形态，gVisor/microVM 为生产目标；阶段 8 的
 > 影子双跑以行为代理指标对比实现，LLM 策略接入后同一接口测真实分布。
 
@@ -488,8 +488,18 @@ LangGraph 编排与 MongoDB 适配按 §4 的接口约定在后续阶段接入�
 | §9 代码轨进化引擎（分数门+全过门→canary） | `proto/evolution/engine.py` | `test_stage7.py` / `test_stage8.py` | ✅ |
 | §9.1 行为轨影子双跑 | `proto/evolution/shadow.py` | `test_stage8.py`（回归规则） | ✅ |
 | §9.2 分级授权（低/中/高） | `proto/evolution/authorization.py` | `test_stage8.py` | ✅ |
+| §11.2 参数调制回滚（级联内化降级） | `StateManager.rollback` | `test_round4_safety.py` | ✅ |
+| §7.5 阻尼控制（提议被拒→阈值上调） | `proto/metacog/damping.py` + 审批队列接线 | `test_round4_safety.py` | ✅ |
+| §8 Router/Worker 执行器 | `proto/exec/router.py`（工具注册/逐步检查点/审批暂停恢复/scratch 晋升） | `test_router.py` | ✅ 骨架；步骤生成待 LLM 策略 |
+| L3 运行节奏 | `proto/metacog/scheduler.py`（时钟可注入） | `test_scheduler_distill.py` | ✅ |
+| §7.3 策略蒸馏 | `proto/metacog/distill.py` | `test_scheduler_distill.py` | ⚗️ 确定性规则已实现，LLM 蒸馏接口位 |
+| §7.3 机制五 兴趣强化收敛 | `proto/metacog/interest.py`（学习权重进仲裁） | `test_round4_dynamics.py` | ✅ |
+| §6.2 dormant 参数冻结 | `proto/evalx/dormancy.py` + StateManager | `test_round4_dynamics.py` | ✅ |
+| §6.1 欲望动态增长 | `proto/state/desires.py`（1h 宽限） | `test_round4_dynamics.py` | ✅ |
 | §4 LangGraph 编排 | 节点签名按 LangGraph 约定设计 | — | 📋 接入阶段 |
 | §4 MongoDB 适配 | `proto/storage/store.py` 接口（get/put/delete/find） | `test_store.py` | ⚗️ 文件实现已交付，Mongo 适配位 |
 | §3.2 密钥托管 / 多设备 | 注册仪式已实现 | — | 📋 产品化阶段 |
 
-**验证基线**：`python3 -m pytest -q` → 176 项全绿；`python3 -m proto.demo` → 11 段全链路演示，退出码 0。
+**验证基线**：`python3 -m pytest -q` → 210 项全绿；`python3 -m proto.demo` → 12 段全链路演示，退出码 0。
+
+**v2.2（2026-11-11）**：引擎完全体补完——参数调制回滚（级联内化降级）、阻尼控制接入审批队列、Router/Worker 执行器骨架（工具注册、逐步检查点、审批暂停/恢复、批准后 scratch 晋升）、L3 调度器（每任务蒸馏/定时目标生成/每日深度回顾，时钟可注入）、确定性策略蒸馏、兴趣强化收敛进目标仲裁、dormant 参数冻结看门狗、欲望缺口随闲置增长（1 小时宽限期）。设计内机制至此全部落地；剩余项均为外部系统接入（LLM/LangGraph/MongoDB/gVisor/密钥托管）。
