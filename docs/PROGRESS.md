@@ -30,7 +30,7 @@
 
 ### M3 — 阶段 6–8 + 质量收尾（进行中）
 
-- [ ] T1 minor 修复批（M2–M8，评审遗留）
+- [x] T1 minor 修复批（M2–M8）：审计 append O(1) 缓存、store 路径安全、锚定注册仪式+会签新鲜度、预算未知单位不熔断、目标拒绝写 DENIAL、to_dict 深拷贝、累积器 audit 必传、store 提层 proto/storage、Kernel.trip_breaker 公开、harness verification_rounds+默认200、注入器补性格线+golden 全文测试。验证：135 测试绿。
 - [ ] T2 阶段 6：静默执行 scratch 工作区 + 审批队列 + 检查点
 - [ ] T3 阶段 7：测试集治理 + 沙盒 + 私有评分器 + 变体档案库 + 代码轨进化引擎
 - [ ] T4 阶段 8：影子双跑 + 分级授权
