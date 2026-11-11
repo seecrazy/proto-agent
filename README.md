@@ -61,14 +61,22 @@ python3 -m proto.web        # 或：浏览器管理控制台（自动打开，�
 **第 2 步，接上真实大脑（让它像人）**——配置任意 OpenAI 兼容 API 后重新运行：
 
 ```bash
-export PROTO_LLM_BASE_URL=https://ark.cn-beijing.volcengine.com/api/v3   # 火山方舟
-# export PROTO_LLM_BASE_URL=https://api.openai.com/v1                    # 或 OpenAI
-# export PROTO_LLM_BASE_URL=https://api.deepseek.com/v1                  # 或 DeepSeek
-# export PROTO_LLM_BASE_URL=http://localhost:11434/v1                    # 或本地 Ollama（无需 key）
+# 智谱 Coding Plan（GLM-5.3 系列，推荐——你还拥有双模型能力）：
+export PROTO_LLM_PROVIDER=zhipu-coding
+export PROTO_LLM_API_KEY=你的CodingPlanKey
+export PROTO_LLM_MODEL=glm-5.3              # 主模型：对话回复
+export PROTO_LLM_FAST_MODEL=glm-5.3-flash   # 快模型：事实抽取/独处反思/学习摘要/任务规划（省钱提速）
+python3 -m proto.llm                        # 一键自检连通性
+python3 -m proto.run
+
+# 或者任意 OpenAI 兼容端点（方舟/OpenAI/DeepSeek/Ollama）：
+export PROTO_LLM_BASE_URL=https://ark.cn-beijing.volcengine.com/api/v3
 export PROTO_LLM_API_KEY=你的key
 export PROTO_LLM_MODEL=模型名
 python3 -m proto.run
 ```
+
+双模型栈说明：主模型（glm-5.3）只跑对话回复这类"门面"调用；所有高频、低风险的后台思考（每轮对话的事实抽取、独处反思、GitHub 学习摘要、任务步骤规划）走快模型（glm-5.3-flash）——订阅额度下显著省 quota、独处循环更敏捷。不设 `FAST_MODEL` 则全走主模型。
 
 **第 3 步，体验它"活着"**：
 

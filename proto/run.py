@@ -21,12 +21,12 @@ import argparse
 import os
 from pathlib import Path
 
-from proto.llm.client import OpenAICompatClient
+from proto.llm.client import create_llm_stack
 from proto.runtime.agent import ProtoAgent
 
 BANNER = """
 ╔══════════════════════════════════════════════════════════╗
-║  PROTO — 可控成长型 Agent v0.4.0                        ║
+║  PROTO — 可控成长型 Agent v0.12.0                        ║
 ║  能力完整 · 倾向可塑 · 主动但受约束 · 一切可审计         ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -45,10 +45,17 @@ def main() -> int:
 
     llm = None
     if args.base_url.strip():
+        from proto.llm.client import OpenAICompatClient
         llm = OpenAICompatClient(base_url=args.base_url.strip(),
                                  api_key=args.api_key.strip(),
                                  model=args.model.strip())
-    agent = ProtoAgent(data_dir=Path(args.data_dir), llm=llm)
+        agent = ProtoAgent(data_dir=Path(args.data_dir), llm=llm)
+    else:
+        stack = create_llm_stack()
+        agent = ProtoAgent(data_dir=Path(args.data_dir),
+                           llm=stack["main"] if stack else None,
+                           fast_llm=stack["fast"] if stack else None)
+        llm = agent.llm
 
     print(BANNER)
     print(f"  主人锚定指纹 : {agent.fingerprint[:23]}...（密钥在 {args.data_dir}/owner.key，请备份）")
