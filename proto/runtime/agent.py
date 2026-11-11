@@ -60,11 +60,12 @@ DEFAULT_POOLS = {
 class ProtoAgent:
     def __init__(self, data_dir: Path, llm=None, now=time.time,
                  goal_interval_s: float = 4 * 3600,
-                 persona: str = None, webtools=None):
+                 persona: str = None, webtools=None, fast_llm=None):
         self._now = now
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.llm = llm
+        self.llm_fast = fast_llm if fast_llm is not None else llm  # 高频低风险调用用快模型
 
         store = create_store(self.data_dir)   # 文件默认；PROTO_STORE=mongo 切换
         self.spine = AuditSpine(store)
@@ -135,7 +136,8 @@ class ProtoAgent:
         self.tools.register("clock", lambda: time.strftime("%Y-%m-%d %H:%M:%S"))
         self.router = Router(self.kernel, self.queue, self.workspace,
                              self.checkpoints, self.tools)
-        self.planner = LLMPlanner(llm, self.tools) if llm is not None else None
+        self.planner = (LLMPlanner(self.llm_fast, self.tools)
+                        if self.llm_fast is not None else None)
         self.injector = StateInjector()
         self.pad = PAD(self.state.emotion)
         self._last_owner_ts = self._now()

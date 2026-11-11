@@ -28,10 +28,10 @@ def _extract_json_array(text: str) -> list:
 
 def extract_facts(agent, owner_text: str, reply: str) -> list:
     """对话后抽取语义事实。失败/离线 → 空列表（不阻塞对话）。"""
-    if agent.llm is None:
+    if agent.llm_fast is None:
         return []
     try:
-        raw = agent.llm.complete(EXTRACT_PROMPT,
+        raw = agent.llm_fast.complete(EXTRACT_PROMPT,
                                  f"主人：{owner_text}\nPROTO：{reply}")
         rows = _extract_json_array(raw)
     except Exception:
@@ -47,14 +47,14 @@ def extract_facts(agent, owner_text: str, reply: str) -> list:
 
 def reflect(agent) -> "str | None":
     """从近期记忆生成一条反思；离线/失败返回 None。"""
-    if agent.llm is None:
+    if agent.llm_fast is None:
         return None
     recent = agent.memory.retrieve("最近的一切", k=12)
     if not recent:
         return None
     material = "\n".join(f"- [{m.kind}] {m.text}" for m in recent)
     try:
-        thought = agent.llm.complete(
+        thought = agent.llm_fast.complete(
             REFLECT_PROMPT.format(persona=agent.persona), material)
     except Exception:
         return None

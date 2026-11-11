@@ -16,7 +16,7 @@ VALID_CATEGORIES = {"read_draft", "visible_write", "irreversible"}
 
 class LLMPlanner:
     def __init__(self, client, tools: ToolRegistry):
-        self._client = client
+        self._client = client  # 建议传快模型（低风险高频）
         self._tools = tools
 
     def _prompt(self) -> str:

@@ -129,3 +129,11 @@ P2（工程化）：
 - [x] 运行时接线：chat 召回 top-5 注入（非指令边界）；每轮情景入库（情绪影响重要度）；重复事实强化；反思阈值按"上次反思后的新情景数"计算（重启不丢）；反思结果进收件箱。
 - [x] 控制台「记忆」卡片（事实/反思/统计）；/api/memory。
 - 验证：313 项测试全绿。
+
+### M14 — 智谱 Coding Plan 与双模型栈（feat/m14-zhipu）
+
+- [x] `AnthropicCompatClient`：智谱 Coding Plan 端点（open.bigmodel.cn/api/anthropic，x-api-key+anthropic-version，/v1/messages）。
+- [x] 提供商预设（zhipu-coding/zhipu/openai/deepseek/ollama）+ base_url 以 /anthropic 结尾自动识别协议；`create_llm_stack()` 组装 {main, fast}。
+- [x] 双模型栈接线：主模型=对话回复；快模型=事实抽取/独处反思/学习主题与摘要/任务规划（全部低风险高频调用）。
+- [x] `python3 -m proto.llm` 一键自检（主/快模型各发一条探针，报告延迟与回复）。
+- 验证：320 项测试全绿（Anthropic 协议用本地假服务实测请求头/路径/解析）。
