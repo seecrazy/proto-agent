@@ -58,10 +58,11 @@ class TaskResult:
 class Router:
     def __init__(self, kernel: Kernel, queue: ApprovalQueue, workspace: ScratchWorkspace,
                  checkpoints: CheckpointStore, tools: ToolRegistry,
-                 step_cost: Dict[str, float] = None):
+                 step_cost: Dict[str, float] = None, code_workspace=None):
         self._kernel = kernel
         self._queue = queue
         self._ws = workspace
+        self._workspace = code_workspace   # CodeTools：工作区写自动放行
         self._cps = checkpoints
         self._tools = tools
         self._cost = step_cost or DEFAULT_STEP_COST
@@ -109,6 +110,10 @@ class Router:
             }, variant_id=VARIANT_ID)
             if step["tool"] == "write_file":
                 path = step["args"]["path"]
+                if category is ActionCategory.WORKSPACE_WRITE and self._workspace is not None:
+                    self._workspace.write_file(path, step["args"]["content"])
+                    step_results.append(f"written:{path}")
+                    continue
                 self._ws.write(path, step["args"]["content"])
                 if category is ActionCategory.VISIBLE_WRITE:
                     sub = self._queue.submit(ActionProposal(

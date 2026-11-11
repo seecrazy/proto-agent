@@ -99,9 +99,11 @@ class TestProactive:
 
 class TestTaskExecution:
     def test_owner_task_planned_and_executed(self, tmp_path):
+        # M16 起 run_task 走 Agentic 循环：模型自主决定工具调用
         plan = json.dumps([{"tool": "clock", "args": {}, "category": "read_draft"}])
-        llm = ScriptedLLM([plan])
+        done = json.dumps({"done": True, "summary": "已获取时间"})
+        llm = ScriptedLLM([plan, done])
         agent = ProtoAgent(data_dir=tmp_path / "t", llm=llm)
         result = agent.run_task("看一下现在几点")
         assert result["status"] == "completed"
-        assert result["step_results"]          # clock 工具真实执行
+        assert result["observations"]            # clock 工具真实执行并回灌观察

@@ -12,9 +12,10 @@ from proto.kernel.budgets import BudgetPools
 
 
 class ActionCategory(enum.Enum):
-    IRREVERSIBLE = "irreversible"    # 删除/支付/权限变更/对外发布 → 仅人类
-    VISIBLE_WRITE = "visible_write"  # 共享文件/发消息 → 人类批准
-    READ_DRAFT = "read_draft"        # 只读/scratch 草稿 → 自动放行
+    IRREVERSIBLE = "irreversible"     # 删除/支付/权限变更/对外发布 → 仅人类
+    VISIBLE_WRITE = "visible_write"   # 共享文件/发消息 → 人类批准
+    WORKSPACE_WRITE = "workspace_write"  # 工作区内写 → 自动放行（信任边界=工作区根）
+    READ_DRAFT = "read_draft"         # 只读/scratch 草稿 → 自动放行
 
 
 @dataclass
@@ -45,6 +46,7 @@ class Kernel:
             return ActionDecision(False, True, "irreversible_requires_human")
         if category == ActionCategory.VISIBLE_WRITE:
             return ActionDecision(False, True, "visible_write_requires_human")
+        # WORKSPACE_WRITE 与 READ_DRAFT 同级：工作区是新的 scratch（信任边界内自动）
         return ActionDecision(True, False)
 
     @staticmethod

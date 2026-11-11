@@ -152,3 +152,11 @@ P2（工程化）：
 - [x] 可回退多步状态机：任意步 `<` 回上一步；确认摘要页输入数字跳回对应步骤重选。
 - [x] 人设步骤支持数字选预设（与控制台芯片同源 PERSONA_PRESETS）+ 6 自由填写 + 菜单处直接输入文本即人设。
 - 验证：332 项测试全绿；管道 stdin 交互冒烟通过。
+
+### M16 — 能力跃升（feat/m16-capability，回应"主动类人不等于低能"）
+
+- [x] M16a 编码工具族 `proto/exec/codetools.py`：工作区信任边界（路径圈死）、read/write/edit/list/grep、run_python 沙盒（子进程+清洁环境+CPU 限制+超时）；内核新增 workspace_write 分级（工作区内自动放行、审计照记）。
+- [x] M16b Agentic 循环 `proto/exec/agentic.py`：观察-行动迭代（工具清单+历史观察→单步决策 JSON→安全管线执行→观察回灌），max_steps 防失控，visible_write 暂停于检查点可恢复；run_task 升级为循环驱动（离线回退旧规划路径）。
+- [x] 外部编码 agent 桥 `proto/exec/bridge.py`：claude/codex/zcode 自动探测（PROTO_BRIDGE_CLI 指定），delegate_coding 工具（visible_write 级）。
+- [x] README 新增「能力」与「技术选型」章节（选型论证持久化）。
+- 验证：352 项测试全绿。
