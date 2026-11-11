@@ -22,7 +22,7 @@ from proto.exec.planner import LLMPlanner
 from proto.exec.router import Router, Task, ToolRegistry
 from proto.exec.workspace import ScratchWorkspace
 from proto.kernel.anchor import Channel, OwnerAnchor
-from proto.kernel.audit import AuditSpine
+from proto.kernel.audit import AuditEvent, AuditSpine
 from proto.kernel.budgets import BudgetPools
 from proto.kernel.kernel import ActionCategory, Kernel
 from proto.metacog.attribution import HeuristicAttributor, LLMAttributor
@@ -221,10 +221,23 @@ class ProtoAgent:
                 "配置 PROTO_LLM_BASE_URL 后我会用真实模型与你对话。")
 
     # ------------------------------------------------------------------
+    _DRAFT_PROMPT = (
+        "你是 PROTO。趁主人不在，围绕主人当前的优先级写一份简短的工作草稿"
+        "（Markdown，200 字内：3 条要点 + 下一步可验证动作）。"
+        "草稿只落在你的私人 scratch 区，不会打扰任何人。只输出草稿正文。"
+    )
+
     def maybe_proactive(self) -> Optional[str]:
-        """每次控制台循环调用：欲望动态 + 调度器 → 到点且缺口超阈值则主动提议。"""
+        """无人交互时的生活（服务端心跳驱动，浏览器开不开都活着）：
+        欲望增长 + 情绪衰减 + 定时目标生成；缺口超阈值时——
+        ① 自主在 scratch 写工作草稿（read_draft，零外部性，不等人）；
+        ② 提交"晋升为可见文档"提案（visible_write，等主人批准）。"""
         self.desires.evolve(self._now(), self._last_owner_ts)
+        self.pad.tick(1)                       # 情绪随时间向设定点衰减
+        self.mgr.save()
         fired = self.scheduler.tick()
+        if "deep_review" in fired:
+            self._deep_review()
         if "goal_generation" not in fired:
             return None
         over = [dim for dim, spec in self.state.desires.items()
@@ -240,14 +253,46 @@ class ProtoAgent:
         decision = self.arbiter.push_self_initiated(goal, cost={"tokens": 500})
         if not decision.pushed:
             return None
+        # ① 自主草稿：read_draft 全自主执行（设计 §8：只读/草稿自动通过）
+        draft = self._compose_draft()
+        note_path = f"notes/{int(self._now())}.md"
+        draft_task = Task(id=f"note-{int(self._now())}", description=goal_text,
+                          steps=[{"tool": "write_file",
+                                  "args": {"path": note_path, "content": draft},
+                                  "category": "read_draft"}],
+                          owner_assigned=False, desire_dim=dim)
+        draft_result = self.router.run(draft_task)
+        # ② 晋升提案：visible_write 等主人
         sub = self.queue.submit(ActionProposal(
-            ActionCategory.VISIBLE_WRITE, f"执行自主目标：{goal_text}",
-            {"goal": goal_text}, task_id=f"self-{int(self._now())}",
+            ActionCategory.VISIBLE_WRITE, f"晋升草稿为可见文档：{goal_text}",
+            {"goal": goal_text, "note": note_path}, task_id=f"self-{int(self._now())}",
             self_initiated=True, desire_dim=dim))
         if sub.rejected:
             return None
-        return (f"〔主动提议〕{goal_text}（来自 {dim} 缺口）"
-                f"—— 回复 /accept {sub.proposal_id} 同意，/deny {sub.proposal_id} 拒绝")
+        drafted = "草稿已写入" if draft_result.status == "completed" else f"草稿失败({draft_result.status})"
+        return (f"〔主动找事做〕{drafted} scratch:{note_path}（自主完成，零外部性）；"
+                f"〔提案〕晋升为可见文档？—— /accept {sub.proposal_id} 同意，"
+                f"/deny {sub.proposal_id} 拒绝（拒绝会让我收敛一点）")
+
+    def _compose_draft(self) -> str:
+        if self.llm is not None:
+            try:
+                return self.llm.complete(
+                    self._DRAFT_PROMPT,
+                    f"主人优先级：{self.state.owner_priority or '（未设置）'}\n"
+                    f"当前好奇缺口：{self.state.get('desires.curiosity_gap')}")
+            except Exception:
+                pass
+        return (f"# 工作草稿（离线模板）\n\n"
+                f"- 围绕主人优先级『{self.state.owner_priority or '未设置'}』整理三个待办\n"
+                f"- 标记一条可外部验证的完成标准\n- 下次交互时请主人确认方向")
+
+    def _deep_review(self) -> None:
+        """每日深度回顾：修剪低效策略（保每簇覆盖）+ 兴趣向中性衰减。"""
+        pruned = self.library.prune(min_utility=0.25, keep_per_cluster=3)
+        self.interest.decay(factor=0.1)
+        self.spine.append(AuditEvent.DEEP_REVIEW, {"pruned_strategies": pruned})
+        self._persist_metacog()
 
     def pending_proposals(self) -> List[dict]:
         return [{"proposal_id": p.proposal_id, "description": p.description,

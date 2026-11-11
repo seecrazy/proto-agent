@@ -180,11 +180,28 @@ class ProtoWebServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, agent: ProtoAgent, host: str = "127.0.0.1", port: int = 8420,
-                 token: str = None):
+                 token: str = None, heartbeat_s: float = 30.0):
         self.agent = agent
         self.token = token or secrets.token_urlsafe(16)  # 可注入固定 token（长驻部署）
         self.lock = threading.Lock()
+        self._hb_stop = threading.Event()
         super().__init__((host, port), _Handler)
+        if heartbeat_s > 0:
+            # 无人打开页面也活着：服务端心跳驱动欲望/情绪/调度/自主草稿
+            threading.Thread(target=self._heartbeat, args=(heartbeat_s,),
+                             daemon=True, name="proto-heartbeat").start()
+
+    def _heartbeat(self, interval: float) -> None:
+        while not self._hb_stop.wait(interval):
+            try:
+                with self.lock:
+                    self.agent.maybe_proactive()
+            except Exception:
+                pass  # 心跳失败不致命——下个周期重试；异常已由各环节自身审计
+
+    def server_close(self) -> None:
+        self._hb_stop.set()
+        super().server_close()
 
     @property
     def port(self) -> int:

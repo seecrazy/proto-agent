@@ -40,6 +40,7 @@ class AuditEvent:
     DAMPEN = "dampen"
     DORMANT_FREEZE = "dormant_freeze"
     DORMANT_UNFREEZE = "dormant_unfreeze"
+    DEEP_REVIEW = "deep_review"
 
 
 def _canonical(payload: dict) -> str:

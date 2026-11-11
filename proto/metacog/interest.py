@@ -29,6 +29,15 @@ class InterestModel:
     def weight(self, domain: str, default: float = DEFAULT_WEIGHT) -> float:
         return self._weights.get(domain, default)
 
+    def decay(self, factor: float = 0.1) -> None:
+        """深度回顾：兴趣权重向中性 0.5 衰减——防长期偏食僵化。"""
+        for domain in list(self._weights):
+            w = self._weights[domain]
+            self._weights[domain] = round(w + factor * (DEFAULT_WEIGHT - w), 4)
+        cb = getattr(self, "on_change", None)
+        if cb is not None:
+            cb()
+
     def to_dict(self) -> dict:
         return {"weights": dict(self._weights), "lr": self._lr}
 
