@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "proto-agent"
+version = "0.1.0"
+description = "PROTO：可控内在状态、主动工作、能自我进化的成长型 Agent 核心引擎"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+include = ["proto*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
