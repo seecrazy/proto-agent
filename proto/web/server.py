@@ -115,6 +115,32 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(200, agent.set_priority(self._body().get("text", "")))
             if path == "/api/evolution" and method == "GET":
                 return self._json(200, agent.evolution_snapshot())
+            if path == "/api/evolution/testset" and method == "POST":
+                body = self._body()
+                cid = agent.add_test_case(body.get("input"), body.get("expected"))
+                return self._json(200, {"case_id": cid,
+                                        "testset_count": agent.evolution_snapshot()["testset_count"]})
+            if path == "/api/evolution/mutate" and method == "POST":
+                return self._json(200, agent.evolve(self._body().get("code", "")))
+            if path == "/api/evolution/promote" and method == "POST":
+                body = self._body()
+                ok = agent.promote_variant(body.get("variant_id", ""),
+                                           body.get("target_class", "prompt_template"))
+                return self._json(200, {"promoted": ok})
+            if path == "/api/rules" and method == "GET":
+                return self._json(200, {"rules": agent.rules_view()})
+            if path == "/api/rules" and method == "POST":
+                rid = agent.instruct(self._body().get("text", ""))
+                return self._json(200, {"rule_id": rid, "rules": agent.rules_view()})
+            m2 = re.match(r"^/api/rules/([0-9a-f]+)/deinternalize$", path)
+            if m2 and method == "POST":
+                agent.deinternalize_rule(m2.group(1))
+                return self._json(200, {"rules": agent.rules_view()})
+            m3 = re.match(r"^/api/task/([A-Za-z0-9_-]+)/resume$", path)
+            if m3 and method == "POST":
+                result = agent.resume_task(m3.group(1),
+                                           bool(self._body().get("approved")))
+                return self._json(200, result)
             m = re.match(r"^/api/proposals/([0-9a-f]+)/(accept|deny)$", path)
             if m and method == "POST":
                 pid, action = m.group(1), m.group(2)

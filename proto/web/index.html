@@ -124,6 +124,35 @@
         <button class="primary" onclick="runTask()">执行</button>
       </div>
       <div id="task-result" class="empty"></div>
+      <div class="btns" id="task-resume" style="display:none;margin-top:6px">
+        <button class="primary" id="task-approve-btn" onclick="resumeTask(true)">批准并继续</button>
+        <button class="danger" onclick="resumeTask(false)">拒绝（中止）</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>规矩与内化</h3>
+      <div class="kv">
+        <input type="text" id="rule-input" placeholder="立一条规矩，例：改动先写测试">
+        <button onclick="addRule()">立规矩</button>
+      </div>
+      <div id="rules" class="empty">（暂无——任务每成功一次算规矩被遵守一次，5 次后内化为倾向）</div>
+    </div>
+
+    <div class="card">
+      <h3>进化工作台（代码轨）</h3>
+      <div class="kv">
+        <input type="text" id="tc-input" placeholder="用例输入(JSON)" value='[" a ", " b "]'>
+        <input type="text" id="tc-expected" placeholder="期望输出" value="a|b" style="max-width:90px">
+        <button onclick="addTestCase()">加用例</button>
+      </div>
+      <textarea id="variant-code" rows="4" style="width:100%;background:#0b0e13;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px;font-size:12px" placeholder="def solve(items):
+    return '|'.join(str(x).strip() for x in items)"></textarea>
+      <div class="btns" style="margin-top:6px">
+        <button class="primary" onclick="mutate()">沙盒评估</button>
+        <span id="evo-info" class="empty"></span>
+      </div>
+      <div id="variants" class="empty">（变体列表）</div>
     </div>
 
     <div class="card">
@@ -238,6 +267,7 @@ async function toggleMute() {
   const r = await api("POST", "/api/mute", { on: !s.muted });
   document.getElementById("mute-btn").textContent = r.muted ? "解除静音" : "静音";
 }
+let pausedTaskId = null;
 async function runTask() {
   const input = document.getElementById("task-input");
   const text = input.value.trim(); if (!text) return;
@@ -246,7 +276,90 @@ async function runTask() {
   const r = await api("POST", "/api/task", { text });
   document.getElementById("task-result").textContent =
     r.status === "no_plan" ? r.reason : `${r.status}: ${JSON.stringify(r.step_results || r.proposal_id)}`;
+  const box = document.getElementById("task-resume");
+  if (r.status === "paused" && r.task_id) {
+    pausedTaskId = r.task_id;
+    box.style.display = "flex";
+    addMsg("任务暂停等待审批（涉及可见写）。", "system");
+  } else {
+    pausedTaskId = null; box.style.display = "none";
+  }
   addMsg(`任务 ${r.status}。`, "agent");
+}
+async function resumeTask(approved) {
+  if (!pausedTaskId) return;
+  const r = await api("POST", `/api/task/${pausedTaskId}/resume`, { approved });
+  document.getElementById("task-result").textContent = `${r.status}: ${JSON.stringify(r.step_results || [])}`;
+  document.getElementById("task-resume").style.display = "none";
+  pausedTaskId = null;
+  refreshSide();
+}
+async function addRule() {
+  const input = document.getElementById("rule-input");
+  const text = input.value.trim(); if (!text) return;
+  input.value = "";
+  const r = await api("POST", "/api/rules", { text });
+  renderRules(r.rules);
+}
+function renderRules(rules) {
+  const box = document.getElementById("rules");
+  box.innerHTML = rules.length ? "" : "（暂无——任务每成功一次算规矩被遵守一次，5 次后内化为倾向）";
+  for (const r of rules) {
+    const div = document.createElement("div");
+    div.className = "proposal";
+    const tag = r.status === "internal" ? '<span class="badge hot">已内化</span>' : '<span class="badge">外部 ' + r.applications + '/5</span>';
+    div.innerHTML = `<div class="desc">${r.text} ${tag}</div>` +
+      (r.status === "internal"
+        ? `<div class="btns"><button class="danger" onclick="deint('${r.id}')">降级为外部规矩</button></div>` : "");
+    box.appendChild(div);
+  }
+}
+async function deint(id) {
+  const r = await api("POST", `/api/rules/${id}/deinternalize`, {});
+  renderRules(r.rules);
+}
+async function refreshRules() {
+  const r = await api("GET", "/api/rules", {});
+  renderRules(r.rules);
+}
+async function addTestCase() {
+  let input;
+  try { input = JSON.parse(document.getElementById("tc-input").value); }
+  catch (e) { document.getElementById("evo-info").textContent = "输入必须是 JSON"; return; }
+  const r = await api("POST", "/api/evolution/testset",
+                      { input, expected: document.getElementById("tc-expected").value });
+  document.getElementById("evo-info").textContent = `人类测试集：${r.testset_count} 例`;
+}
+async function mutate() {
+  const code = document.getElementById("variant-code").value;
+  if (!code.trim()) return;
+  const r = await api("POST", "/api/evolution/mutate", { code });
+  document.getElementById("evo-info").textContent =
+    `score=${r.score} → ${r.status}${r.reason ? "（" + r.reason + "）" : ""}`;
+  if (r.merged) {
+    const b = document.createElement("button");
+    b.className = "primary"; b.textContent = "晋升 " + r.variant_id.slice(0, 6) + "（低风险）";
+    b.onclick = async () => {
+      const p = await api("POST", "/api/evolution/promote",
+                          { variant_id: r.variant_id, target_class: "prompt_template" });
+      document.getElementById("evo-info").textContent = p.promoted ? "已晋升为 default" : "晋升被拒";
+      refreshEvolution();
+    };
+    document.getElementById("evo-info").appendChild(document.createElement("br"));
+    document.getElementById("evo-info").appendChild(b);
+  }
+  refreshEvolution();
+}
+async function refreshEvolution() {
+  const r = await api("GET", "/api/evolution", {});
+  const box = document.getElementById("variants");
+  box.innerHTML = r.variants.length ? "" : "（变体列表）";
+  for (const v of r.variants.slice(-6).reverse()) {
+    const d = document.createElement("div");
+    d.style.cssText = "font-size:11px;color:var(--dim);line-height:1.7";
+    d.textContent = `${v.id.slice(0, 8)} score=${v.score} ${v.status}`;
+    box.appendChild(d);
+  }
 }
 
 async function refreshProposals() {
@@ -288,7 +401,7 @@ function esc(s) { const d = document.createElement("i"); d.textContent = s; retu
 (async function loop() {
   try {
     await api("POST", "/api/tick", {});   // 驱动欲望动态/调度器
-    await refreshState(); await refreshProposals(); await refreshAudit();
+    await refreshState(); await refreshProposals(); await refreshAudit(); await refreshRules(); await refreshEvolution();
   } catch (e) {}
   setTimeout(loop, 8000);
 })();
