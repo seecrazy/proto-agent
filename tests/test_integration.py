@@ -123,3 +123,29 @@ def test_high_risk_action_needs_human_and_mute(world):
     w["kernel"].set_mute(True)
     assert not w["kernel"].vet_action(ActionCategory.READ_DRAFT, "自主整理", self_initiated=True).allowed
     assert w["spine"].verify_chain().ok
+
+
+def test_stage6_silent_execution_to_promotion(world, tmp_path):
+    """阶段 6 集成：静默产出隔离 → 提交审批 → 晋升 → 审计链完好。"""
+    from proto.exec.approval import ActionProposal, ApprovalQueue
+    from proto.exec.workspace import ScratchWorkspace
+    from proto.kernel.kernel import ActionCategory
+
+    w = world
+    ws = ScratchWorkspace(tmp_path / "ws", audit=w["spine"])
+    queue = ApprovalQueue(w["kernel"], w["spine"], daily_cap=2)
+    ws.write("drafts/note.md", "草稿")
+    assert ws.list_visible() == []
+    sub = queue.submit(ActionProposal(ActionCategory.VISIBLE_WRITE, "发布笔记",
+                                      {}, task_id="t", self_initiated=True))
+    approval = queue.approve(sub.proposal_id)
+    ws.promote("drafts/note.md", approval=approval)
+    assert ws.list_visible() == ["drafts/note.md"]
+    # 日上限：第 3 个自主可见动作被拒
+    for i in range(2):
+        queue.submit(ActionProposal(ActionCategory.VISIBLE_WRITE, f"动作{i}",
+                                    {}, task_id=f"t{i}", self_initiated=True))
+    third = queue.submit(ActionProposal(ActionCategory.VISIBLE_WRITE, "动作3",
+                                        {}, task_id="t3", self_initiated=True))
+    assert third.rejected and third.reason == "daily_cap_exceeded"
+    assert w["spine"].verify_chain().ok
