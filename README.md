@@ -2,10 +2,10 @@
 
 > **能力完整 · 内在状态显式可调制 · 行为主动但受约束 · 能自我进化但边界不可逾越**
 
-[![tests](https://img.shields.io/badge/tests-228%20passed-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-241%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
-[![version](https://img.shields.io/badge/version-0.4.0-orange.svg)]()
+[![version](https://img.shields.io/badge/version-0.5.0-orange.svg)]()
 
 PROTO 不假装无能来换取可塑性——第一天就能完整干活；成长发生在**倾向维度**而非能力维度：本能、欲望、性格是显式状态文件中的有界参数，被主人反馈缓慢塑造，被不可变内核锁死边界。v2.0 设计定稿 + 落地路径阶段 1–8 核心全部实现。
 
@@ -48,11 +48,12 @@ flowchart TB
 
 ## 五分钟得到一个活的 Agent
 
-**第 1 步，跑起来（30 秒）**：
+**第 1 步，跑起来（30 秒）**——命令行或 Web 界面任选：
 
 ```bash
 cd proto-agent
-python3 -m proto.run
+python3 -m proto.run        # 命令行对话
+python3 -m proto.web        # 或：浏览器管理控制台（自动打开，见下）
 ```
 
 首次运行自动生成主人密钥并注册锚定（数据在 `./proto_data/`，其中 `owner.key` 请备份——它是你作为主人的身份，丢了就需要线下恢复仪式）。此刻你在和一个**离线模式**的 PROTO 对话：它会回应、会根据你的反馈调制内在参数，但回复是模板化的。
@@ -83,13 +84,24 @@ PROTO> 〔主动提议〕围绕……推进一个小目标  ← 欲望缺口+调
 
 命令速查：`/state` 内在状态 · `/task <描述>` 指派任务 · `/goals` 待审批提议 · `/accept|/deny <id>` 审批 · `/audit [n]` 审计 · `/mute` 一键静音 · `/quit` 退出。
 
+### Web 管理控制台（推荐）
+
+`python3 -m proto.web` 启动本地控制台（仅绑定 127.0.0.1），终端打印带一次性令牌的 URL，浏览器自动打开：
+
+- **对话区**：与 PROTO 交流，反馈实时塑造倾向；
+- **内在状态仪表盘**：12 个参数的实时条形图（含设定点/硬界/欲望触发阈值标记），悬停即可锁定/解锁/上下界覆写；
+- **主动提议审批**：一键同意（产出落 scratch 草稿区）或拒绝（触发阻尼，阈值上调立即可见）；
+- **任务指派 / 主人优先级 / 一键静音 / 审计链实时滚动**（含篡改检测状态灯）。
+
+安全设计：令牌放在 URL 片段（#token=…）不下发服务器，所有 API 要求请求头携带，本机其他网页无法跨站调用你的 agent。
+
 **它为什么是"主动的、类人的"**：每次对话前，它真实的内在状态（12 个参数、4 类欲望缺口、PAD 情绪导出的检索广度/探索比例/主动阈值）会被注入模型上下文——同一个模型，不同状态下行为不同；闲置会让欲望缺口增长，缺口过阈值 + 调度器到点会触发主动提议；你的每句反馈经归因累积、有界调制缓慢塑造它的倾向；一切变化都有哈希链审计。
 
 ## 开发者快速开始
 
 ```bash
 cd proto-agent
-python3 -m pytest -q      # 228 项测试全绿（零三方依赖，仅需 pytest）
+python3 -m pytest -q      # 241 项测试全绿（零三方依赖，仅需 pytest）
 python3 -m proto.demo     # 12 段全链路演示：锚定→调制→毒化拒收→评估→审批→进化两轨→自驱执行→审计
 ```
 
@@ -109,6 +121,7 @@ python3 -m proto.demo     # 12 段全链路演示：锚定→调制→毒化拒�
 | L4 | `proto/exec/` | 情绪→认知有界调制器、确定性注入器、Scratch 工作区、审批队列（日上限+阻尼回报）、变体绑定检查点、Router 执行器（工具注册/逐步检查点/审批暂停恢复） |
 | L5 | `proto/evolution/` | OWNER 签名只增测试集、subprocess 沙盒（生产 gVisor/microVM）、私有评分器、进化树、影子双跑、分级授权 |
 | 评估 | `proto/evalx/` | 行为代理 harness（Cohen's d ≥ 0.5 判可测）、dormant 冻结看门狗（测不出差异自动冻结调制） |
+| Web 控制台 | `proto/web/`（server + 单页前端） | `python3 -m proto.web`：对话/仪表盘/审批/任务/审计/锁定覆写静音优先级，127.0.0.1 + 令牌防跨站 |
 | 运行时 | `proto/runtime/agent.py` + `proto/run.py` | **活的 Agent 入口**：主人密钥注册、对话（LLM/离线）、归因调制、主动提议、任务执行 |
 | LLM | `proto/llm/client.py` + `proto/metacog/attribution.py` + `proto/exec/planner.py` | OpenAI 兼容客户端（方舟/OpenAI/DeepSeek/Ollama）、LLM 归因（白名单+回退）、LLM 任务规划（工具白名单） |
 | L3 节奏 | `proto/metacog/{scheduler,distill,interest}.py` | 调度器（每任务蒸馏/定时目标/每日回顾，时钟可注入）、确定性策略蒸馏、兴趣强化收敛（学习权重进仲裁） |
@@ -130,7 +143,7 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 
 ## 验证
 
-- **228 项测试**覆盖全部安全边界输入类：伪造签名 / nonce 重放 / ts 过期 / CONTENT 洪泛 / 越界调制 / owner_locked / 审计篡改 / 预算侵占 / 状态文件损坏拒载 / 沙盒逃逸探针 / 影子回归规则。
+- **241 项测试**覆盖全部安全边界输入类：伪造签名 / nonce 重放 / ts 过期 / CONTENT 洪泛 / 越界调制 / owner_locked / 审计篡改 / 预算侵占 / 状态文件损坏拒载 / 沙盒逃逸探针 / 影子回归规则。
 - 两轮独立上下文代码评审（核心引擎 + 阶段 6–8 前 minor 批），全部发现项 TDD 修复。
 - 测试全为真实行为断言，零 mock；沙盒用真实 subprocess 验证清洁环境与资源限制。
 
