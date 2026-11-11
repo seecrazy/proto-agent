@@ -72,7 +72,8 @@ class AgentState:
     def bounds(self, path: str) -> Tuple[float, float]:
         return tuple(self.spec(path)["bounds"])
 
-    def set_within_bounds(self, path: str, value: float, source: str) -> SetResult:
+    def set_within_bounds(self, path: str, value: float) -> SetResult:
+        """有界写入（内核 clamp 语义）。经审计的调制请走 StateManager。"""
         group, name = self._resolve(path)
         lo, hi = group[name]["bounds"]
         clamped = not (lo <= value <= hi)
@@ -105,14 +106,15 @@ class AgentState:
 
     # ---- 序列化 ----
     def to_dict(self) -> dict:
+        """返回深拷贝——修改返回值不影响活状态（M8）。"""
         return {
             "schema_version": SCHEMA_VERSION,
-            "instincts": self.instincts,
-            "desires": self.desires,
-            "personality": self.personality,
-            "emotion": self.emotion,
+            "instincts": copy.deepcopy(self.instincts),
+            "desires": copy.deepcopy(self.desires),
+            "personality": copy.deepcopy(self.personality),
+            "emotion": dict(self.emotion),
             "owner_priority": self.owner_priority,
-            "modulation_log": self.modulation_log,
+            "modulation_log": copy.deepcopy(self.modulation_log),
         }
 
     @classmethod
@@ -184,7 +186,7 @@ class StateManager:
             return ModulationResult(False, spec["value"], reason="owner_locked")
         current = spec["value"]
         target = current + delta
-        result = self.state.set_within_bounds(param, target, source)
+        result = self.state.set_within_bounds(param, target)
         audit_seq = self._audit.append(AuditEvent.MODULATION, {
             "param": param, "delta": delta, "source": source,
             "pre": _round4(current), "post": result.value, "clamped": result.clamped,
@@ -206,7 +208,7 @@ class StateManager:
             self._audit.append(AuditEvent.VETO, {
                 "param": path, "reason": "owner_locked", "source": "owner_override"})
             raise PermissionError(f"{path} 已被主人锁定，override 亦不可写（先解锁）")
-        result = self.state.set_within_bounds(path, value, "owner_override")
+        result = self.state.set_within_bounds(path, value)
         self._audit.append(AuditEvent.OWNER_OVERRIDE, {"param": path, "post": result.value, "clamped": result.clamped})
         self.save()
         return result

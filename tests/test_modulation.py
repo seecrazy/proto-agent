@@ -97,7 +97,7 @@ class TestPipeline:
 
     def test_clamped_modulation_recorded(self, env):
         pipe, acc, state, _ = env
-        state.set_within_bounds("instincts.risk_tolerance", 0.7, "test")  # 顶格
+        state.set_within_bounds("instincts.risk_tolerance", 0.7)  # 顶格
         signals = [sig("instincts.risk_tolerance", +1, 0.31, Channel.OWNER)]
         results = pipe.process(signals)
         assert results[0].applied and results[0].clamped

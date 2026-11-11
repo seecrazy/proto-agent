@@ -97,6 +97,8 @@ class GoalArbiter:
         """主人指派：绕过仲裁；消耗 owner_tasks 预留池。"""
         decision = self._kernel.pools.try_consume("owner_tasks", cost or {})
         if not decision.granted:
+            self._kernel.audit.append(AuditEvent.DENIAL, {
+                "goal": goal.description, "source": "owner_assigned", "reason": decision.reason})
             return PushDecision(False, decision.reason)
         self.goal_stack.append(goal)
         self._audit_push(goal, "owner_assigned")
@@ -107,6 +109,10 @@ class GoalArbiter:
         decision = self._kernel.pools.try_consume("self_initiated", cost or {})
         if not decision.granted:
             self.consideration_queue.append(goal)
+            self._kernel.audit.append(AuditEvent.DENIAL, {
+                "goal": goal.description, "source": "self_initiated",
+                "reason": "self_initiated_pool_exhausted",
+                "queued_for_consideration": True})
             return PushDecision(False, "self_initiated_pool_exhausted", queued_for_consideration=True)
         self.goal_stack.append(goal)
         self._audit_push(goal, "self_initiated")

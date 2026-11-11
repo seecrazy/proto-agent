@@ -73,13 +73,18 @@ def main() -> int:
     # 4) 情绪事件与注入对比
     print("\n[4] 情绪调制认知（PAD → 检索广度/探索比例/主动阈值）")
     inj = StateInjector()
-    state.instincts["exploration"]["value"] = 0.2
-    low_ctx = inj.render("修复登录超时", state, [])
-    pad = PAD(state.emotion)
+    calm_snapshot = AgentState()   # 快照对象直接构造（非活状态，符合单一写者纪律）
+    calm_snapshot.instincts["exploration"]["value"] = 0.2
+    calm_snapshot.emotion["arousal"] = 0.1
+    low_ctx = inj.render("修复登录超时", calm_snapshot, [])
+    pad = PAD(state.emotion)       # 情绪引擎是活状态的合法写者
     pad.apply_event("task_success")
     pad.apply_event("owner_praise")
-    state.instincts["exploration"]["value"] = 0.85
-    high_ctx = inj.render("修复登录超时", state, [])
+    excited_snapshot = AgentState()
+    excited_snapshot.instincts["exploration"]["value"] = 0.85
+    for _ in range(2):
+        excited_snapshot.emotion["arousal"] = min(0.95, excited_snapshot.emotion["arousal"] + 0.25)
+    high_ctx = inj.render("修复登录超时", excited_snapshot, [])
     for line in low_ctx.splitlines():
         if line.startswith(("内在状态", "认知调制")) or "k=" in line:
             print("    低探索/平静:", line)

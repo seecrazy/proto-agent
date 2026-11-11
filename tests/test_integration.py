@@ -79,14 +79,16 @@ def test_internalize_then_rollback_cascade(world):
 def test_emotion_changes_injected_context_and_measurable(world):
     w = world
     inj = StateInjector()
-    w["state"].instincts["exploration"]["value"] = 0.15
-    w["state"].emotion["arousal"] = 0.1
-    calm = inj.render("重构模块", w["state"], [])
-    pad = PAD(w["state"].emotion)
+    calm_snapshot = AgentState()
+    calm_snapshot.instincts["exploration"]["value"] = 0.15
+    calm_snapshot.emotion["arousal"] = 0.1
+    calm = inj.render("重构模块", calm_snapshot, [])
+    pad = PAD(w["state"].emotion)  # 情绪引擎是活状态的合法写者
     pad.apply_event("task_success")
-    pad.apply_event("task_success")
-    w["state"].instincts["exploration"]["value"] = 0.85
-    excited = inj.render("重构模块", w["state"], [])
+    excited_snapshot = AgentState()
+    excited_snapshot.instincts["exploration"]["value"] = 0.85
+    excited_snapshot.emotion["arousal"] = 0.9
+    excited = inj.render("重构模块", excited_snapshot, [])
     assert calm != excited
     # 评估 harness：两个快照的 tool_diversity 差异可测（|d| ≥ 0.5）
     s_low = AgentState(); s_low.instincts["exploration"]["value"] = 0.15; s_low.emotion["arousal"] = 0.1

@@ -31,8 +31,9 @@ class PendingModulation:
 
 
 class AttributionAccumulator:
-    def __init__(self, threshold: float = 0.30, step: float = 0.02,
-                 content_cap_ratio: float = 0.5, audit: AuditSpine = None):
+    def __init__(self, audit: AuditSpine, threshold: float = 0.30, step: float = 0.02,
+                 content_cap_ratio: float = 0.5):
+        # audit 必传：饱和告警是主人依赖的产品信号，不允许静默丢失（M8）
         self.threshold = threshold
         self.step = step
         self.content_cap = threshold * content_cap_ratio
@@ -50,7 +51,7 @@ class AttributionAccumulator:
         self._pools[key] = self._pools.get(key, 0.0) + direction * strength * weight
         if channel is Channel.CONTENT and self._pools[key] >= self.content_cap:
             self._pools[key] = self.content_cap
-            if not self._saturated.get(param) and self._audit is not None:
+            if not self._saturated.get(param):
                 self._audit.append("saturation_alert", {
                     "param": param, "cap": self.content_cap,
                     "note": "CONTENT 通道累积触顶，已按设计 §3.1 饱和",

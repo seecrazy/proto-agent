@@ -9,9 +9,9 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Callable, List, Optional
 
-from proto.state.store import DocumentStore
+from proto.storage.store import DocumentStore
 
 GENESIS_HASH = "0" * 64
 
@@ -33,6 +33,10 @@ class AuditEvent:
     MUTE_OFF = "mute_off"
     ANCHOR_INIT = "anchor_init"
     SATURATION_ALERT = "saturation_alert"
+    TEST_SET_APPEND = "test_set_append"
+    EVOLUTION_MERGE = "evolution_merge"
+    SHADOW_REPORT = "shadow_report"
+    PROMOTION = "promotion"
 
 
 def _canonical(payload: dict) -> str:
@@ -61,15 +65,16 @@ class AuditSpine:
     def __init__(self, store: DocumentStore, collection: str = "audit"):
         self._store = store
         self._collection = collection
-
-    def _load(self, seq: int) -> Optional[dict]:
-        return self._store.get(self._collection, str(seq))
+        # append O(1)：仅构造时扫一次全表建缓存（修复 M2 的 O(n²)）
+        rows = self._store.find(self._collection, lambda _d: True)
+        last = max(rows, key=lambda r: r["seq"]) if rows else None
+        self._last_seq = last["seq"] if last else 0
+        self._last_hash = last["hash"] if last else GENESIS_HASH
 
     def _last_record(self) -> Optional[dict]:
-        rows = self._store.find(self._collection, lambda _d: True)
-        if not rows:
+        if self._last_seq == 0:
             return None
-        return max(rows, key=lambda r: r["seq"])
+        return {"seq": self._last_seq, "hash": self._last_hash}
 
     def append(self, event_type: str, payload: dict) -> int:
         last = self._last_record()
@@ -85,6 +90,8 @@ class AuditSpine:
             "hash": _record_hash(seq, ts, event_type, payload, prev_hash),
         }
         self._store.put(self._collection, str(seq), record)
+        self._last_seq = seq
+        self._last_hash = record["hash"]
         return seq
 
     def verify_chain(self) -> AuditResult:
