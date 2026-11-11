@@ -6,7 +6,7 @@
 
 | 项 | 状态 |
 |---|---|
-| 版本 | 0.6.0（外部接入适配器：Mongo/LangGraph/gVisor） |
+| 版本 | 0.7.0（体检加固：不失忆/活情绪/全闭环/CI） |
 | 测试 | 见下方里程碑记录 |
 | 分支 | main（feat/engine-completion 已并入） |
 | 远程 | 仅本地提交，未推送（用户指示） |
@@ -79,3 +79,22 @@ LLMAttributor 接入模型 API → LangGraph 编排接入（节点签名已兼�
 - [x] gVisor：Sandbox 可插拔后端（auto/runsc/subprocess）；Linux+runsc 自动 `runsc do` 包裹，macOS 回退 subprocess；假 runsc 实测命令构造，平台无关。
 - [x] Web 控制台固定令牌（--token / PROTO_WEB_TOKEN，长驻部署友好）；pyproject 可选依赖组 `.[mongo]`/`.[graph]`。
 - 条件说明：本机无 mongod/docker/runsc 且 macOS 无法运行 runsc——Mongo/LangGraph 适配器在装有依赖的 venv 中实测，gVisor 用假 runsc 验证命令构造；生产 Linux 上 auto 探测即真沙盒。
+
+### M8 — 全面体检加固（feat/m8-hardening）
+
+P0（产品承诺破口）：
+- [x] 元认知持久化：策略库/兴趣/阻尼计数/内化台账/调度器时间戳全部落盘（组件级 on_change 自动保存），重启零失忆。
+- [x] 情绪活起来：任务成功/受阻、提议被拒、主人夸奖（关键词检测）、每轮自然衰减全部接入 PAD；情绪随对话落盘。
+
+P1（功能闭环）：
+- [x] 暂停任务恢复：Router 检查点携带完整任务规格；agent.resume_task + Web「批准并继续/拒绝」按钮。
+- [x] 规矩内化进产品：instruct/立规矩 UI、任务成功=规矩被遵守记账、5 次内化进度可视、一键降级、持久化。
+- [x] 进化工作台：OWNER 签名加测试用例、变体沙盒评估、分级晋升（高风险界面内也是拒绝）。
+
+P2（工程化）：
+- [x] GitHub Actions CI（3.9–3.12 矩阵 + 可选依赖作业）。
+- [x] console_scripts（proto-run/proto-web/proto-backup）+ web 入口 logging。
+- [x] `python3 -m proto.backup` 打包 owner.key+全部数据（含恢复指引）。
+- [x] evalx LLM 策略适配器（LLMPolicy：模型真实选择→行为分布测量，坏输出防御回退）。
+
+**验证**：271 项测试全绿（+2 可选依赖跳过）。

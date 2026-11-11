@@ -105,7 +105,8 @@ class EvalHarness:
                 context = self._injector.render(task["name"], state, [])
                 for run in range(self.runs):
                     seed = zlib.crc32(f"{snap_name}|{task['name']}|{run}".encode("utf-8"))
-                    policy = policy_cls()
+                    # 接受类（每轮新建）或现成实例（带依赖如 LLM 客户端的策略）
+                    policy = policy_cls() if isinstance(policy_cls, type) else policy_cls
                     record = policy.act(task, context, Random(seed))
                     data[snap_name]["tool_diversity"].append(
                         float(len(set(record["tools_used"]))))

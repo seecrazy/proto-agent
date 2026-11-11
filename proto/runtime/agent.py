@@ -91,6 +91,8 @@ class ProtoAgent:
         raw = store.get("state", "main")
         self.state = AgentState.from_dict(raw) if raw else AgentState()
         self.mgr = StateManager(store, self.state, self.kernel, self.spine, agent_id="main")
+        if raw is None:
+            self.mgr.save()   # 首启即落盘：备份始终有意义
 
         self.attributor = (LLMAttributor(llm) if llm is not None
                            else HeuristicAttributor())

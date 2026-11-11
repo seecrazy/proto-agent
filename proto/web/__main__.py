@@ -11,6 +11,7 @@ LLM：与 proto.run 相同的环境变量（PROTO_LLM_BASE_URL / API_KEY / MODEL
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import webbrowser
 from pathlib import Path
@@ -34,6 +35,7 @@ def main() -> int:
     server = ProtoWebServer(agent, host="127.0.0.1", port=args.port,
                              token=args.token.strip() or None)
 
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     url = server.url()
     print(f"\n  PROTO Web 控制台已启动")
     print(f"  地址   : {url}")
