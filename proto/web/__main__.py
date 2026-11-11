@@ -26,14 +26,24 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8420)
     parser.add_argument("--data-dir", default="./proto_data")
     parser.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
+    parser.add_argument("--caffeinate", action="store_true",
+                        default=bool(os.environ.get("PROTO_CAFFEINATE")),
+                        help="主人显式开启防休眠（caffeinate 绑定本进程；合盖仍会睡）")
     parser.add_argument("--token", default=os.environ.get("PROTO_WEB_TOKEN", ""),
                         help="固定访问令牌（默认随机；设 PROTO_WEB_TOKEN 可固定，便于长驻）")
     args = parser.parse_args()
 
     llm = OpenAICompatClient.from_env()
     agent = ProtoAgent(data_dir=Path(args.data_dir), llm=llm)
+    from proto.system.keepawake import KeepAwake
+    keeper = KeepAwake()
     server = ProtoWebServer(agent, host="127.0.0.1", port=args.port,
-                             token=args.token.strip() or None)
+                            token=args.token.strip() or None, keep_awake=keeper)
+    if args.caffeinate:
+        if keeper.start():
+            print("  防休眠  : 已开启（主人显式授权；进程退出自动解除；合盖仍会睡眠）")
+        else:
+            print("  防休眠  : 当前平台不可用（需 macOS caffeinate）")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     url = server.url()
