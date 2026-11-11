@@ -80,7 +80,7 @@ class _Handler(BaseHTTPRequestHandler):
         path, query = parsed.path, parse_qs(parsed.query)
         with server.lock:
             if path == "/api/state" and method == "GET":
-                return self._json(200, _state_payload(agent))
+                return self._json(200, _state_payload(agent, self.server))
             if path == "/api/chat" and method == "POST":
                 body = self._body()
                 reply = agent.chat(body.get("text", ""))
@@ -113,6 +113,17 @@ class _Handler(BaseHTTPRequestHandler):
                                                        float(body.get("value", 0))))
             if path == "/api/priority" and method == "POST":
                 return self._json(200, agent.set_priority(self._body().get("text", "")))
+            if path == "/api/awake" and method == "POST":
+                on = bool(self._body().get("on"))
+                keeper = self.server.keeper
+                if on:
+                    keeper.start()
+                else:
+                    keeper.stop()
+                self.server.agent.spine.append(
+                    "owner_override", {"action": "keep_awake", "on": on})
+                return self._json(200, {"awake": keeper.is_active,
+                                        "available": keeper.available})
             if path == "/api/persona" and method == "POST":
                 agent.set_persona(self._body().get("text", ""))
                 return self._json(200, {"persona": agent.persona})
@@ -166,7 +177,7 @@ class _Handler(BaseHTTPRequestHandler):
         return self._json(404, {"error": "not_found"})
 
 
-def _state_payload(agent: ProtoAgent) -> dict:
+def _state_payload(agent: ProtoAgent, server=None) -> dict:
     params = {}
     for cat in ("instincts", "desires", "personality"):
         rows = []
@@ -185,6 +196,8 @@ def _state_payload(agent: ProtoAgent) -> dict:
         "emotion": dict(agent.state.emotion),
         "owner_priority": agent.state.owner_priority,
         "persona": agent.persona,
+        "awake": bool(server and server.keeper.is_active),
+        "awake_available": bool(server and server.keeper.available),
         "model": (agent.llm.describe() if hasattr(agent.llm, "describe") else "已接 LLM") if agent.llm else "离线模式",
         "muted": agent.kernel.muted,
         "chain_ok": agent.spine.verify_chain().ok,
@@ -196,9 +209,11 @@ class ProtoWebServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, agent: ProtoAgent, host: str = "127.0.0.1", port: int = 8420,
-                 token: str = None, heartbeat_s: float = 30.0):
+                 token: str = None, heartbeat_s: float = 30.0, keep_awake=None):
         self.agent = agent
         self.token = token or secrets.token_urlsafe(16)  # 可注入固定 token（长驻部署）
+        from proto.system.keepawake import KeepAwake
+        self.keeper = keep_awake if keep_awake is not None else KeepAwake()
         self.lock = threading.Lock()
         self._hb_stop = threading.Event()
         super().__init__((host, port), _Handler)

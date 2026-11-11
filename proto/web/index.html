@@ -85,6 +85,7 @@
   <div class="meta" id="model">…</div>
   <div class="meta">审计链 <span class="dot ok" id="chain-dot"></span></div>
   <div class="spacer"></div>
+  <button id="awake-btn" onclick="toggleAwake()">☕防休眠</button>
   <button id="mute-btn" onclick="toggleMute()">静音</button>
 </header>
 
@@ -212,6 +213,7 @@ async function refreshState() {
   document.getElementById("model").textContent = s.model;
   document.getElementById("chain-dot").className = "dot " + (s.chain_ok ? "ok" : "bad");
   document.getElementById("mute-btn").textContent = s.muted ? "解除静音" : "静音";
+  document.getElementById("awake-btn").textContent = s.awake ? "☕防休眠中" : "☕防休眠";
   document.getElementById("emo").textContent =
     `P${s.emotion.pleasure} A${s.emotion.arousal} D${s.emotion.dominance}`;
   if (document.activeElement !== document.getElementById("priority-input"))
@@ -288,6 +290,14 @@ async function savePriority() {
   const text = document.getElementById("priority-input").value.trim();
   await api("POST", "/api/priority", { text });
   addMsg(`主人优先级已更新：「${text}」——目标仲裁将优先对齐它。`, "system");
+}
+async function toggleAwake() {
+  const s = await api("GET", "/api/state");
+  if (s.awake_available === false) { addMsg("防休眠需要 macOS（caffeinate）。", "system"); return; }
+  const r = await api("POST", "/api/awake", { on: !s.awake });
+  document.getElementById("awake-btn").textContent = r.awake ? "☕防休眠中" : "☕防休眠";
+  addMsg(r.awake ? "防休眠已开启：它在服务期间系统不会闲置睡眠（合盖除外）。"
+                 : "防休眠已解除。", "system");
 }
 async function toggleMute() {
   const s = await api("GET", "/api/state");
