@@ -36,7 +36,8 @@ class StrategyLibrary:
     strategies: Dict[str, Strategy] = field(default_factory=dict)
 
     def add(self, text: str, cluster: str, utility: float = 0.5, valence: float = 0.0) -> Strategy:
-        s = Strategy(id=uuid.uuid4().hex[:12], text=text, cluster=cluster,
+        # 长度上限：策略会被注入未来上下文，超长文本是注入面
+        s = Strategy(id=uuid.uuid4().hex[:12], text=text[:200], cluster=cluster,
                      utility=round(utility, 4), valence=valence)
         self.strategies[s.id] = s
         self._changed()

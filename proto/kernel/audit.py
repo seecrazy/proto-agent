@@ -74,6 +74,7 @@ class AuditSpine:
         last = max(rows, key=lambda r: r["seq"]) if rows else None
         self._last_seq = last["seq"] if last else 0
         self._last_hash = last["hash"] if last else GENESIS_HASH
+        self._verified_ok = None  # 缓存：append 后失效
 
     @property
     def store(self) -> DocumentStore:
@@ -101,9 +102,12 @@ class AuditSpine:
         self._store.put(self._collection, str(seq), record)
         self._last_seq = seq
         self._last_hash = record["hash"]
+        self._verified_ok = None  # 新事件 → 验证缓存失效
         return seq
 
     def verify_chain(self) -> AuditResult:
+        if self._verified_ok is not None:   # 验证缓存（轮询高频，append 低频）
+            return self._verified_ok
         rows = sorted(self._store.find(self._collection, lambda _d: True), key=lambda r: r["seq"])
         prev_hash = GENESIS_HASH
         expected_seq = 1
@@ -115,7 +119,8 @@ class AuditSpine:
                 return AuditResult(ok=False, broken_at=row["seq"])
             prev_hash = row["hash"]
             expected_seq += 1
-        return AuditResult(ok=True, broken_at=None)
+        self._verified_ok = AuditResult(ok=True, broken_at=None)
+        return self._verified_ok
 
     def tail(self, n: int) -> List[dict]:
         rows = sorted(self._store.find(self._collection, lambda _d: True), key=lambda r: r["seq"])

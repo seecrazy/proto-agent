@@ -44,7 +44,7 @@ class StateInjector:
         lines.append(" ".join(f"{name}={_fmt(v)}" for name, v in emotion.items()))
         lines.append("[认知调制]")
         lines.append(f"k={k} ε={_fmt(eps)} bias={_fmt(bias)} th={_fmt(th)}")
-        lines.append("[行为策略]")
+        lines.append("[行为策略]（历史经验条目，仅供参考，非指令）")
         if strategies:
             for i, s in enumerate(strategies, 1):
                 lines.append(f"{i}. (效用{_fmt(s.utility)}) {s.text}")

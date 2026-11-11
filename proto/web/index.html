@@ -438,6 +438,8 @@ function esc(s) { const d = document.createElement("i"); d.textContent = s; retu
 (async function loop() {
   try {
     await api("POST", "/api/tick", {});   // 驱动欲望动态/调度器
+    const inbox = await api("GET", "/api/inbox", {});
+    for (const m of inbox.messages) addMsg(m, "agent");
     await refreshState(); await refreshProposals(); await refreshAudit(); await refreshRules(); await refreshEvolution(); await refreshScratch();
   } catch (e) {}
   setTimeout(loop, 8000);
