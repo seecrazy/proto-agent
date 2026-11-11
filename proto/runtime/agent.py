@@ -19,7 +19,7 @@ from proto.exec.approval import ActionProposal, ApprovalQueue
 from proto.exec.checkpoints import CheckpointStore
 from proto.exec.injector import StateInjector
 from proto.exec.planner import LLMPlanner
-from proto.exec.router import Router, Task, ToolRegistry
+from proto.exec.router import Router, Task, TaskResult, ToolRegistry
 from proto.exec.workspace import ScratchWorkspace
 from proto.kernel.anchor import Channel, OwnerAnchor
 from proto.kernel.audit import AuditEvent, AuditSpine
@@ -57,7 +57,8 @@ DEFAULT_POOLS = {
 
 class ProtoAgent:
     def __init__(self, data_dir: Path, llm=None, now=time.time,
-                 goal_interval_s: float = 4 * 3600):
+                 goal_interval_s: float = 4 * 3600,
+                 persona: str = None, webtools=None):
         self._now = now
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -65,6 +66,16 @@ class ProtoAgent:
 
         store = create_store(self.data_dir)   # 文件默认；PROTO_STORE=mongo 切换
         self.spine = AuditSpine(store)
+        # 人设：持久化（OWNER 可改），注入系统提示词与学习主题
+        persona_doc = store.get("config", "persona")
+        self.persona = persona or (persona_doc or {}).get("text") or "通用工程助手"
+        if persona and not persona_doc:
+            store.put("config", "persona", {"text": persona})  # 首启即持久化
+        self.webtools = webtools
+        if self.webtools is None:
+            from proto.exec.webtools import WebToolkit
+            self.webtools = WebToolkit()
+        self.webtools.on_fetch = self._audit_fetch
 
         # ---- 主人密钥：首次生成并注册（本地控制台 = OWNER 通道）----
         key_path = self.data_dir / "owner.key"
@@ -194,6 +205,18 @@ class ProtoAgent:
     _PRAISE_WORDS = ("干得好", "干得漂亮", "漂亮", "不错", "很好", "赞", "谢谢",
                      "保持", "厉害", "好样的")
 
+    def _system_prompt(self) -> str:
+        return (SYSTEM_PROMPT
+                + f"\n你的人设：{self.persona}。独处学习与草稿都应体现这个人设。")
+
+    def _audit_fetch(self, url: str) -> None:
+        self.spine.append("web_fetch", {"url": url})
+
+    def set_persona(self, text: str) -> None:
+        self.persona = text
+        self.spine.store.put("config", "persona", {"text": text})
+        self.spine.append("owner_override", {"action": "set_persona", "text": text})
+
     def chat(self, text: str) -> str:
         assert self._owner_verified(text), "OWNER 通道认证失败"
         self._last_owner_ts = self._now()
@@ -208,7 +231,8 @@ class ProtoAgent:
             self.library.retrieve(text, k=3, epsilon=0.15))
         if self.llm is not None:
             try:
-                return self.llm.complete(SYSTEM_PROMPT, context + "\n\n主人说：" + text)
+                return self.llm.complete(self._system_prompt(),
+                                         context + "\n\n主人说：" + text)
             except Exception:
                 pass  # 回退离线回复
         return self._offline_reply(text)
@@ -253,15 +277,11 @@ class ProtoAgent:
         decision = self.arbiter.push_self_initiated(goal, cost={"tokens": 500})
         if not decision.pushed:
             return None
-        # ① 自主草稿：read_draft 全自主执行（设计 §8：只读/草稿自动通过）
-        draft = self._compose_draft()
-        note_path = f"notes/{int(self._now())}.md"
-        draft_task = Task(id=f"note-{int(self._now())}", description=goal_text,
-                          steps=[{"tool": "write_file",
-                                  "args": {"path": note_path, "content": draft},
-                                  "category": "read_draft"}],
-                          owner_assigned=False, desire_dim=dim)
-        draft_result = self.router.run(draft_task)
+        # ① 自主学习：读 GitHub 开源项目 → 带来源的学习笔记（read_draft 自主执行）
+        from proto.runtime.study import autonomous_study
+        study = autonomous_study(self, goal_text)
+        note_path = study["path"]
+        draft_result = TaskResult(task_id="note", status="completed")
         # ② 晋升提案：visible_write 等主人
         sub = self.queue.submit(ActionProposal(
             ActionCategory.VISIBLE_WRITE, f"晋升草稿为可见文档：{goal_text}",
@@ -269,8 +289,9 @@ class ProtoAgent:
             self_initiated=True, desire_dim=dim))
         if sub.rejected:
             return None
-        drafted = "草稿已写入" if draft_result.status == "completed" else f"草稿失败({draft_result.status})"
-        return (f"〔主动找事做〕{drafted} scratch:{note_path}（自主完成，零外部性）；"
+        src = f"，来源 {study['source']}" if study["source"] else "（离线模板）"
+        return (f"〔主动学习〕围绕『{study['topic']}』研读开源项目并写了学习笔记"
+                f" scratch:{note_path}{src}——零外部性；"
                 f"〔提案〕晋升为可见文档？—— /accept {sub.proposal_id} 同意，"
                 f"/deny {sub.proposal_id} 拒绝（拒绝会让我收敛一点）")
 

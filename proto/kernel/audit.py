@@ -75,6 +75,11 @@ class AuditSpine:
         self._last_seq = last["seq"] if last else 0
         self._last_hash = last["hash"] if last else GENESIS_HASH
 
+    @property
+    def store(self) -> DocumentStore:
+        """底层存储（运行时组合持久化用）。"""
+        return self._store
+
     def _last_record(self) -> Optional[dict]:
         if self._last_seq == 0:
             return None

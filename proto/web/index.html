@@ -105,11 +105,20 @@
     </div>
 
     <div class="card">
-      <h3>主人优先级（目标仲裁对齐项）</h3>
+      <h3>人设 / 主人优先级</h3>
       <div class="kv">
-        <input type="text" id="priority-input" placeholder="例：补齐支付模块的单元测试">
+        <input type="text" id="persona-input" placeholder="人设，例：资深软件专家">
+        <button onclick="savePersona()">设人设</button>
+      </div>
+      <div class="kv">
+        <input type="text" id="priority-input" placeholder="优先级，例：补齐支付模块的单元测试">
         <button onclick="savePriority()">保存</button>
       </div>
+    </div>
+
+    <div class="card">
+      <h3>它最近在学什么（scratch 学习笔记）</h3>
+      <div id="scratch-notes" class="empty">（暂无——独处时它会带着人设去 GitHub 研读开源项目）</div>
     </div>
 
     <div class="card">
@@ -207,6 +216,8 @@ async function refreshState() {
     `P${s.emotion.pleasure} A${s.emotion.arousal} D${s.emotion.dominance}`;
   if (document.activeElement !== document.getElementById("priority-input"))
     document.getElementById("priority-input").value = s.owner_priority || "";
+  if (document.activeElement !== document.getElementById("persona-input"))
+    document.getElementById("persona-input").value = s.persona || "";
 
   const box = document.getElementById("params");
   box.innerHTML = "";
@@ -256,6 +267,22 @@ async function override(param, value) {
   const r = await api("POST", "/api/override", { param, value });
   addMsg(`主人覆写 ${r.param} → ${r.value}${r.clamped ? "（已截断到边界）" : ""}`, "system");
   refreshState();
+}
+async function savePersona() {
+  const text = document.getElementById("persona-input").value.trim();
+  const r = await api("POST", "/api/persona", { text });
+  addMsg(`人设已设为：「${r.persona}」——独处学习将围绕这个人设展开。`, "system");
+}
+async function refreshScratch() {
+  const r = await api("GET", "/api/scratch", {});
+  const box = document.getElementById("scratch-notes");
+  box.innerHTML = r.notes.length ? "" : "（暂无——独处时它会带着人设去 GitHub 研读开源项目）";
+  for (const n of r.notes.slice().reverse()) {
+    const d = document.createElement("div");
+    d.style.cssText = "font-size:12px;margin-bottom:8px;line-height:1.5;border-left:2px solid var(--accent);padding-left:8px";
+    d.innerHTML = `<div style="color:var(--dim)">${n.path}</div>${esc(n.preview).slice(0, 140)}…`;
+    box.appendChild(d);
+  }
 }
 async function savePriority() {
   const text = document.getElementById("priority-input").value.trim();
@@ -401,7 +428,7 @@ function esc(s) { const d = document.createElement("i"); d.textContent = s; retu
 (async function loop() {
   try {
     await api("POST", "/api/tick", {});   // 驱动欲望动态/调度器
-    await refreshState(); await refreshProposals(); await refreshAudit(); await refreshRules(); await refreshEvolution();
+    await refreshState(); await refreshProposals(); await refreshAudit(); await refreshRules(); await refreshEvolution(); await refreshScratch();
   } catch (e) {}
   setTimeout(loop, 8000);
 })();
