@@ -19,13 +19,13 @@ class TaskDistiller:
 
     def distill(self, result, domain: str = "general") -> Optional[Strategy]:
         if result.status == "completed":
-            if result.retries > 0:
+            if getattr(result, "retries", 0) > 0:
                 return self._lib.add(
                     f"当 {domain} 任务受挫时，重试并退避（已验证有效）",
                     cluster=domain, utility=0.55, valence=+0.1)
             return None
         if result.status in ("failed", "denied"):
-            reason = result.reason or "未知原因"
+            reason = getattr(result, "reason", None) or "未知原因"
             return self._lib.add(
                 f"当 {domain} 时避免：{reason}",
                 cluster=domain, utility=0.45, valence=-0.1)

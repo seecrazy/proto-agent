@@ -359,15 +359,60 @@ class ProtoAgent:
         self.mgr.save()
         return {"owner_priority": text}
 
-    def evolution_snapshot(self) -> dict:
-        from proto.evolution.archive import VariantArchive
-        from proto.evolution.testset import OwnedTestSet
+    # ------------------ L5 进化（OWNER 通道驱动） ------------------
+    def _evolution(self):
+        """惰性组装进化引擎组件（同一存储）。"""
+        if not hasattr(self, "_evo"):
+            from proto.evolution.archive import VariantArchive
+            from proto.evolution.engine import EvolutionEngine
+            from proto.evolution.sandbox import Sandbox
+            from proto.evolution.scorer import PrivateScorer
+            from proto.evolution.testset import OwnedTestSet
 
-        store = create_store(self.data_dir)
-        archive = VariantArchive(store)
-        testset = OwnedTestSet(store, self.anchor, self.spine)
+            store = create_store(self.data_dir)
+            testset = OwnedTestSet(store, self.anchor, self.spine)
+            archive = VariantArchive(store)
+            engine = EvolutionEngine(Sandbox(timeout_s=10), PrivateScorer(),
+                                     testset, archive, self.spine)
+            self._evo = {"testset": testset, "archive": archive, "engine": engine}
+        return self._evo
+
+    def add_test_case(self, case_input, expected) -> str:
+        """OWNER 签名追加测试用例（人类所有、只增不删，设计 §9.1）。"""
+        self._nonce += 1
+        msg = self.anchor.sign({"input": case_input, "expected": expected},
+                               ts=self._now(), nonce=f"case-{self._nonce}")
+        return self._evolution()["testset"].add_case(case_input, expected, msg)
+
+    def evolve(self, code: str) -> dict:
+        """评估候选变体：沙盒跑人类测试集 → 私有评分 → canary/拒绝。"""
+        evo = self._evolution()
+        parent = evo["archive"].default()
+        decision = evo["engine"].evaluate(code, parent_id=parent.id if parent else None)
+        return {"merged": decision.merged, "status": decision.status,
+                "score": decision.score, "reason": decision.reason,
+                "variant_id": decision.variant_id}
+
+    def promote_variant(self, variant_id: str, target_class: str) -> bool:
+        """canary→default 唯一通道：分级授权（低自动/中人工/高拒绝）。"""
+        from proto.evolution.authorization import EvolutionAuthorizer
+        evo = self._evolution()
+        return evo["engine"].promote(variant_id, EvolutionAuthorizer(self.kernel),
+                                     target_class=target_class, sandbox_passed=True)
+
+    def rules_view(self) -> list:
+        return [{"id": r["id"], "text": r["text"], "status": r["status"],
+                 "applications": len(r["applications"])}
+                for r in self.ledger.get_all()]
+
+    def deinternalize_rule(self, rule_id: str) -> None:
+        self.ledger.de_internalize(rule_id)
+        self._persist_metacog()
+
+    def evolution_snapshot(self) -> dict:
+        evo = self._evolution()
         return {
             "variants": [{"id": v.id, "parent": v.parent_id, "score": v.score,
-                          "status": v.status} for v in archive.all()],
-            "testset_count": len(testset.cases()),
+                          "status": v.status} for v in evo["archive"].all()],
+            "testset_count": len(evo["testset"].cases()),
         }
