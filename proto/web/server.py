@@ -123,6 +123,8 @@ class _Handler(BaseHTTPRequestHandler):
                                                        float(body.get("value", 0))))
             if path == "/api/priority" and method == "POST":
                 return self._json(200, agent.set_priority(self._body().get("text", "")))
+            if path == "/api/memory" and method == "GET":
+                return self._json(200, agent.memory.snapshot())
             if path == "/api/inbox" and method == "GET":
                 return self._json(200, {"messages": agent.pop_inbox()})
             if path == "/api/awake" and method == "POST":

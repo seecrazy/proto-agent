@@ -117,11 +117,13 @@ class TestHumanLikeness:
     def test_dialogue_history_persisted_and_injected(self, agent):
         agent.chat("我叫小明")
         agent.chat("你还记得我的名字吗")
-        assert "小明" in agent.llm.users[-1]        # 第三轮上下文含第一轮内容
+        chat_users = [u for u in agent.llm.users if "主人说：" in u]
+        assert "小明" in chat_users[-1]             # 第二轮上下文含第一轮内容
         from proto.runtime.agent import ProtoAgent as PA
         a2 = PA(data_dir=agent.data_dir, llm=ChatLLM(), goal_interval_s=10 ** 9)
         a2.chat("我叫什么?")
-        assert "小明" in a2.llm.users[-1]           # 重启不失忆
+        chat_users2 = [u for u in a2.llm.users if "主人说：" in u]
+        assert "小明" in chat_users2[-1]            # 重启不失忆
 
     def test_proactive_messages_reach_inbox(self, agent):
         agent.state.set_within_bounds("desires.curiosity_gap", 0.9)
