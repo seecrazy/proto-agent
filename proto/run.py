@@ -21,6 +21,7 @@ import argparse
 import os
 from pathlib import Path
 
+from proto.config import load_default_env
 from proto.llm.client import create_llm_stack
 from proto.runtime.agent import ProtoAgent
 
@@ -42,6 +43,7 @@ def main() -> int:
     parser.add_argument("--model", default=os.environ.get("PROTO_LLM_MODEL", "gpt-4o-mini"),
                         help="模型名（默认取 PROTO_LLM_MODEL）")
     args = parser.parse_args()
+    load_default_env()  # 部署配置（proto.env）自动生效
 
     llm = None
     if args.base_url.strip():

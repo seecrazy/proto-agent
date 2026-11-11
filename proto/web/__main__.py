@@ -16,6 +16,7 @@ import os
 import webbrowser
 from pathlib import Path
 
+from proto.config import load_default_env
 from proto.llm.client import create_llm_stack
 from proto.runtime.agent import ProtoAgent
 from proto.web.server import ProtoWebServer
@@ -32,6 +33,7 @@ def main() -> int:
     parser.add_argument("--token", default=os.environ.get("PROTO_WEB_TOKEN", ""),
                         help="固定访问令牌（默认随机；设 PROTO_WEB_TOKEN 可固定，便于长驻）")
     args = parser.parse_args()
+    load_default_env()  # 部署配置（proto.env）自动生效
 
     stack = create_llm_stack()
     llm = stack["main"] if stack else None

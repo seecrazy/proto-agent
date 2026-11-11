@@ -35,6 +35,7 @@ def main() -> int:
     parser.add_argument("--data-dir", default="./proto_data")
     parser.add_argument("-o", "--output", default="proto-backup.zip")
     args = parser.parse_args()
+    load_default_env()  # 部署配置（proto.env）自动生效
     fingerprint = create_backup(args.data_dir, args.output)
     print(f"备份完成: {args.output}")
     print(f"主人指纹: {fingerprint}")

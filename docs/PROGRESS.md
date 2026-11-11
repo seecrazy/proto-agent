@@ -137,3 +137,11 @@ P2（工程化）：
 - [x] 双模型栈接线：主模型=对话回复；快模型=事实抽取/独处反思/学习主题与摘要/任务规划（全部低风险高频调用）。
 - [x] `python3 -m proto.llm` 一键自检（主/快模型各发一条探针，报告延迟与回复）。
 - 验证：320 项测试全绿（Anthropic 协议用本地假服务实测请求头/路径/解析）。
+
+### M15 — 一键部署引导（feat/m15-deploy）
+
+- [x] `scripts/deploy.sh`：Python 检查 → .venv → 安装 → 向导（一条命令全程）。
+- [x] `python3 -m proto.setup` 部署向导：交互/纯参数双模式；LLM 提供商引导（智谱 Coding Plan 推荐）+ 连通性自检 + 固定令牌 + 人设/优先级初始化 + 可选 launchd 开机自启（plistlib 生成 plist，KeepAlive）。
+- [x] `proto/config.py`：proto.env 加载（export 解析、显式环境变量优先）；run/web/llm/backup 四入口自动加载——部署后零环境变量心智。
+- [x] 产物安全：env 文件 0600（含 key）；.venv 入 gitignore。
+- 验证：325 项测试全绿；deploy.sh + 非交互 setup 冒烟通过。
