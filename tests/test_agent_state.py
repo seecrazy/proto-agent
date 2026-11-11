@@ -109,3 +109,45 @@ class TestPersistence:
         state.tick(1)
         v = state.instincts["exploration"]["value"]
         assert spec["setpoint"] < v < 0.9
+
+
+class TestAuthoritativeValidation:
+    """I2：校验必须用内核权威界，而非文件自带的 bounds 自证。"""
+
+    def test_load_rejects_tampered_bounds(self):
+        raw = AgentState().to_dict()
+        raw["instincts"]["exploration"]["bounds"] = [0, 100]
+        raw["instincts"]["exploration"]["value"] = 87.0
+        with pytest.raises(StateValidationError):
+            AgentState.from_dict(raw)
+
+    def test_load_rejects_out_of_range_emotion(self):
+        raw = AgentState().to_dict()
+        raw["emotion"]["pleasure"] = 42.0
+        with pytest.raises(StateValidationError):
+            AgentState.from_dict(raw)
+
+    def test_load_missing_bounds_raises_validation_error(self):
+        raw = AgentState().to_dict()
+        del raw["instincts"]["exploration"]["bounds"]
+        with pytest.raises(StateValidationError):
+            AgentState.from_dict(raw)
+
+
+class TestRejectionAuditing:
+    """I3：锁定拦截与 override 撞锁必须写审计（Review Focus #3）。"""
+
+    def test_locked_modulation_rejection_audited(self, env):
+        mgr, state, kernel, spine = env
+        state.lock("instincts.exploration")
+        mgr.apply_modulation("instincts.exploration", +0.02, "owner_channel")
+        rows = spine.find(lambda d: d["event_type"] == "veto")
+        assert rows and rows[-1]["payload"]["reason"] == "owner_locked"
+
+    def test_override_on_locked_audited(self, env):
+        mgr, state, kernel, spine = env
+        state.lock("personality.rigor")
+        with pytest.raises(PermissionError):
+            mgr.owner_override("personality.rigor", 0.5)
+        rows = spine.find(lambda d: d["event_type"] == "veto")
+        assert rows and rows[-1]["payload"]["param"] == "personality.rigor"

@@ -18,8 +18,8 @@ from proto.state.modulation import AttributionSignal
 _RULES: List[Tuple[str, str, float, float]] = [
     (r"更主动|主动一点|主动些|不用事事问", "instincts.social_initiative", +1, 0.5),
     (r"太主动|别自作主张|先问我", "instincts.social_initiative", -1, 0.5),
-    (r"太冒险|激进|稳一点|保守些", "instincts.risk_tolerance", -1, 0.5),
-    (r"大胆一点|可以冒险|激进一点", "instincts.risk_tolerance", +1, 0.4),
+    (r"太冒险|太激进|别激进|激进过了|稳一点|保守些", "instincts.risk_tolerance", -1, 0.5),
+    (r"大胆一点|可以冒险|激进一点|冒点险", "instincts.risk_tolerance", +1, 0.4),
     (r"多探索|多尝试|试试新", "instincts.exploration", +1, 0.4),
     (r"别折腾|收敛一点|专注", "instincts.exploration", -1, 0.4),
     (r"更严谨|更仔细|认真点", "personality.rigor", +1, 0.5),

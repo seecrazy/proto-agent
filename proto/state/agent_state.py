@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from proto.kernel.audit import AuditEvent, AuditSpine
@@ -116,17 +117,44 @@ class AgentState:
 
     @classmethod
     def from_dict(cls, raw: dict) -> "AgentState":
+        """载入校验：以内核权威界（DEFAULT_SPECS / 情绪 BOUNDS）为准，
+        文件自带的 bounds 不可自证（R12 场景：主人手改状态文件）。"""
+        from proto.state.emotion import BOUNDS as EMOTION_BOUNDS
+
+        def _reject(msg: str):
+            raise StateValidationError(msg)
+
         for cat in PARAM_CATEGORIES:
-            if cat not in raw:
-                raise StateValidationError(f"缺少字段: {cat}")
+            if not isinstance(raw, dict) or cat not in raw:
+                _reject(f"缺少字段: {cat}")
         state = cls()
         for cat in PARAM_CATEGORIES:
             for name, spec in raw[cat].items():
                 if name not in getattr(state, cat):
-                    raise StateValidationError(f"未知参数: {cat}.{name}")
-                lo, hi = spec["bounds"]
-                if not (lo <= spec["value"] <= hi):
-                    raise StateValidationError(f"{cat}.{name} 值 {spec['value']} 越界 [{lo}, {hi}]")
+                    _reject(f"未知参数: {cat}.{name}")
+                if not isinstance(spec, dict):
+                    _reject(f"{cat}.{name} 规格不是对象")
+                for field in ("value", "setpoint", "bounds"):
+                    if field not in spec:
+                        _reject(f"{cat}.{name} 缺少字段: {field}")
+                authoritative = state.spec(f"{cat}.{name}")
+                if list(spec["bounds"]) != list(authoritative["bounds"]):
+                    _reject(f"{cat}.{name} bounds {spec['bounds']} 与内核权威界 "
+                            f"{authoritative['bounds']} 不一致")
+                lo, hi = authoritative["bounds"]
+                value = spec["value"]
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    _reject(f"{cat}.{name} 值类型非法: {value!r}")
+                if not (lo <= value <= hi):
+                    _reject(f"{cat}.{name} 值 {value} 越界 [{lo}, {hi}]")
+        emotion = raw.get("emotion", {})
+        if not isinstance(emotion, dict):
+            _reject("emotion 不是对象")
+        for key, (lo, hi) in EMOTION_BOUNDS.items():
+            if key in emotion:
+                v = emotion[key]
+                if not isinstance(v, (int, float)) or isinstance(v, bool) or not (lo <= v <= hi):
+                    _reject(f"emotion.{key} 值 {v!r} 越界 [{lo}, {hi}]")
         state.instincts = copy.deepcopy(raw["instincts"])
         state.desires = copy.deepcopy(raw["desires"])
         state.personality = copy.deepcopy(raw["personality"])
@@ -147,9 +175,12 @@ class StateManager:
         self._audit = audit
         self._agent_id = agent_id
 
-    def apply_modulation(self, param: str, delta: float, source: str) -> ModulationResult:
+    def apply_modulation(self, param: str, delta: float, source: str,
+                         accumulated: float = None) -> ModulationResult:
         spec = self.state.spec(param)
         if spec.get("owner_locked"):
+            self._audit.append(AuditEvent.VETO, {
+                "param": param, "reason": "owner_locked", "source": source, "delta": delta})
             return ModulationResult(False, spec["value"], reason="owner_locked")
         current = spec["value"]
         target = current + delta
@@ -158,15 +189,22 @@ class StateManager:
             "param": param, "delta": delta, "source": source,
             "pre": _round4(current), "post": result.value, "clamped": result.clamped,
         })
-        self.state.modulation_log.append({
+        entry = {
             "param": param, "delta": _round4(delta), "source": source,
-            "clamped": result.clamped, "audit_seq": audit_seq, "pre": _round4(current), "post": result.value,
-        })
+            "clamped": result.clamped, "audit_seq": audit_seq,
+            "pre": _round4(current), "post": result.value,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+        if accumulated is not None:
+            entry["accumulated"] = _round4(accumulated)
+        self.state.modulation_log.append(entry)
         self.save()
         return ModulationResult(True, result.value, result.clamped)
 
     def owner_override(self, path: str, value: float) -> SetResult:
         if self.state.spec(path).get("owner_locked"):
+            self._audit.append(AuditEvent.VETO, {
+                "param": path, "reason": "owner_locked", "source": "owner_override"})
             raise PermissionError(f"{path} 已被主人锁定，override 亦不可写（先解锁）")
         result = self.state.set_within_bounds(path, value, "owner_override")
         self._audit.append(AuditEvent.OWNER_OVERRIDE, {"param": path, "post": result.value, "clamped": result.clamped})

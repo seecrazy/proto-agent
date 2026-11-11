@@ -27,6 +27,7 @@ class PendingModulation:
     param: str
     delta: float
     channel: Channel
+    accumulated: float = 0.0
 
 
 class AttributionAccumulator:
@@ -41,6 +42,9 @@ class AttributionAccumulator:
         self._saturated: Dict[str, bool] = {}
 
     def add(self, param: str, direction: float, strength: float, channel: Channel) -> None:
+        # 输入域在信任边界处强制（设计 §7.1：LLM 误判无法放大权限）
+        direction = 1.0 if direction >= 0 else -1.0
+        strength = max(0.0, min(1.0, strength))
         key = (param, channel)
         weight = SOURCE_WEIGHT[channel]
         self._pools[key] = self._pools.get(key, 0.0) + direction * strength * weight
@@ -55,17 +59,20 @@ class AttributionAccumulator:
 
     def ready(self) -> List[PendingModulation]:
         pending = []
-        for (param, channel), total in sorted(self._pools.items()):
+        for key in sorted(self._pools):
+            param, channel = key
             if channel is Channel.CONTENT:
                 continue  # 数学上不可达阈值，双保险
+            total = self._pools[key]
             if abs(total) >= self.threshold:
                 pending.append(PendingModulation(
                     param=param,
                     delta=(1 if total > 0 else -1) * self.step,
                     channel=channel,
+                    accumulated=round(total, 4),
                 ))
-        for key in [k for k in self._pools if k[1] is not Channel.CONTENT]:
-            del self._pools[key]
+                # 只清空已出队的池；未达阈值的累积跨批次保留（保守归因语义）
+                del self._pools[key]
         return pending
 
     def pool_level(self, param: str, channel: Channel) -> float:
@@ -85,5 +92,6 @@ class ModulationPipeline:
         results = []
         for pending in self._acc.ready():
             results.append(self._mgr.apply_modulation(
-                pending.param, pending.delta, pending.channel.value))
+                pending.param, pending.delta, pending.channel.value,
+                accumulated=pending.accumulated))
         return results

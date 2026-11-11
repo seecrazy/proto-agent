@@ -102,3 +102,52 @@ class TestPipeline:
         results = pipe.process(signals)
         assert results[0].applied and results[0].clamped
         assert state.get("instincts.risk_tolerance") == pytest.approx(0.7)
+
+
+class TestCrossBatchAccumulation:
+    """C1：累积必须跨批次存活——逐消息 process() 是最自然的使用路径。"""
+
+    def test_cross_batch_accumulation_triggers(self, env):
+        pipe, acc, state, _ = env
+        before = state.get("instincts.exploration")
+        pipe.process([sig("instincts.exploration", +1, 0.2, Channel.OWNER)])  # 0.2 < 0.3
+        assert state.get("instincts.exploration") == pytest.approx(before)
+        results = pipe.process([sig("instincts.exploration", +1, 0.2, Channel.OWNER)])  # 0.4 ≥ 0.3
+        assert len(results) == 1 and results[0].applied
+        assert state.get("instincts.exploration") == pytest.approx(before + 0.02)
+
+    def test_session_weak_signals_accumulate_across_batches(self, env):
+        pipe, acc, state, _ = env
+        # SESSION 权重 0.3：单条 0.5 → 0.15 不触发
+        assert pipe.process([sig("personality.rigor", +1, 0.5, Channel.SESSION)]) == []
+        res = pipe.process([sig("personality.rigor", +1, 0.5, Channel.SESSION)])  # 累计 0.30
+        assert len(res) == 1 and res[0].applied
+
+    def test_fired_pool_cleared_below_threshold_retained(self, env):
+        pipe, acc, state, _ = env
+        pipe.process([sig("instincts.exploration", +1, 0.4, Channel.OWNER)])   # 触发
+        pipe.process([sig("personality.rigor", +1, 0.2, Channel.OWNER)])        # 0.2 保留
+        assert acc.pool_level("instincts.exploration", Channel.OWNER) == 0.0
+        assert acc.pool_level("personality.rigor", Channel.OWNER) == pytest.approx(0.2)
+
+    def test_strength_clamped_to_unit_interval(self, env):
+        """I4：strength 输入域在累积器边界强制，畸形强度只能触发有界的一次步进。"""
+        pipe, acc, state, _ = env
+        before = state.get("instincts.exploration")
+        results = pipe.process([sig("instincts.exploration", +1, 7.0, Channel.OWNER)])
+        assert len(results) == 1
+        assert state.get("instincts.exploration") == pytest.approx(before + 0.02)
+
+    def test_direction_normalized_to_sign(self, env):
+        pipe, acc, _, _ = env
+        acc.add("instincts.exploration", 0.7, 0.5, Channel.OWNER)   # 非 ±1 归一为 +
+        assert acc.pool_level("instincts.exploration", Channel.OWNER) == pytest.approx(0.5)
+
+    def test_modulation_log_carries_ts_and_accumulated(self, env):
+        """M5（计划 Task 6 条目）：modulation_log 含 accumulated 与 ts。"""
+        pipe, acc, state, _ = env
+        pipe.process([sig("instincts.exploration", +1, 0.2, Channel.OWNER)])
+        pipe.process([sig("instincts.exploration", +1, 0.2, Channel.OWNER)])
+        entry = state.modulation_log[-1]
+        assert entry["accumulated"] == pytest.approx(0.4)
+        assert "ts" in entry

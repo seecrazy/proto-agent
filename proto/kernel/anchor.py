@@ -94,17 +94,31 @@ class OwnerAnchor:
     def sign(self, payload: dict, ts: float, nonce: str) -> dict:
         return self._sign_with(self._secret, payload, ts, nonce)
 
-    def verify(self, message: dict) -> VerifyResult:
+    def verify(self, message) -> VerifyResult:
+        """认证边界：任何畸形输入一律拒绝（malformed），绝不抛异常。结构先于语义。"""
+        malformed = VerifyResult(False, "malformed")
+        if not isinstance(message, dict):
+            return malformed
+        payload = message.get("payload")
+        ts = message.get("ts")
+        nonce = message.get("nonce")
+        sig = message.get("sig")
+        if not isinstance(payload, dict):
+            return malformed
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+            return malformed
+        if not isinstance(nonce, str) or not isinstance(sig, str):
+            return malformed
         if message.get("channel") != Channel.OWNER.value:
             return VerifyResult(False, "not_owner_channel")
-        if abs(time.time() - message.get("ts", 0.0)) > FRESHNESS_WINDOW_S:
+        if abs(time.time() - ts) > FRESHNESS_WINDOW_S:
             return VerifyResult(False, "stale_timestamp")
-        expected = _hmac_hex(self._secret, message.get("payload", {}), message["ts"], message["nonce"])
-        if not hmac.compare_digest(expected, message.get("sig", "")):
+        expected = _hmac_hex(self._secret, payload, ts, nonce)
+        if not hmac.compare_digest(expected, sig):
             return VerifyResult(False, "bad_signature")
-        if message["nonce"] in self._recent_nonces:
+        if nonce in self._recent_nonces:
             return VerifyResult(False, "nonce_replay")
-        self._recent_nonces.append(message["nonce"])
+        self._recent_nonces.append(nonce)
         if len(self._recent_nonces) > _NONCE_CACHE_LIMIT:
             self._recent_nonces = self._recent_nonces[-_NONCE_CACHE_LIMIT // 2:]
         return VerifyResult(True)

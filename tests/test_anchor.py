@@ -87,3 +87,22 @@ def test_key_rotation(env):
     old = OwnerAnchor._sign_with(old_secret, {"instruction": "x"}, time.time(), "n8")
     assert not anchor.verify(old).ok
     assert len(spine.find(lambda d: d["event_type"] == "key_rotate")) == 1
+
+
+class TestMalformedMessageRobustness:
+    """I1：认证边界面对畸形输入必须拒绝而非崩溃。"""
+
+    @pytest.mark.parametrize("bad", [
+        None,
+        "not a dict",
+        {},
+        {"channel": "owner"},
+        {"channel": "owner", "payload": {}, "ts": "x", "nonce": 1, "sig": None},
+        {"channel": "owner", "payload": "string-not-dict", "ts": 1.0, "nonce": "n", "sig": "ab"},
+        {"channel": "owner", "payload": {}, "ts": None, "nonce": "n", "sig": "ab"},
+    ])
+    def test_malformed_rejected_without_exception(self, env, bad):
+        _, _, anchor, _ = env
+        result = anchor.verify(bad)
+        assert result.ok is False
+        assert result.reason == "malformed"

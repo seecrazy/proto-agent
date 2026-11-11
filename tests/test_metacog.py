@@ -204,3 +204,19 @@ class TestGoalArbiter:
         with pytest.raises(ValueError):
             Goal(description="无验证标准", desire_dim="curiosity_gap",
                  gap=0.9, feasibility=0.9, interest=0.9, verification="")
+
+
+class TestAttributionRuleCollision:
+    """I5：『更激进一点』必须净正向——设计 §11.3 的旗舰例句。"""
+
+    def test_more_aggressive_is_positive(self):
+        attr = HeuristicAttributor()
+        sigs = [s for s in attr.attribute("以后更激进一点", Channel.OWNER)
+                if s.param == "instincts.risk_tolerance"]
+        assert len(sigs) == 1 and sigs[0].direction == +1
+
+    def test_too_aggressive_is_negative(self):
+        attr = HeuristicAttributor()
+        sigs = [s for s in attr.attribute("你最近太激进了，收着点", Channel.OWNER)
+                if s.param == "instincts.risk_tolerance"]
+        assert len(sigs) == 1 and sigs[0].direction == -1
