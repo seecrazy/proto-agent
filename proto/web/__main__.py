@@ -24,11 +24,14 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8420)
     parser.add_argument("--data-dir", default="./proto_data")
     parser.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
+    parser.add_argument("--token", default=os.environ.get("PROTO_WEB_TOKEN", ""),
+                        help="固定访问令牌（默认随机；设 PROTO_WEB_TOKEN 可固定，便于长驻）")
     args = parser.parse_args()
 
     llm = OpenAICompatClient.from_env()
     agent = ProtoAgent(data_dir=Path(args.data_dir), llm=llm)
-    server = ProtoWebServer(agent, host="127.0.0.1", port=args.port)
+    server = ProtoWebServer(agent, host="127.0.0.1", port=args.port,
+                             token=args.token.strip() or None)
 
     url = server.url()
     print(f"\n  PROTO Web 控制台已启动")

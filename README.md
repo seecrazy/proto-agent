@@ -2,10 +2,10 @@
 
 > **能力完整 · 内在状态显式可调制 · 行为主动但受约束 · 能自我进化但边界不可逾越**
 
-[![tests](https://img.shields.io/badge/tests-241%20passed-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-246%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
-[![version](https://img.shields.io/badge/version-0.5.0-orange.svg)]()
+[![version](https://img.shields.io/badge/version-0.6.0-orange.svg)]()
 
 PROTO 不假装无能来换取可塑性——第一天就能完整干活；成长发生在**倾向维度**而非能力维度：本能、欲望、性格是显式状态文件中的有界参数，被主人反馈缓慢塑造，被不可变内核锁死边界。v2.0 设计定稿 + 落地路径阶段 1–8 核心全部实现。
 
@@ -101,7 +101,7 @@ PROTO> 〔主动提议〕围绕……推进一个小目标  ← 欲望缺口+调
 
 ```bash
 cd proto-agent
-python3 -m pytest -q      # 241 项测试全绿（零三方依赖，仅需 pytest）
+python3 -m pytest -q      # 246 项测试全绿（另 2 项可选依赖测试自动跳过）
 python3 -m proto.demo     # 12 段全链路演示：锚定→调制→毒化拒收→评估→审批→进化两轨→自驱执行→审计
 ```
 
@@ -143,7 +143,7 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 
 ## 验证
 
-- **241 项测试**覆盖全部安全边界输入类：伪造签名 / nonce 重放 / ts 过期 / CONTENT 洪泛 / 越界调制 / owner_locked / 审计篡改 / 预算侵占 / 状态文件损坏拒载 / 沙盒逃逸探针 / 影子回归规则。
+- **246 项测试**（主环境；装有可选依赖的 venv 中 248 全绿）覆盖全部安全边界输入类：伪造签名 / nonce 重放 / ts 过期 / CONTENT 洪泛 / 越界调制 / owner_locked / 审计篡改 / 预算侵占 / 状态文件损坏拒载 / 沙盒逃逸探针 / 影子回归规则。
 - 两轮独立上下文代码评审（核心引擎 + 阶段 6–8 前 minor 批），全部发现项 TDD 修复。
 - 测试全为真实行为断言，零 mock；沙盒用真实 subprocess 验证清洁环境与资源限制。
 
@@ -156,8 +156,21 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 | 7 | 代码轨：测试集治理 + 沙盒 + 进化引擎 | ✅ feat/stages-6-8 |
 | 8 | 行为轨：影子双跑 + 分级授权 | ✅ feat/stages-6-8 |
 | M4 | 引擎完全体：参数回滚+阻尼、Router 执行器骨架、L3 调度+蒸馏、兴趣收敛+dormant+欲望动态 | ✅ feat/engine-completion |
-| — | LangGraph 编排 / MongoDB 适配 / gVisor 生产沙盒 | ⚗️ 接口就绪，待接入 |
+| M7 | 外部系统接入：MongoDB 存储 / LangGraph 编排 / gVisor 沙盒后端 | ✅ 适配器交付，条件满足即生效（见下表） |
 
 ## 许可
 
 AGPL-3.0（见 LICENSE，与仓库初始提交一致）
+
+## 外部系统接入（可选，按需启用）
+
+核心引擎零依赖；以下接入全部做成"条件满足即生效"的适配器，未启用时行为不变：
+
+| 接入 | 条件 | 启用方式 |
+|---|---|---|
+| **MongoDB** | 可达的 mongod / Atlas + `pip install -e ".[mongo]"` | `export PROTO_STORE=mongo PROTO_MONGO_URI=mongodb://localhost:27017`（`PROTO_MONGO_DB` 可选）；未设置用文件存储 |
+| **LangGraph** | `pip install -e ".[graph]"`（Python ≥3.9） | `from proto.adapters.langgraph_runner import build_turn_graph; app = build_turn_graph(agent)`——单轮对话编译为 attribute→modulate→respond→proactive 图，节点即内置调度器等价物，可接 checkpointer 获得 pause/resume |
+| **gVisor 沙盒** | Linux + [安装 runsc](https://gvisor.dev/docs/install/)（macOS 无法运行 runsc） | `Sandbox(backend="auto")` 自动探测：检测到 runsc 且 Linux 即用 `runsc do` 包裹变体执行；否则回退 subprocess 后端 |
+
+设计取舍：这三项依赖都不进核心运行时——`proto.[mongo/graph]` 是可选依赖组；
+未安装时相应测试自动跳过（`tests/test_integrations.py`），主套件零依赖全绿。

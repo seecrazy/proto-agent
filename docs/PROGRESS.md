@@ -6,7 +6,7 @@
 
 | 项 | 状态 |
 |---|---|
-| 版本 | 0.5.0（Web 管理控制台：一条命令部署与管理） |
+| 版本 | 0.6.0（外部接入适配器：Mongo/LangGraph/gVisor） |
 | 测试 | 见下方里程碑记录 |
 | 分支 | main（feat/engine-completion 已并入） |
 | 远程 | 仅本地提交，未推送（用户指示） |
@@ -71,3 +71,11 @@ LLMAttributor 接入模型 API → LangGraph 编排接入（节点签名已兼�
 - [x] 单页控制台（原生 HTML/CSS/JS，暗色）：对话区、12 参数实时条形图（设定点/硬界/阈值标记 + 锁定/解锁/上下界覆写）、主动提议一键审批（拒绝即阻尼可视）、任务指派、主人优先级、静音、审计链实时滚动 + 篡改状态灯。
 - [x] `python3 -m proto.web` 入口（自动开浏览器）；README/设计 v2.4/版本 0.5.0。
 - [x] 验证：13 项 API 测试 + 浏览器真实 E2E（页面渲染、发送反馈、social_initiative 0.5→0.52 调制生效、截图确认）。**241 项测试全绿。**
+
+### M7 — 外部系统接入（feat/integrations）
+
+- [x] MongoDB：`MongoStore`（pymongo 懒连接，构造不触网）+ `create_store` 工厂（`PROTO_STORE=mongo PROTO_MONGO_URI=...`）；ProtoAgent 全部走工厂。
+- [x] LangGraph：`proto/adapters/langgraph_runner.py`——单轮对话编译为 StateGraph（attribute→modulate→respond→proactive），节点为引擎已有方法的薄封装；未安装时报错信息指明安装方式。
+- [x] gVisor：Sandbox 可插拔后端（auto/runsc/subprocess）；Linux+runsc 自动 `runsc do` 包裹，macOS 回退 subprocess；假 runsc 实测命令构造，平台无关。
+- [x] Web 控制台固定令牌（--token / PROTO_WEB_TOKEN，长驻部署友好）；pyproject 可选依赖组 `.[mongo]`/`.[graph]`。
+- 条件说明：本机无 mongod/docker/runsc 且 macOS 无法运行 runsc——Mongo/LangGraph 适配器在装有依赖的 venv 中实测，gVisor 用假 runsc 验证命令构造；生产 Linux 上 auto 探测即真沙盒。

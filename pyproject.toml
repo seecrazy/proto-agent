@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "proto-agent"
-version = "0.5.0"
+version = "0.6.0"
 description = "PROTO：可控内在状态、主动工作、能自我进化的成长型 Agent 核心引擎"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -13,6 +13,8 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+mongo = ["pymongo>=4"]
+graph = ["langgraph>=0.2"]
 
 [tool.setuptools.packages.find]
 include = ["proto*"]

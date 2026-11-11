@@ -1,14 +1,20 @@
 # -*- coding: utf-8 -*-
 """阶段 7：变体验证沙盒（设计 §9.1 代码轨）。
 
-本地形态：独立 subprocess + 临时工作目录 + 清洁环境 + CPU 时间/超时约束 +
-用例串行执行。生产目标形态：gVisor / microVM 级隔离（设计 §4.4），
-接口不变——run_variant(code, cases) → SandboxResult。
+可插拔后端：
+  subprocess（默认）——独立进程 + 临时目录 + 清洁环境 + CPU 限制 + 超时，
+      任何平台可用，本机开发形态；
+  runsc（gVisor）——Linux + 安装 runsc 后自动启用（`runsc do` 包裹执行），
+      生产形态。接入条件：Linux 内核 + gVisor 安装
+      （https://gvisor.dev/docs/install/）；macOS 无法运行 runsc，
+      auto 模式自动回退 subprocess。接口不变——run_variant(code, cases)。
 """
 from __future__ import annotations
 
 import json
 import os
+import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -56,8 +62,23 @@ def _limit_resources():
 
 
 class Sandbox:
-    def __init__(self, timeout_s: int = 10):
+    def __init__(self, timeout_s: int = 10, backend: str = "auto",
+                 runsc_path: str = None):
         self.timeout_s = timeout_s
+        self.runsc_path = runsc_path or shutil.which("runsc")
+        if backend == "auto":
+            self.backend = ("runsc" if (self.runsc_path
+                                        and platform.system() == "Linux")
+                            else "subprocess")
+        else:
+            self.backend = backend
+            if backend == "runsc" and not self.runsc_path:
+                raise ValueError("backend=runsc 需要 runsc（Linux + gVisor 安装）")
+
+    def _command(self) -> List[str]:
+        if self.backend == "runsc":
+            return [self.runsc_path, "do", sys.executable, "runner.py"]
+        return [sys.executable, "runner.py"]
 
     def run_variant(self, code: str, cases: List[dict]) -> SandboxResult:
         with tempfile.TemporaryDirectory(prefix="proto-sandbox-") as tmp:
@@ -69,7 +90,7 @@ class Sandbox:
                 json.dump(cases, f, ensure_ascii=False)
             try:
                 proc = subprocess.run(
-                    [sys.executable, "runner.py"],
+                    self._command(),
                     cwd=tmp,
                     timeout=self.timeout_s,
                     capture_output=True,

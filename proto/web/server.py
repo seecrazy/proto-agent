@@ -153,9 +153,10 @@ def _state_payload(agent: ProtoAgent) -> dict:
 class ProtoWebServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, agent: ProtoAgent, host: str = "127.0.0.1", port: int = 8420):
+    def __init__(self, agent: ProtoAgent, host: str = "127.0.0.1", port: int = 8420,
+                 token: str = None):
         self.agent = agent
-        self.token = secrets.token_urlsafe(16)
+        self.token = token or secrets.token_urlsafe(16)  # 可注入固定 token（长驻部署）
         self.lock = threading.Lock()
         super().__init__((host, port), _Handler)
 
