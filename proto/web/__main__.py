@@ -11,6 +11,7 @@ LLM：与 proto.run 相同的环境变量（PROTO_LLM_BASE_URL / API_KEY / MODEL
 from __future__ import annotations
 
 import argparse
+import os
 import webbrowser
 from pathlib import Path
 
