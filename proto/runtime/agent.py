@@ -290,6 +290,9 @@ class ProtoAgent:
         if not steps:
             return {"status": "no_plan",
                     "reason": "无法规划步骤（离线模式或模型未给出计划）"}
+        return self.run_task_with_steps(description, steps)
+
+    def run_task_with_steps(self, description: str, steps: list) -> dict:
         task = Task(id=f"owner-{int(self._now())}", description=description, steps=steps)
         result = self.router.run(task)
         if result.status == "completed":
@@ -319,6 +322,23 @@ class ProtoAgent:
 
     def audit_tail(self, n: int = 10) -> List[dict]:
         return self.spine.tail(n)
+
+    def resume_task(self, task_id: str, approved: bool) -> dict:
+        """从暂停检查点恢复任务：批准→续跑余下步骤并晋升；拒绝→中止。"""
+        record = self.checkpoints.resume(task_id)
+        if record is None:
+            return {"status": "failed", "reason": "no_checkpoint"}
+        spec = record["state"].get("task")
+        if not spec or "waiting_for" not in record["state"]:
+            return {"status": "failed", "reason": "not_paused"}
+        task = Task(id=task_id, description=spec["description"],
+                    steps=spec["steps"], owner_assigned=spec.get("owner_assigned", True),
+                    desire_dim=spec.get("desire_dim"))
+        result = self.router.resume(task, human_approved=approved)
+        if result.status == "completed":
+            self.pad.apply_event("task_success")
+        self.scheduler.on_task_completed(result)
+        return {"status": result.status, "step_results": result.step_results}
 
     # ------------------ 管理接口（Web 控制台用） ------------------
     def lock_param(self, param: str, on: bool) -> dict:

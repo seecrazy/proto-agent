@@ -98,11 +98,14 @@ class Router:
                              step_results=state.get("results", []))
 
     def _execute(self, task: Task, start_step: int, step_results: list) -> TaskResult:
+        task_spec = {"description": task.description, "steps": task.steps,
+                     "owner_assigned": task.owner_assigned,
+                     "desire_dim": task.desire_dim}
         for i in range(start_step, len(task.steps)):
             step = task.steps[i]
             category = ActionCategory[step.get("category", "read_draft").upper()]
             self._cps.put(task.id, {
-                "step": i, "results": step_results,
+                "step": i, "results": step_results, "task": task_spec,
             }, variant_id=VARIANT_ID)
             if step["tool"] == "write_file":
                 path = step["args"]["path"]
@@ -119,7 +122,7 @@ class Router:
                     if not sub.auto_approved:
                         # 暂停于检查点，等待人类
                         self._cps.put(task.id, {
-                            "step": i, "results": step_results,
+                            "step": i, "results": step_results, "task": task_spec,
                             "waiting_for": sub.proposal_id,
                             "pending_promotion": path,
                         }, variant_id=VARIANT_ID)
