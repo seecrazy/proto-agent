@@ -31,6 +31,9 @@ class ToolRegistry:
             raise KeyError(f"unknown_tool:{name}")
         return self._tools[name]
 
+    def names(self):
+        return set(self._tools)
+
 
 @dataclass
 class Task:

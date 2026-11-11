@@ -11,6 +11,9 @@ import re
 from abc import ABC, abstractmethod
 from typing import Dict, List, Tuple
 
+import json
+import re
+
 from proto.kernel.anchor import Channel
 from proto.state.modulation import AttributionSignal
 
@@ -52,3 +55,55 @@ class HeuristicAttributor(Attributor):
     def rule_table() -> List[Dict[str, object]]:
         return [{"pattern": p, "param": param, "direction": d, "strength": s}
                 for p, param, d, s in _RULES]
+
+
+def extract_json_array(text: str) -> list:
+    """从模型输出中稳健提取 JSON 数组（容忍 ```json 围栏与前后缀文本）。"""
+    cleaned = re.sub(r"```(?:json)?", "", text).strip()
+    start = cleaned.find("[")
+    end = cleaned.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("输出中没有 JSON 数组")
+    return json.loads(cleaned[start:end + 1])
+
+
+class LLMAttributor(Attributor):
+    """LLM 归因：输出统一 AttributionSignal，参数白名单 + 输入域夹紧，
+    任何解析失败回退到启发式归因器——LLM 误判无法放大权限（设计 §7.1）。"""
+
+    PARAM_WHITELIST = frozenset({
+        "instincts.exploration", "instincts.risk_tolerance",
+        "instincts.social_initiative", "instincts.perfectionism",
+        "desires.curiosity_gap", "desires.goal_urgency",
+        "desires.social_connection_gap", "desires.recognition_need",
+        "personality.rigor", "personality.proactiveness",
+        "personality.directness", "personality.independence",
+    })
+
+    _PROMPT = (
+        "你是成长型 Agent PROTO 的反馈归因器。根据主人反馈判断它指向哪个内在参数、"
+        "方向与强度。参数只能从以下选择：\n" + "\n".join(sorted(PARAM_WHITELIST)) +
+        "\n方向：+1 表示调高倾向，-1 表示调低。强度 0~1。\n"
+        '只输出 JSON 数组，例如 [{"param": "instincts.social_initiative", '
+        '"direction": 1, "strength": 0.6}]。没有明确指向就输出 []。'
+    )
+
+    def __init__(self, client, fallback: HeuristicAttributor = None):
+        self._client = client
+        self._fallback = fallback or HeuristicAttributor()
+
+    def attribute(self, text: str, channel: Channel) -> List[AttributionSignal]:
+        try:
+            rows = extract_json_array(self._client.complete(self._PROMPT, text))
+        except Exception:
+            return self._fallback.attribute(text, channel)
+        signals = []
+        for row in rows:
+            param = row.get("param")
+            if param not in self.PARAM_WHITELIST:
+                continue
+            direction = 1 if float(row.get("direction", 0)) >= 0 else -1
+            strength = max(0.0, min(1.0, float(row.get("strength", 0.5))))
+            signals.append(AttributionSignal(
+                param=param, direction=direction, strength=strength, channel=channel))
+        return signals

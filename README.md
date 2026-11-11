@@ -2,10 +2,10 @@
 
 > **能力完整 · 内在状态显式可调制 · 行为主动但受约束 · 能自我进化但边界不可逾越**
 
-[![tests](https://img.shields.io/badge/tests-210%20passed-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-228%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
-[![version](https://img.shields.io/badge/version-0.3.0-orange.svg)]()
+[![version](https://img.shields.io/badge/version-0.4.0-orange.svg)]()
 
 PROTO 不假装无能来换取可塑性——第一天就能完整干活；成长发生在**倾向维度**而非能力维度：本能、欲望、性格是显式状态文件中的有界参数，被主人反馈缓慢塑造，被不可变内核锁死边界。v2.0 设计定稿 + 落地路径阶段 1–8 核心全部实现。
 
@@ -46,11 +46,50 @@ flowchart TB
     L5 -->|"变体"| L4
 ```
 
-## 快速开始
+## 五分钟得到一个活的 Agent
+
+**第 1 步，跑起来（30 秒）**：
 
 ```bash
 cd proto-agent
-python3 -m pytest -q      # 210 项测试全绿（零三方依赖，仅需 pytest）
+python3 -m proto.run
+```
+
+首次运行自动生成主人密钥并注册锚定（数据在 `./proto_data/`，其中 `owner.key` 请备份——它是你作为主人的身份，丢了就需要线下恢复仪式）。此刻你在和一个**离线模式**的 PROTO 对话：它会回应、会根据你的反馈调制内在参数，但回复是模板化的。
+
+**第 2 步，接上真实大脑（让它像人）**——配置任意 OpenAI 兼容 API 后重新运行：
+
+```bash
+export PROTO_LLM_BASE_URL=https://ark.cn-beijing.volcengine.com/api/v3   # 火山方舟
+# export PROTO_LLM_BASE_URL=https://api.openai.com/v1                    # 或 OpenAI
+# export PROTO_LLM_BASE_URL=https://api.deepseek.com/v1                  # 或 DeepSeek
+# export PROTO_LLM_BASE_URL=http://localhost:11434/v1                    # 或本地 Ollama（无需 key）
+export PROTO_LLM_API_KEY=你的key
+export PROTO_LLM_MODEL=模型名
+python3 -m proto.run
+```
+
+**第 3 步，体验它"活着"**：
+
+```text
+主人> 你最近太保守了，大胆一点          ← 反馈被归因，risk_tolerance 被有界调制
+PROTO> （符合当前倾向的自然回复）
+主人> /state                            ← 看见参数真实变化、欲望缺口、情绪
+主人> /task 帮我调研XX并写份笔记        ← LLM 规划步骤，安全管线执行，草稿先落 scratch
+PROTO> 〔主动提议〕围绕……推进一个小目标  ← 欲望缺口+调度器驱动的主动性
+主人> /deny <id>                        ← 拒绝它 → 阻尼生效，阈值上调，越被无视越少打扰
+主人> /audit 20                         ← 哈希链审计：它做过的每个决定都可回溯
+```
+
+命令速查：`/state` 内在状态 · `/task <描述>` 指派任务 · `/goals` 待审批提议 · `/accept|/deny <id>` 审批 · `/audit [n]` 审计 · `/mute` 一键静音 · `/quit` 退出。
+
+**它为什么是"主动的、类人的"**：每次对话前，它真实的内在状态（12 个参数、4 类欲望缺口、PAD 情绪导出的检索广度/探索比例/主动阈值）会被注入模型上下文——同一个模型，不同状态下行为不同；闲置会让欲望缺口增长，缺口过阈值 + 调度器到点会触发主动提议；你的每句反馈经归因累积、有界调制缓慢塑造它的倾向；一切变化都有哈希链审计。
+
+## 开发者快速开始
+
+```bash
+cd proto-agent
+python3 -m pytest -q      # 228 项测试全绿（零三方依赖，仅需 pytest）
 python3 -m proto.demo     # 12 段全链路演示：锚定→调制→毒化拒收→评估→审批→进化两轨→自驱执行→审计
 ```
 
@@ -70,6 +109,8 @@ python3 -m proto.demo     # 12 段全链路演示：锚定→调制→毒化拒�
 | L4 | `proto/exec/` | 情绪→认知有界调制器、确定性注入器、Scratch 工作区、审批队列（日上限+阻尼回报）、变体绑定检查点、Router 执行器（工具注册/逐步检查点/审批暂停恢复） |
 | L5 | `proto/evolution/` | OWNER 签名只增测试集、subprocess 沙盒（生产 gVisor/microVM）、私有评分器、进化树、影子双跑、分级授权 |
 | 评估 | `proto/evalx/` | 行为代理 harness（Cohen's d ≥ 0.5 判可测）、dormant 冻结看门狗（测不出差异自动冻结调制） |
+| 运行时 | `proto/runtime/agent.py` + `proto/run.py` | **活的 Agent 入口**：主人密钥注册、对话（LLM/离线）、归因调制、主动提议、任务执行 |
+| LLM | `proto/llm/client.py` + `proto/metacog/attribution.py` + `proto/exec/planner.py` | OpenAI 兼容客户端（方舟/OpenAI/DeepSeek/Ollama）、LLM 归因（白名单+回退）、LLM 任务规划（工具白名单） |
 | L3 节奏 | `proto/metacog/{scheduler,distill,interest}.py` | 调度器（每任务蒸馏/定时目标/每日回顾，时钟可注入）、确定性策略蒸馏、兴趣强化收敛（学习权重进仲裁） |
 | L2 动态 | `proto/state/{desires}.py` + `StateManager` | 欲望缺口随闲置增长（1h 宽限）、参数调制回滚（级联内化降级）、阻尼阈值调制 |
 
@@ -89,7 +130,7 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 
 ## 验证
 
-- **210 项测试**覆盖全部安全边界输入类：伪造签名 / nonce 重放 / ts 过期 / CONTENT 洪泛 / 越界调制 / owner_locked / 审计篡改 / 预算侵占 / 状态文件损坏拒载 / 沙盒逃逸探针 / 影子回归规则。
+- **228 项测试**覆盖全部安全边界输入类：伪造签名 / nonce 重放 / ts 过期 / CONTENT 洪泛 / 越界调制 / owner_locked / 审计篡改 / 预算侵占 / 状态文件损坏拒载 / 沙盒逃逸探针 / 影子回归规则。
 - 两轮独立上下文代码评审（核心引擎 + 阶段 6–8 前 minor 批），全部发现项 TDD 修复。
 - 测试全为真实行为断言，零 mock；沙盒用真实 subprocess 验证清洁环境与资源限制。
 
@@ -102,7 +143,7 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 | 7 | 代码轨：测试集治理 + 沙盒 + 进化引擎 | ✅ feat/stages-6-8 |
 | 8 | 行为轨：影子双跑 + 分级授权 | ✅ feat/stages-6-8 |
 | M4 | 引擎完全体：参数回滚+阻尼、Router 执行器骨架、L3 调度+蒸馏、兴趣收敛+dormant+欲望动态 | ✅ feat/engine-completion |
-| — | LLMAttributor / LangGraph 编排 / MongoDB 适配 / gVisor 生产沙盒 | ⚗️ 接口就绪，待接入 |
+| — | LangGraph 编排 / MongoDB 适配 / gVisor 生产沙盒 | ⚗️ 接口就绪，待接入 |
 
 ## 许可
 
