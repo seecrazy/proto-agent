@@ -135,3 +135,31 @@ class TestProposalsAndControls:
         status, data = call(server, "GET", "/api/evolution", token=server.token)
         assert status == 200
         assert "variants" in data and "testset_count" in data
+
+
+class TestM8Endpoints:
+    def test_rules_add_and_view(self, server):
+        status, data = call(server, "POST", "/api/rules",
+                            {"text": "涉及支付先写测试"}, token=server.token)
+        assert status == 200 and data["rules"][0]["text"] == "涉及支付先写测试"
+
+    def test_task_resume_endpoint(self, server):
+        from proto.runtime.agent import ProtoAgent  # noqa: F401
+        result = {"status": "failed", "reason": "no_checkpoint"}
+        status, data = call(server, "POST", "/api/task/none/resume",
+                            {"approved": True}, token=server.token)
+        assert status == 200 and data["reason"] == "no_checkpoint"
+
+    def test_evolution_testset_and_mutate(self, server):
+        status, data = call(server, "POST", "/api/evolution/testset",
+                            {"input": [" a "], "expected": "a"}, token=server.token)
+        assert status == 200 and data["testset_count"] == 1
+        status, data = call(server, "POST", "/api/evolution/mutate",
+                            {"code": "def solve(items):\n    return '|'.join(str(x).strip() for x in items)\n"},
+                            token=server.token)
+        assert status == 200 and data["merged"] is True
+        vid = data["variant_id"]
+        status, data = call(server, "POST", "/api/evolution/promote",
+                            {"variant_id": vid, "target_class": "l1_rules"},
+                            token=server.token)
+        assert status == 200 and data["promoted"] is False  # 高风险永远拒绝

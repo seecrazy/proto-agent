@@ -2,10 +2,10 @@
 
 > **能力完整 · 内在状态显式可调制 · 行为主动但受约束 · 能自我进化但边界不可逾越**
 
-[![tests](https://img.shields.io/badge/tests-246%20passed-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-271%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
-[![version](https://img.shields.io/badge/version-0.6.0-orange.svg)]()
+[![version](https://img.shields.io/badge/version-0.7.0-orange.svg)]()
 
 PROTO 不假装无能来换取可塑性——第一天就能完整干活；成长发生在**倾向维度**而非能力维度：本能、欲望、性格是显式状态文件中的有界参数，被主人反馈缓慢塑造，被不可变内核锁死边界。v2.0 设计定稿 + 落地路径阶段 1–8 核心全部实现。
 
@@ -84,14 +84,16 @@ PROTO> 〔主动提议〕围绕……推进一个小目标  ← 欲望缺口+调
 
 命令速查：`/state` 内在状态 · `/task <描述>` 指派任务 · `/goals` 待审批提议 · `/accept|/deny <id>` 审批 · `/audit [n]` 审计 · `/mute` 一键静音 · `/quit` 退出。
 
+安装后（`pip install -e .`）也可用 `proto-run` / `proto-web` / `proto-backup` 三个命令；`python3 -m proto.backup` 一键打包 owner.key+全部状态。
+
 ### Web 管理控制台（推荐）
 
 `python3 -m proto.web` 启动本地控制台（仅绑定 127.0.0.1），终端打印带一次性令牌的 URL，浏览器自动打开：
 
-- **对话区**：与 PROTO 交流，反馈实时塑造倾向；
+- **对话区**：与 PROTO 交流，反馈实时塑造倾向；夸奖/拒绝/任务成败会真实驱动它的 PAD 情绪（重启不丢）；
 - **内在状态仪表盘**：12 个参数的实时条形图（含设定点/硬界/欲望触发阈值标记），悬停即可锁定/解锁/上下界覆写；
 - **主动提议审批**：一键同意（产出落 scratch 草稿区）或拒绝（触发阻尼，阈值上调立即可见）；
-- **任务指派 / 主人优先级 / 一键静音 / 审计链实时滚动**（含篡改检测状态灯）。
+- **任务指派**（暂停任务可在界面批准续跑或拒绝中止）、**规矩与内化**（立规矩→5 次遵守自动内化→可降级）、**进化工作台**（OWNER 签名加测试用例→沙盒评估变体→分级晋升）、**主人优先级 / 一键静音 / 审计链实时滚动**（含篡改检测状态灯）。
 
 安全设计：令牌放在 URL 片段（#token=…）不下发服务器，所有 API 要求请求头携带，本机其他网页无法跨站调用你的 agent。
 
@@ -101,7 +103,7 @@ PROTO> 〔主动提议〕围绕……推进一个小目标  ← 欲望缺口+调
 
 ```bash
 cd proto-agent
-python3 -m pytest -q      # 246 项测试全绿（另 2 项可选依赖测试自动跳过）
+python3 -m pytest -q      # 271 项测试全绿（另 2 项可选依赖测试自动跳过；CI 矩阵 3.9–3.12 + 可选依赖作业）
 python3 -m proto.demo     # 12 段全链路演示：锚定→调制→毒化拒收→评估→审批→进化两轨→自驱执行→审计
 ```
 
@@ -143,7 +145,7 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 
 ## 验证
 
-- **246 项测试**（主环境；装有可选依赖的 venv 中 248 全绿）覆盖全部安全边界输入类：伪造签名 / nonce 重放 / ts 过期 / CONTENT 洪泛 / 越界调制 / owner_locked / 审计篡改 / 预算侵占 / 状态文件损坏拒载 / 沙盒逃逸探针 / 影子回归规则。
+- **271 项测试**（主环境；装有可选依赖的环境 273 全绿；GitHub Actions 全矩阵）覆盖全部安全边界输入类：伪造签名 / nonce 重放 / ts 过期 / CONTENT 洪泛 / 越界调制 / owner_locked / 审计篡改 / 预算侵占 / 状态文件损坏拒载 / 沙盒逃逸探针 / 影子回归规则。
 - 两轮独立上下文代码评审（核心引擎 + 阶段 6–8 前 minor 批），全部发现项 TDD 修复。
 - 测试全为真实行为断言，零 mock；沙盒用真实 subprocess 验证清洁环境与资源限制。
 
@@ -157,6 +159,7 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 | 8 | 行为轨：影子双跑 + 分级授权 | ✅ feat/stages-6-8 |
 | M4 | 引擎完全体：参数回滚+阻尼、Router 执行器骨架、L3 调度+蒸馏、兴趣收敛+dormant+欲望动态 | ✅ feat/engine-completion |
 | M7 | 外部系统接入：MongoDB 存储 / LangGraph 编排 / gVisor 沙盒后端 | ✅ 适配器交付，条件满足即生效（见下表） |
+| M8 | 重启不失忆（元认知持久化）· 情绪活起来 · 暂停任务恢复 · 规矩内化进 UI · 进化工作台 · CI · 备份 · LLM 策略评估 | ✅ |
 
 ## 许可
 

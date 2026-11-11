@@ -30,6 +30,7 @@ from proto.metacog.damping import DampingController
 from proto.metacog.distill import TaskDistiller
 from proto.metacog.goals import Goal, GoalArbiter
 from proto.metacog.interest import InterestModel
+from proto.metacog.internalize import RuleLedger
 from proto.metacog.scheduler import MetacogScheduler
 from proto.metacog.strategies import StrategyLibrary
 from proto.state.agent_state import AgentState, StateManager
@@ -90,6 +91,8 @@ class ProtoAgent:
         raw = store.get("state", "main")
         self.state = AgentState.from_dict(raw) if raw else AgentState()
         self.mgr = StateManager(store, self.state, self.kernel, self.spine, agent_id="main")
+        if raw is None:
+            self.mgr.save()   # 首启即落盘：备份始终有意义
 
         self.attributor = (LLMAttributor(llm) if llm is not None
                            else HeuristicAttributor())
@@ -102,8 +105,12 @@ class ProtoAgent:
                                    interest_model=self.interest)
         # 控制台模式一次拒绝即上调阈值：交互频率低，及时收敛比迟钝好
         self.damping = DampingController(self.mgr, self.spine, consecutive=1)
+        self._goal_interval = goal_interval_s
         self.scheduler = MetacogScheduler(goal_interval_s=goal_interval_s, clock=now)
-        self.scheduler.register("distill", lambda result: self.distiller.distill(result, domain="chat"))
+        self.scheduler.register("distill", self._on_task_completed)
+        self.ledger = RuleLedger(self.spine)
+        self._load_metacog()   # 重启不失忆：策略/兴趣/阻尼/台账/调度时间戳
+        self._wire_metacog_callbacks()
         self.scheduler.start()
         self.desires = DesireDynamics(self.mgr)
         self.workspace = ScratchWorkspace(self.data_dir / "ws", audit=self.spine)
@@ -118,6 +125,61 @@ class ProtoAgent:
         self.pad = PAD(self.state.emotion)
         self._last_owner_ts = self._now()
 
+    def _on_task_completed(self, result) -> None:
+        self.distiller.distill(result, domain="chat")
+        # 规矩应用记账：任务成功 = 在场的外部规矩被遵守一次
+        if result.status == "completed":
+            for rule in self.ledger.get_all():
+                if rule["status"] == "external":
+                    self.ledger.record_application(rule["id"], "task", success=True)
+                    self.ledger.check_internalize(rule["id"])
+        self._persist_metacog()
+
+    # ------------------ 元认知持久化（重启不失忆） ------------------
+    _METACOG_DOC = "main"
+
+    def _metacog_store(self):
+        return FileSystemStore(self.data_dir / "data") if not hasattr(self, "_store") else self._store
+
+    def _persist_metacog(self) -> None:
+        from proto.storage.store import DocumentStore
+        store = self.spine._store
+        store.put("metacog", self._METACOG_DOC, {
+            "library": self.library.to_dict(),
+            "interest": self.interest.to_dict(),
+            "damping": self.damping.to_dict(),
+            "ledger": self.ledger.to_dict(),
+            "scheduler": self.scheduler.to_dict(),
+        })
+
+    def _load_metacog(self) -> None:
+        raw = self.spine._store.get("metacog", self._METACOG_DOC)
+        if not raw:
+            return
+        self.library = StrategyLibrary.from_dict(raw.get("library", {}))
+        self.interest = InterestModel.from_dict(raw.get("interest", {}))
+        DampingController.restore(self.damping, raw.get("damping", {}))
+        self.ledger = RuleLedger.from_dict(raw.get("ledger", {}), self.spine)
+        self.scheduler = MetacogScheduler.from_dict(
+            raw.get("scheduler", {}), goal_interval_s=self._goal_interval)
+        self.scheduler.register("distill",
+                                lambda result: self.distiller.distill(result, domain="chat"))
+        self.arbiter = GoalArbiter(self.kernel, owner_priority=self.state.owner_priority,
+                                   interest_model=self.interest)
+        self._wire_metacog_callbacks()
+
+    def _wire_metacog_callbacks(self) -> None:
+        # 任何元认知组件变化即落盘（重启不失忆）
+        self.library.on_change = self._persist_metacog
+        self.interest.on_change = self._persist_metacog
+        self.damping.on_change = self._persist_metacog
+
+    def instruct(self, text: str) -> str:
+        """主人立规矩（外部规则入台账，反复成功应用后内化为倾向）。"""
+        rid = self.ledger.add(text)
+        self._persist_metacog()
+        return rid
+
     # ------------------------------------------------------------------
     @property
     def fingerprint(self) -> str:
@@ -129,9 +191,16 @@ class ProtoAgent:
         msg = self.anchor.sign({"text": text}, ts=self._now(), nonce=f"console-{self._nonce}")
         return self.anchor.verify(msg).ok
 
+    _PRAISE_WORDS = ("干得好", "干得漂亮", "漂亮", "不错", "很好", "赞", "谢谢",
+                     "保持", "厉害", "好样的")
+
     def chat(self, text: str) -> str:
         assert self._owner_verified(text), "OWNER 通道认证失败"
         self._last_owner_ts = self._now()
+        if any(w in text for w in self._PRAISE_WORDS):
+            self.pad.apply_event("owner_praise")
+        self.pad.tick(1)   # 每轮向设定点自然衰减
+        self.mgr.save()    # 情绪变化随对话落盘
         signals = self.attributor.attribute(text, Channel.OWNER)
         self.pipeline.process(signals)
         context = self.injector.render(
@@ -191,6 +260,7 @@ class ProtoAgent:
                          if p.proposal_id == proposal_id), None)
         dim = proposal.desire_dim if proposal else None
         self.queue.deny(proposal_id, reason="owner_denied")
+        self.pad.apply_event("rejection")
         if dim and dim in self.state.desires:
             return self.state.desires[dim]["threshold"]
         return None
@@ -210,6 +280,8 @@ class ProtoAgent:
                     desire_dim=proposal.desire_dim)
         record = self.queue.approve(proposal_id)
         result = self.router.run(task)
+        if result.status == "completed":
+            self.pad.apply_event("goal_met")
         self.scheduler.on_task_completed(result)
         return {"status": result.status, "steps": result.step_results,
                 "approved": record.granted}
@@ -220,11 +292,18 @@ class ProtoAgent:
         if not steps:
             return {"status": "no_plan",
                     "reason": "无法规划步骤（离线模式或模型未给出计划）"}
+        return self.run_task_with_steps(description, steps)
+
+    def run_task_with_steps(self, description: str, steps: list) -> dict:
         task = Task(id=f"owner-{int(self._now())}", description=description, steps=steps)
         result = self.router.run(task)
+        if result.status == "completed":
+            self.pad.apply_event("task_success")
+        elif result.status in ("failed", "denied"):
+            self.pad.apply_event("blocked")
         self.scheduler.on_task_completed(result)
         return {"status": result.status, "step_results": result.step_results,
-                "proposal_id": result.proposal_id, "task": task}
+                "proposal_id": result.proposal_id, "task_id": task.id}
 
     # ------------------------------------------------------------------
     def status(self) -> str:
@@ -246,6 +325,23 @@ class ProtoAgent:
     def audit_tail(self, n: int = 10) -> List[dict]:
         return self.spine.tail(n)
 
+    def resume_task(self, task_id: str, approved: bool) -> dict:
+        """从暂停检查点恢复任务：批准→续跑余下步骤并晋升；拒绝→中止。"""
+        record = self.checkpoints.resume(task_id)
+        if record is None:
+            return {"status": "failed", "reason": "no_checkpoint"}
+        spec = record["state"].get("task")
+        if not spec or "waiting_for" not in record["state"]:
+            return {"status": "failed", "reason": "not_paused"}
+        task = Task(id=task_id, description=spec["description"],
+                    steps=spec["steps"], owner_assigned=spec.get("owner_assigned", True),
+                    desire_dim=spec.get("desire_dim"))
+        result = self.router.resume(task, human_approved=approved)
+        if result.status == "completed":
+            self.pad.apply_event("task_success")
+        self.scheduler.on_task_completed(result)
+        return {"status": result.status, "step_results": result.step_results}
+
     # ------------------ 管理接口（Web 控制台用） ------------------
     def lock_param(self, param: str, on: bool) -> dict:
         """主人锁定/解锁参数：锁定后拒绝一切调制（含 override）。"""
@@ -265,15 +361,60 @@ class ProtoAgent:
         self.mgr.save()
         return {"owner_priority": text}
 
-    def evolution_snapshot(self) -> dict:
-        from proto.evolution.archive import VariantArchive
-        from proto.evolution.testset import OwnedTestSet
+    # ------------------ L5 进化（OWNER 通道驱动） ------------------
+    def _evolution(self):
+        """惰性组装进化引擎组件（同一存储）。"""
+        if not hasattr(self, "_evo"):
+            from proto.evolution.archive import VariantArchive
+            from proto.evolution.engine import EvolutionEngine
+            from proto.evolution.sandbox import Sandbox
+            from proto.evolution.scorer import PrivateScorer
+            from proto.evolution.testset import OwnedTestSet
 
-        store = create_store(self.data_dir)
-        archive = VariantArchive(store)
-        testset = OwnedTestSet(store, self.anchor, self.spine)
+            store = create_store(self.data_dir)
+            testset = OwnedTestSet(store, self.anchor, self.spine)
+            archive = VariantArchive(store)
+            engine = EvolutionEngine(Sandbox(timeout_s=10), PrivateScorer(),
+                                     testset, archive, self.spine)
+            self._evo = {"testset": testset, "archive": archive, "engine": engine}
+        return self._evo
+
+    def add_test_case(self, case_input, expected) -> str:
+        """OWNER 签名追加测试用例（人类所有、只增不删，设计 §9.1）。"""
+        self._nonce += 1
+        msg = self.anchor.sign({"input": case_input, "expected": expected},
+                               ts=self._now(), nonce=f"case-{self._nonce}")
+        return self._evolution()["testset"].add_case(case_input, expected, msg)
+
+    def evolve(self, code: str) -> dict:
+        """评估候选变体：沙盒跑人类测试集 → 私有评分 → canary/拒绝。"""
+        evo = self._evolution()
+        parent = evo["archive"].default()
+        decision = evo["engine"].evaluate(code, parent_id=parent.id if parent else None)
+        return {"merged": decision.merged, "status": decision.status,
+                "score": decision.score, "reason": decision.reason,
+                "variant_id": decision.variant_id}
+
+    def promote_variant(self, variant_id: str, target_class: str) -> bool:
+        """canary→default 唯一通道：分级授权（低自动/中人工/高拒绝）。"""
+        from proto.evolution.authorization import EvolutionAuthorizer
+        evo = self._evolution()
+        return evo["engine"].promote(variant_id, EvolutionAuthorizer(self.kernel),
+                                     target_class=target_class, sandbox_passed=True)
+
+    def rules_view(self) -> list:
+        return [{"id": r["id"], "text": r["text"], "status": r["status"],
+                 "applications": len(r["applications"])}
+                for r in self.ledger.get_all()]
+
+    def deinternalize_rule(self, rule_id: str) -> None:
+        self.ledger.de_internalize(rule_id)
+        self._persist_metacog()
+
+    def evolution_snapshot(self) -> dict:
+        evo = self._evolution()
         return {
             "variants": [{"id": v.id, "parent": v.parent_id, "score": v.score,
-                          "status": v.status} for v in archive.all()],
-            "testset_count": len(testset.cases()),
+                          "status": v.status} for v in evo["archive"].all()],
+            "testset_count": len(evo["testset"].cases()),
         }

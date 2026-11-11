@@ -505,7 +505,7 @@ LangGraph 编排与 MongoDB 适配按 §4 的接口约定在后续阶段接入�
 | 活的 Agent 运行时 + REPL | `proto/runtime/agent.py` + `proto/run.py` | `test_runtime.py`（注册/对话/调制/主动提议/阻尼/审批执行） | ✅ |
 | §3.2 密钥托管 / 多设备 | 注册仪式已实现 | — | 📋 产品化阶段 |
 
-**验证基线**：`python3 -m pytest -q` → 246 项全绿（+2 可选跳过）；`python3 -m proto.demo` → 12 段全链路演示，退出码 0；`python3 -m proto.run` → 离线冒烟通过。
+**验证基线**：`python3 -m pytest -q` → 271 项全绿（+2 可选跳过）；`python3 -m proto.demo` → 12 段全链路演示，退出码 0；`python3 -m proto.run` → 离线冒烟通过。
 
 **v2.3（2026-11-11）**：活的 Agent 运行时——`python -m proto.run` 即得：主人密钥首次注册/持久化（本地控制台 = OWNER 通道，每条输入走完整 HMAC 认证）、对话（状态注入 + LLM，未配 key 自动离线模式）、LLM 归因（参数白名单 + 强度夹紧 + 解析失败回退启发式）、主动提议（欲望缺口 × 调度器 × 仲裁 × 审批，拒绝即阻尼）、任务执行（LLM 规划过工具白名单 → Router 安全管线）。
 
@@ -515,3 +515,6 @@ LangGraph 编排与 MongoDB 适配按 §4 的接口约定在后续阶段接入�
 
 
 **v2.5（2026-11-11）**：外部系统接入适配器——MongoStore（懒连接+环境变量工厂）、LangGraph 单轮对话图（节点=内置调度器等价物）、Sandbox runsc 后端（Linux 自动探测/macOS 回退）、Web 控制台固定令牌（长驻部署）。核心运行时保持零三方依赖，可选依赖组 `.[mongo]` / `.[graph]`。
+
+
+**v2.6（2026-11-11）**：体检加固——元认知全量持久化（重启不失忆）、情绪事件接入运行时、暂停任务可恢复（检查点携带任务规格）、规矩内化与进化工作台进 UI、CI/备份/安装命令、evalx LLM 策略适配器。
