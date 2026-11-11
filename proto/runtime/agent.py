@@ -123,6 +123,7 @@ class ProtoAgent:
         self._load_metacog()   # 重启不失忆：策略/兴趣/阻尼/台账/调度时间戳
         self._wire_metacog_callbacks()
         self.scheduler.start()
+        self._inbox = []
         self.desires = DesireDynamics(self.mgr)
         self.workspace = ScratchWorkspace(self.data_dir / "ws", audit=self.spine)
         self.queue = ApprovalQueue(self.kernel, self.spine, damping=self.damping)
@@ -217,6 +218,22 @@ class ProtoAgent:
         self.spine.store.put("config", "persona", {"text": text})
         self.spine.append("owner_override", {"action": "set_persona", "text": text})
 
+    _HISTORY_TURNS = 8
+
+    def _load_history(self) -> list:
+        raw = self.spine.store.get("dialogue", "main") or []
+        return list(raw)[-self._HISTORY_TURNS:]
+
+    def _append_history(self, role: str, text: str) -> None:
+        history = self._load_history()
+        history.append({"role": role, "text": text[:400]})
+        self.spine.store.put("dialogue", "main", history[-self._HISTORY_TURNS:])
+
+    def pop_inbox(self) -> list:
+        """取走积压的主动消息（心跳产出，控制台拉取展示）。"""
+        messages, self._inbox = self._inbox, []
+        return messages
+
     def chat(self, text: str) -> str:
         assert self._owner_verified(text), "OWNER 通道认证失败"
         self._last_owner_ts = self._now()
@@ -229,13 +246,25 @@ class ProtoAgent:
         context = self.injector.render(
             text, self.state,
             self.library.retrieve(text, k=3, epsilon=0.15))
+        history = self._load_history()
+        history_block = ""
+        if history:
+            lines = "\n".join(f"{'主人' if h['role'] == 'owner' else 'PROTO'}：{h['text']}"
+                               for h in history)
+            history_block = "\n\n最近对话（记忆）：\n" + lines
+        reply = ""
         if self.llm is not None:
             try:
-                return self.llm.complete(self._system_prompt(),
-                                         context + "\n\n主人说：" + text)
+                reply = self.llm.complete(
+                    self._system_prompt(),
+                    context + history_block + "\n\n主人说：" + text)
             except Exception:
-                pass  # 回退离线回复
-        return self._offline_reply(text)
+                reply = ""  # 回退离线回复
+        if not reply:
+            reply = self._offline_reply(text)
+        self._append_history("owner", text)
+        self._append_history("agent", reply)
+        return reply
 
     def _offline_reply(self, text: str) -> str:
         return (f"（离线模式，未接 LLM）收到：{text}。"
@@ -290,10 +319,12 @@ class ProtoAgent:
         if sub.rejected:
             return None
         src = f"，来源 {study['source']}" if study["source"] else "（离线模板）"
-        return (f"〔主动学习〕围绕『{study['topic']}』研读开源项目并写了学习笔记"
+        message = (f"〔主动学习〕围绕『{study['topic']}』研读开源项目并写了学习笔记"
                 f" scratch:{note_path}{src}——零外部性；"
                 f"〔提案〕晋升为可见文档？—— /accept {sub.proposal_id} 同意，"
                 f"/deny {sub.proposal_id} 拒绝（拒绝会让我收敛一点）")
+        self._inbox.append(message)
+        return message
 
     def _compose_draft(self) -> str:
         if self.llm is not None:
@@ -327,6 +358,9 @@ class ProtoAgent:
         dim = proposal.desire_dim if proposal else None
         self.queue.deny(proposal_id, reason="owner_denied")
         self.pad.apply_event("rejection")
+        self._inbox.append(
+            f"好……收到。{dim or '这个念头'}的触发阈值我调高了些，"
+            f"在你更需要我之前我会安静一点。")
         if dim and dim in self.state.desires:
             return self.state.desires[dim]["threshold"]
         return None

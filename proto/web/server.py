@@ -8,7 +8,9 @@
 """
 from __future__ import annotations
 
+import hmac
 import json
+import logging
 import re
 import secrets
 import threading
@@ -37,7 +39,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _authorized(self) -> bool:
-        return self.headers.get("X-Proto-Token") == self.server.token
+        supplied = self.headers.get("X-Proto-Token") or ""
+        return hmac.compare_digest(supplied, self.server.token)  # 恒时比较
 
     def _body(self) -> dict:
         length = int(self.headers.get("Content-Length", 0))
@@ -49,6 +52,13 @@ class _Handler(BaseHTTPRequestHandler):
             return {}
 
     # ---- HTTP 方法 ----
+    def _safely(self, fn):
+        try:
+            return fn()
+        except Exception:
+            logging.exception("API 路由异常")
+            return self._json(500, {"error": "internal"})
+
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path in ("/", "/index.html"):
@@ -62,7 +72,7 @@ class _Handler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/"):
             if not self._authorized():
                 return self._json(401, {"error": "unauthorized"})
-            return self._api("GET", parsed)
+            return self._safely(lambda: self._api("GET", parsed))
         self._json(404, {"error": "not_found"})
 
     def do_POST(self):
@@ -71,7 +81,7 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(404, {"error": "not_found"})
         if not self._authorized():
             return self._json(401, {"error": "unauthorized"})
-        return self._api("POST", parsed)
+        return self._safely(lambda: self._api("POST", parsed))
 
     # ---- API 路由 ----
     def _api(self, method: str, parsed):
@@ -113,6 +123,8 @@ class _Handler(BaseHTTPRequestHandler):
                                                        float(body.get("value", 0))))
             if path == "/api/priority" and method == "POST":
                 return self._json(200, agent.set_priority(self._body().get("text", "")))
+            if path == "/api/inbox" and method == "GET":
+                return self._json(200, {"messages": agent.pop_inbox()})
             if path == "/api/awake" and method == "POST":
                 on = bool(self._body().get("on"))
                 keeper = self.server.keeper

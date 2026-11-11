@@ -26,6 +26,7 @@ def create_backup(data_dir: Path, output: Path) -> str:
         for file in sorted(data_dir.rglob("*")):
             if file.is_file():
                 zf.write(file, file.relative_to(data_dir))
+    output.chmod(0o600)   # 内含 owner.key
     return fingerprint
 
 
