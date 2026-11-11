@@ -54,3 +54,7 @@ LLMAttributor 接入模型 API → LangGraph 编排接入（节点签名已兼�
 - ⑤ LLM 接入（执行器步骤生成 + LLMAttributor + LLM 蒸馏/策略适配）：接口就绪，待 API 接入方式。
 
 **验证**：210 项测试全绿；demo 12 段退出码 0。设计内机制全部落地，无遗留引擎欠账。
+
+### M5 — 活的 Agent 运行时（进行中，feat/live-agent-runtime）
+
+范围：LLM 客户端（OpenAI 兼容，零依赖 urllib）+ LLMAttributor/LLMPlanner（带离线回退）+ ProtoAgent 运行时（首次注册/对话/调制/主动提议/审批）+ `python -m proto.run` REPL + README 快速上手。
