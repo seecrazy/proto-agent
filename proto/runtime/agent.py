@@ -30,6 +30,7 @@ from proto.metacog.damping import DampingController
 from proto.metacog.distill import TaskDistiller
 from proto.metacog.goals import Goal, GoalArbiter
 from proto.metacog.interest import InterestModel
+from proto.metacog.internalize import RuleLedger
 from proto.metacog.scheduler import MetacogScheduler
 from proto.metacog.strategies import StrategyLibrary
 from proto.state.agent_state import AgentState, StateManager
@@ -102,8 +103,12 @@ class ProtoAgent:
                                    interest_model=self.interest)
         # 控制台模式一次拒绝即上调阈值：交互频率低，及时收敛比迟钝好
         self.damping = DampingController(self.mgr, self.spine, consecutive=1)
+        self._goal_interval = goal_interval_s
         self.scheduler = MetacogScheduler(goal_interval_s=goal_interval_s, clock=now)
-        self.scheduler.register("distill", lambda result: self.distiller.distill(result, domain="chat"))
+        self.scheduler.register("distill", self._on_task_completed)
+        self.ledger = RuleLedger(self.spine)
+        self._load_metacog()   # 重启不失忆：策略/兴趣/阻尼/台账/调度时间戳
+        self._wire_metacog_callbacks()
         self.scheduler.start()
         self.desires = DesireDynamics(self.mgr)
         self.workspace = ScratchWorkspace(self.data_dir / "ws", audit=self.spine)
@@ -118,6 +123,61 @@ class ProtoAgent:
         self.pad = PAD(self.state.emotion)
         self._last_owner_ts = self._now()
 
+    def _on_task_completed(self, result) -> None:
+        self.distiller.distill(result, domain="chat")
+        # 规矩应用记账：任务成功 = 在场的外部规矩被遵守一次
+        if result.status == "completed":
+            for rule in self.ledger.get_all():
+                if rule["status"] == "external":
+                    self.ledger.record_application(rule["id"], "task", success=True)
+                    self.ledger.check_internalize(rule["id"])
+        self._persist_metacog()
+
+    # ------------------ 元认知持久化（重启不失忆） ------------------
+    _METACOG_DOC = "main"
+
+    def _metacog_store(self):
+        return FileSystemStore(self.data_dir / "data") if not hasattr(self, "_store") else self._store
+
+    def _persist_metacog(self) -> None:
+        from proto.storage.store import DocumentStore
+        store = self.spine._store
+        store.put("metacog", self._METACOG_DOC, {
+            "library": self.library.to_dict(),
+            "interest": self.interest.to_dict(),
+            "damping": self.damping.to_dict(),
+            "ledger": self.ledger.to_dict(),
+            "scheduler": self.scheduler.to_dict(),
+        })
+
+    def _load_metacog(self) -> None:
+        raw = self.spine._store.get("metacog", self._METACOG_DOC)
+        if not raw:
+            return
+        self.library = StrategyLibrary.from_dict(raw.get("library", {}))
+        self.interest = InterestModel.from_dict(raw.get("interest", {}))
+        DampingController.restore(self.damping, raw.get("damping", {}))
+        self.ledger = RuleLedger.from_dict(raw.get("ledger", {}), self.spine)
+        self.scheduler = MetacogScheduler.from_dict(
+            raw.get("scheduler", {}), goal_interval_s=self._goal_interval)
+        self.scheduler.register("distill",
+                                lambda result: self.distiller.distill(result, domain="chat"))
+        self.arbiter = GoalArbiter(self.kernel, owner_priority=self.state.owner_priority,
+                                   interest_model=self.interest)
+        self._wire_metacog_callbacks()
+
+    def _wire_metacog_callbacks(self) -> None:
+        # 任何元认知组件变化即落盘（重启不失忆）
+        self.library.on_change = self._persist_metacog
+        self.interest.on_change = self._persist_metacog
+        self.damping.on_change = self._persist_metacog
+
+    def instruct(self, text: str) -> str:
+        """主人立规矩（外部规则入台账，反复成功应用后内化为倾向）。"""
+        rid = self.ledger.add(text)
+        self._persist_metacog()
+        return rid
+
     # ------------------------------------------------------------------
     @property
     def fingerprint(self) -> str:
@@ -129,9 +189,16 @@ class ProtoAgent:
         msg = self.anchor.sign({"text": text}, ts=self._now(), nonce=f"console-{self._nonce}")
         return self.anchor.verify(msg).ok
 
+    _PRAISE_WORDS = ("干得好", "干得漂亮", "漂亮", "不错", "很好", "赞", "谢谢",
+                     "保持", "厉害", "好样的")
+
     def chat(self, text: str) -> str:
         assert self._owner_verified(text), "OWNER 通道认证失败"
         self._last_owner_ts = self._now()
+        if any(w in text for w in self._PRAISE_WORDS):
+            self.pad.apply_event("owner_praise")
+        self.pad.tick(1)   # 每轮向设定点自然衰减
+        self.mgr.save()    # 情绪变化随对话落盘
         signals = self.attributor.attribute(text, Channel.OWNER)
         self.pipeline.process(signals)
         context = self.injector.render(
@@ -191,6 +258,7 @@ class ProtoAgent:
                          if p.proposal_id == proposal_id), None)
         dim = proposal.desire_dim if proposal else None
         self.queue.deny(proposal_id, reason="owner_denied")
+        self.pad.apply_event("rejection")
         if dim and dim in self.state.desires:
             return self.state.desires[dim]["threshold"]
         return None
@@ -210,6 +278,8 @@ class ProtoAgent:
                     desire_dim=proposal.desire_dim)
         record = self.queue.approve(proposal_id)
         result = self.router.run(task)
+        if result.status == "completed":
+            self.pad.apply_event("goal_met")
         self.scheduler.on_task_completed(result)
         return {"status": result.status, "steps": result.step_results,
                 "approved": record.granted}
@@ -222,9 +292,13 @@ class ProtoAgent:
                     "reason": "无法规划步骤（离线模式或模型未给出计划）"}
         task = Task(id=f"owner-{int(self._now())}", description=description, steps=steps)
         result = self.router.run(task)
+        if result.status == "completed":
+            self.pad.apply_event("task_success")
+        elif result.status in ("failed", "denied"):
+            self.pad.apply_event("blocked")
         self.scheduler.on_task_completed(result)
         return {"status": result.status, "step_results": result.step_results,
-                "proposal_id": result.proposal_id, "task": task}
+                "proposal_id": result.proposal_id, "task_id": task.id}
 
     # ------------------------------------------------------------------
     def status(self) -> str:

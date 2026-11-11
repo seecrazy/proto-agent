@@ -24,6 +24,7 @@ class DampingController:
     def record_ignored(self, desire_dim: str) -> None:
         n = self._ignored.get(desire_dim, 0) + 1
         self._ignored[desire_dim] = n
+        self._changed()
         if n >= self._consecutive:
             new_threshold = self._mgr.adjust_desire_threshold(desire_dim, +self._bump)
             self._audit.append(AuditEvent.DAMPEN, {
@@ -33,3 +34,16 @@ class DampingController:
 
     def record_accepted(self, desire_dim: str) -> None:
         self._ignored[desire_dim] = 0
+        self._changed()
+
+    def _changed(self) -> None:
+        cb = getattr(self, "on_change", None)
+        if cb is not None:
+            cb()
+
+    def to_dict(self) -> dict:
+        return {"ignored": dict(self._ignored)}
+
+    @classmethod
+    def restore(cls, controller: "DampingController", raw: dict) -> None:
+        controller._ignored = dict(raw.get("ignored", {}))

@@ -84,3 +84,16 @@ class RuleLedger:
 
     def internal_rules(self) -> List[dict]:
         return [r for r in self._rules.values() if r["status"] == "internal"]
+
+    def get_all(self) -> List[dict]:
+        return list(self._rules.values())
+
+    def to_dict(self) -> dict:
+        return {"rules": list(self._rules.values())}
+
+    @classmethod
+    def from_dict(cls, raw: dict, audit: AuditSpine) -> "RuleLedger":
+        ledger = cls(audit)
+        for rule in raw.get("rules", []):
+            ledger._rules[rule["id"]] = dict(rule)
+        return ledger

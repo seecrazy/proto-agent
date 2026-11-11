@@ -39,7 +39,13 @@ class StrategyLibrary:
         s = Strategy(id=uuid.uuid4().hex[:12], text=text, cluster=cluster,
                      utility=round(utility, 4), valence=valence)
         self.strategies[s.id] = s
+        self._changed()
         return s
+
+    def _changed(self) -> None:
+        cb = getattr(self, "on_change", None)
+        if cb is not None:
+            cb()
 
     def _match_score(self, query: str, s: Strategy) -> float:
         overlap = len(_tokens(query) & _tokens(s.text))
@@ -66,6 +72,19 @@ class StrategyLibrary:
         s.utility = round(s.utility + lr * (target - s.utility), 4)
         s.uses += 1
         s.valence = round(s.valence + (0.1 if success else -0.1), 4)
+        self._changed()
+
+    # ---- 持久化 ----
+    def to_dict(self) -> dict:
+        return {"strategies": [vars(s) for s in self.strategies.values()]}
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> "StrategyLibrary":
+        lib = cls()
+        for row in raw.get("strategies", []):
+            s = Strategy(**row)
+            lib.strategies[s.id] = s
+        return lib
 
     def prune(self, min_utility: float = 0.25, keep_per_cluster: int = 3) -> int:
         removed = 0

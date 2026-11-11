@@ -22,6 +22,18 @@ class InterestModel:
         lr = self._lr * 2 if praise else self._lr
         w = self._weights.get(domain, DEFAULT_WEIGHT)
         self._weights[domain] = round(w + lr * (target - w), 4)
+        cb = getattr(self, "on_change", None)
+        if cb is not None:
+            cb()
 
     def weight(self, domain: str, default: float = DEFAULT_WEIGHT) -> float:
         return self._weights.get(domain, default)
+
+    def to_dict(self) -> dict:
+        return {"weights": dict(self._weights), "lr": self._lr}
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> "InterestModel":
+        m = cls(lr=raw.get("lr", 0.25))
+        m._weights = dict(raw.get("weights", {}))
+        return m

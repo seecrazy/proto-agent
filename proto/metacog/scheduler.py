@@ -47,6 +47,19 @@ class MetacogScheduler:
         if callback is not None:
             callback(task_result)
 
+    # ---- 持久化 ----
+    def to_dict(self) -> dict:
+        return {"last_goal": self._last_goal, "last_deep": self._last_deep}
+
+    @classmethod
+    def from_dict(cls, raw: dict, goal_interval_s: float = 4 * 3600,
+                  deep_review_interval_s: float = 86400) -> "MetacogScheduler":
+        s = cls(goal_interval_s=goal_interval_s,
+                deep_review_interval_s=deep_review_interval_s)
+        s._last_goal = raw.get("last_goal", 0.0)
+        s._last_deep = raw.get("last_deep", 0.0)
+        return s
+
     def _fire(self, event: str, fired: List[str]) -> None:
         fired.append(event)
         callback = self._callbacks.get(event)
