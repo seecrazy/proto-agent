@@ -74,7 +74,7 @@ class TestProactive:
         # 手动把好奇缺口顶过阈值（测试快捷路径；生产由闲置增长驱动）
         agent.state.set_within_bounds("desires.curiosity_gap", 0.9)
         proposal = agent.maybe_proactive()
-        assert proposal is not None and "提议" in proposal
+        assert proposal is not None and "提案" in proposal
         assert agent.pending_proposals()
 
     def test_deny_proposal_dampens(self, tmp_path):
