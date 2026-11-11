@@ -163,3 +163,18 @@ class TestM8Endpoints:
                             {"variant_id": vid, "target_class": "l1_rules"},
                             token=server.token)
         assert status == 200 and data["promoted"] is False  # 高风险永远拒绝
+
+
+class TestM10Endpoints:
+    def test_persona_set_and_state(self, server):
+        status, data = call(server, "POST", "/api/persona",
+                            {"text": "资深软件专家"}, token=server.token)
+        assert status == 200 and data["persona"] == "资深软件专家"
+        status, data = call(server, "GET", "/api/state", token=server.token)
+        assert data["persona"] == "资深软件专家"
+
+    def test_scratch_notes_listing(self, server):
+        server.agent.workspace.write("notes/learning-1.md", "# 学习笔记\n来源：github.com/x/y")
+        status, data = call(server, "GET", "/api/scratch", token=server.token)
+        assert status == 200
+        assert data["notes"] and "github.com/x/y" in data["notes"][0]["preview"]

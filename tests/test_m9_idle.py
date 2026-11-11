@@ -26,8 +26,14 @@ class ScriptedLLM(LLMClient):
 
 @pytest.fixture()
 def agent(tmp_path):
+    from proto.exec.webtools import WebToolkit
+
+    def dead_fetch(url, accept="text/html"):
+        raise OSError("测试环境禁网")
+
     return ProtoAgent(data_dir=tmp_path, llm=ScriptedLLM(),
-                      goal_interval_s=0)   # 测试：每次心跳都到点
+                      goal_interval_s=0,
+                      webtools=WebToolkit(fetch=dead_fetch))  # 封闭：每次心跳都到点
 
 
 class TestIdleLife:
@@ -49,7 +55,10 @@ class TestIdleLife:
         assert "提案" in message and agent.pending_proposals()
 
     def test_offline_idle_draft_uses_template(self, tmp_path):
-        agent = ProtoAgent(data_dir=tmp_path, goal_interval_s=0)  # 无 LLM
+        from proto.exec.webtools import WebToolkit
+        agent = ProtoAgent(data_dir=tmp_path, goal_interval_s=0,
+                           webtools=WebToolkit(fetch=lambda u, accept="text/html":
+                                               (_ for _ in ()).throw(OSError("禁网"))))
         agent.state.set_within_bounds("desires.curiosity_gap", 0.9)
         agent.maybe_proactive()
         assert any(p.startswith("notes/") for p in agent.workspace.list_scratch())

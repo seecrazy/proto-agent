@@ -113,6 +113,21 @@ class _Handler(BaseHTTPRequestHandler):
                                                        float(body.get("value", 0))))
             if path == "/api/priority" and method == "POST":
                 return self._json(200, agent.set_priority(self._body().get("text", "")))
+            if path == "/api/persona" and method == "POST":
+                agent.set_persona(self._body().get("text", ""))
+                return self._json(200, {"persona": agent.persona})
+            if path == "/api/scratch" and method == "GET":
+                notes = []
+                for rel in agent.workspace.list_scratch():
+                    if not rel.startswith("notes/"):
+                        continue
+                    path_obj = agent.workspace._scratch / rel
+                    try:
+                        content = path_obj.read_text(encoding="utf-8")
+                    except OSError:
+                        continue
+                    notes.append({"path": rel, "preview": content[:160]})
+                return self._json(200, {"notes": notes[-10:]})
             if path == "/api/evolution" and method == "GET":
                 return self._json(200, agent.evolution_snapshot())
             if path == "/api/evolution/testset" and method == "POST":
@@ -169,6 +184,7 @@ def _state_payload(agent: ProtoAgent) -> dict:
         "params": params,
         "emotion": dict(agent.state.emotion),
         "owner_priority": agent.state.owner_priority,
+        "persona": agent.persona,
         "model": (agent.llm.describe() if hasattr(agent.llm, "describe") else "已接 LLM") if agent.llm else "离线模式",
         "muted": agent.kernel.muted,
         "chain_ok": agent.spine.verify_chain().ok,
