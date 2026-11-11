@@ -10,8 +10,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from typing import TYPE_CHECKING
+
 from proto.evolution.archive import VariantArchive
 from proto.evolution.sandbox import Sandbox, SandboxResult
+
+if TYPE_CHECKING:  # 运行时不依赖 authorization，避免环
+    from proto.evolution.authorization import EvolutionAuthorizer
 from proto.evolution.scorer import PrivateScorer
 from proto.evolution.testset import OwnedTestSet
 from proto.kernel.audit import AuditEvent, AuditSpine
@@ -59,3 +64,15 @@ class EvolutionEngine:
         })
         return EngineDecision(True, "canary", score,
                               variant_id=variant.id, sandbox_result=result)
+
+    def promote(self, variant_id: str, authorizer: "EvolutionAuthorizer",
+                target_class: str, sandbox_passed: bool) -> bool:
+        """canary → default 的唯一通道：经分级授权（低风险自动 / 中风险人工 PR）。"""
+        from proto.evolution.authorization import EvolutionChange
+
+        change = EvolutionChange(target_class=target_class, variant_id=variant_id)
+        decision = authorizer.authorize(change, sandbox_passed=sandbox_passed)
+        if decision.allowed:
+            self._archive.set_status(variant_id, "default")
+            return True
+        return False

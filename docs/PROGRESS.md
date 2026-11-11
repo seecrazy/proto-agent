@@ -31,8 +31,8 @@
 ### M3 — 阶段 6–8 + 质量收尾（进行中）
 
 - [x] T1 minor 修复批（M2–M8）：审计 append O(1) 缓存、store 路径安全、锚定注册仪式+会签新鲜度、预算未知单位不熔断、目标拒绝写 DENIAL、to_dict 深拷贝、累积器 audit 必传、store 提层 proto/storage、Kernel.trip_breaker 公开、harness verification_rounds+默认200、注入器补性格线+golden 全文测试。验证：135 测试绿。
-- [ ] T2 阶段 6：静默执行 scratch 工作区 + 审批队列 + 检查点
-- [ ] T3 阶段 7：测试集治理 + 沙盒 + 私有评分器 + 变体档案库 + 代码轨进化引擎
+- [x] T2 阶段 6：ScratchWorkspace 隔离与晋升、ApprovalQueue（内核分级/日上限/静音/全审计）、CheckpointStore（schema_version@variant_id 绑定）。验证：148 测试绿。
+- [x] T3 阶段 7：OwnedTestSet（OWNER 签名追加、按构造即治理无删除 API）、Sandbox（subprocess+清洁环境+CPU 限制+超时）、PrivateScorer、VariantArchive（进化树/lineage/canary）、EvolutionEngine（分数门+全过门→canary+审计）。验证：162 测试绿。
 - [ ] T4 阶段 8：影子双跑 + 分级授权
 - [ ] T5 文档专业版：设计 v2.1（Mermaid 图）、README、demo 扩展、集成测试
 
