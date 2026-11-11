@@ -160,3 +160,10 @@ P2（工程化）：
 - [x] 外部编码 agent 桥 `proto/exec/bridge.py`：claude/codex/zcode 自动探测（PROTO_BRIDGE_CLI 指定），delegate_coding 工具（visible_write 级）。
 - [x] README 新增「能力」与「技术选型」章节（选型论证持久化）。
 - 验证：352 项测试全绿。
+
+### M16.1 — 部署体验翻新（feat/m16.1-polish）
+
+- [x] `proto/ui.py` 终端 UI 层（零依赖）：ANSI 色彩/制表 banner（**中文按显示宽度对齐**）/步骤条 ▸[n/N]/✓⚠✗ 状态符/对齐键值表；NO_COLOR、非 TTY、TERM=dumb 自动降级纯文本。
+- [x] 向导全面翻新：banner+步骤条+状态符；确认页改对齐表格（key 掩码黄色高亮）；deploy.sh 重装（彩色/框线/状态符，与向导同风格）。
+- [x] 主人优先级步骤加引导：说明注入三处（学习选题/仲裁 0.35/草稿方向）+ 4 条示例（数字可选）+ 自由输入 + 可跳过。
+- 验证：366 项测试全绿；管道冒烟确认对齐与引导。
