@@ -107,8 +107,9 @@
 
     <div class="card">
       <h3>人设 / 主人优先级</h3>
+      <div id="persona-presets" style="margin-bottom:8px;display:flex;flex-wrap:wrap;gap:6px"></div>
       <div class="kv">
-        <input type="text" id="persona-input" placeholder="人设，例：资深软件专家">
+        <input type="text" id="persona-input" placeholder="人设，例：资深软件专家（自由描述均可）">
         <button onclick="savePersona()">设人设</button>
       </div>
       <div class="kv">
@@ -275,6 +276,27 @@ async function override(param, value) {
   addMsg(`主人覆写 ${r.param} → ${r.value}${r.clamped ? "（已截断到边界）" : ""}`, "system");
   refreshState();
 }
+const PERSONA_PRESETS = [
+  ["软件专家", "资深软件专家，重视工程质量与可验证性，喜欢把复杂问题拆解清楚"],
+  ["技术导师", "耐心的技术导师，善于把复杂概念讲得通俗易懂，重视学习者的理解节奏"],
+  ["安全研究员", "严谨的安全研究员，关注攻击面与缓解措施，对信任边界敏感"],
+  ["产品全栈", "产品型全栈工程师，关注用户体验与交付价值，反对过度设计"],
+  ["毒舌评审", "毒舌但公正的代码评审员，直言不讳但每句批评都给出依据"],
+];
+(function renderPersonaPresets() {
+  const box = document.getElementById("persona-presets");
+  for (const [name, text] of PERSONA_PRESETS) {
+    const b = document.createElement("button");
+    b.textContent = name;
+    b.title = text;
+    b.onclick = async () => {
+      document.getElementById("persona-input").value = text;
+      const r = await api("POST", "/api/persona", { text });
+      addMsg(`人设已切换：「${name}」——独处学习与反思将随之变化。`, "system");
+    };
+    box.appendChild(b);
+  }
+})();
 async function savePersona() {
   const text = document.getElementById("persona-input").value.trim();
   const r = await api("POST", "/api/persona", { text });
