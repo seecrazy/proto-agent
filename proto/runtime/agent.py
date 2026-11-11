@@ -16,7 +16,9 @@ from pathlib import Path
 from typing import List, Optional
 
 from proto.exec.approval import ActionProposal, ApprovalQueue
+from proto.exec.agentic import AgenticLoop
 from proto.exec.checkpoints import CheckpointStore
+from proto.exec.codetools import CodeTools
 from proto.exec.injector import StateInjector
 from proto.exec.planner import LLMPlanner
 from proto.exec.router import Router, Task, TaskResult, ToolRegistry
@@ -132,10 +134,19 @@ class ProtoAgent:
         self.workspace = ScratchWorkspace(self.data_dir / "ws", audit=self.spine)
         self.queue = ApprovalQueue(self.kernel, self.spine, damping=self.damping)
         self.checkpoints = CheckpointStore(store)
+        self.code_workspace = CodeTools(self.data_dir / "workspace")
         self.tools = ToolRegistry()
         self.tools.register("clock", lambda: time.strftime("%Y-%m-%d %H:%M:%S"))
+        self.code_workspace.register_all(self.tools)
+        from proto.exec.bridge import CodingBridge
+        self.bridge = CodingBridge.autodetect(os.environ.get("PROTO_BRIDGE_CLI", ""))
+        if self.bridge and self.bridge.available:
+            self.tools.register(
+                "delegate_coding",
+                lambda task: self.bridge.delegate(task))
         self.router = Router(self.kernel, self.queue, self.workspace,
-                             self.checkpoints, self.tools)
+                             self.checkpoints, self.tools,
+                             code_workspace=self.code_workspace)
         self.planner = (LLMPlanner(self.llm_fast, self.tools)
                         if self.llm_fast is not None else None)
         self.injector = StateInjector()
@@ -434,7 +445,17 @@ class ProtoAgent:
                 "approved": record.granted}
 
     def run_task(self, description: str) -> dict:
-        """主人指派任务：LLM 规划步骤 → Router 执行（审批/检查点/预算全走）。"""
+        """主人指派任务：Agentic 循环——模型自主决定每一步工具调用，
+        观察回灌迭代，工作区内自动、对外审批暂停可恢复。"""
+        if self.llm is not None:
+            result = AgenticLoop(self).run(description)
+            if result["status"] == "completed":
+                self.pad.apply_event("task_success")
+                self._inbox.append(f"〔任务完成〕{description} → {result.get('summary', '')}")
+            self.scheduler.on_task_completed(
+                type("R", (), {"status": result["status"], "retries": 0,
+                               "reason": result.get("reason", "")})())
+            return result
         steps = self.planner.plan(description) if self.planner else []
         if not steps:
             return {"status": "no_plan",
