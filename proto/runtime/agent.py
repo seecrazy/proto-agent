@@ -184,8 +184,15 @@ class ProtoAgent:
                  "desire_dim": p.desire_dim, "payload": p.payload}
                 for p in self.queue.pending()]
 
-    def deny_proposal(self, proposal_id: str) -> None:
+    def deny_proposal(self, proposal_id: str):
+        """拒绝提议（触发阻尼）；返回受影响欲望的最新触发阈值。"""
+        proposal = next((p for p in self.queue.pending()
+                         if p.proposal_id == proposal_id), None)
+        dim = proposal.desire_dim if proposal else None
         self.queue.deny(proposal_id, reason="owner_denied")
+        if dim and dim in self.state.desires:
+            return self.state.desires[dim]["threshold"]
+        return None
 
     def accept_proposal(self, proposal_id: str) -> dict:
         proposal = next((p for p in self.queue.pending()
@@ -237,3 +244,35 @@ class ProtoAgent:
 
     def audit_tail(self, n: int = 10) -> List[dict]:
         return self.spine.tail(n)
+
+    # ------------------ 管理接口（Web 控制台用） ------------------
+    def lock_param(self, param: str, on: bool) -> dict:
+        """主人锁定/解锁参数：锁定后拒绝一切调制（含 override）。"""
+        (self.state.lock if on else self.state.unlock)(param)
+        self.mgr.save()
+        self.spine.append("owner_override",
+                          {"param": param, "action": "lock" if on else "unlock"})
+        return {"param": param, "locked": on}
+
+    def owner_set(self, param: str, value: float) -> dict:
+        result = self.mgr.owner_override(param, value)
+        return {"param": param, "value": result.value, "clamped": result.clamped}
+
+    def set_priority(self, text: str) -> dict:
+        self.state.owner_priority = text
+        self.arbiter.owner_priority = text
+        self.mgr.save()
+        return {"owner_priority": text}
+
+    def evolution_snapshot(self) -> dict:
+        from proto.evolution.archive import VariantArchive
+        from proto.evolution.testset import OwnedTestSet
+
+        store = FileSystemStore(self.data_dir / "data")
+        archive = VariantArchive(store)
+        testset = OwnedTestSet(store, self.anchor, self.spine)
+        return {
+            "variants": [{"id": v.id, "parent": v.parent_id, "score": v.score,
+                          "status": v.status} for v in archive.all()],
+            "testset_count": len(testset.cases()),
+        }

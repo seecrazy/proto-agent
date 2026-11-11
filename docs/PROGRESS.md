@@ -6,7 +6,7 @@
 
 | 项 | 状态 |
 |---|---|
-| 版本 | 0.4.0（活的 Agent 运行时：clone 即可对话） |
+| 版本 | 0.5.0（Web 管理控制台：一条命令部署与管理） |
 | 测试 | 见下方里程碑记录 |
 | 分支 | main（feat/engine-completion 已并入） |
 | 远程 | 仅本地提交，未推送（用户指示） |
@@ -64,3 +64,10 @@ LLMAttributor 接入模型 API → LangGraph 编排接入（节点签名已兼�
 - [x] `python3 -m proto.run` REPL（离线冒烟通过）；README "五分钟得到一个活的 Agent"；v0.4.0。
 
 **验证**：228 项测试全绿。
+
+### M6 — Web 管理控制台（已完成，feat/web-console）
+
+- [x] `ProtoWebServer`（stdlib ThreadingHTTPServer，零依赖）：13 个 JSON API（state/chat/task/proposals/tick/audit/mute/lock/override/priority/evolution），全局锁串行化 agent 访问；仅绑定 127.0.0.1；一次性令牌置 URL 片段，API 强制 X-Proto-Token 头（防本机跨站 CSRF）。
+- [x] 单页控制台（原生 HTML/CSS/JS，暗色）：对话区、12 参数实时条形图（设定点/硬界/阈值标记 + 锁定/解锁/上下界覆写）、主动提议一键审批（拒绝即阻尼可视）、任务指派、主人优先级、静音、审计链实时滚动 + 篡改状态灯。
+- [x] `python3 -m proto.web` 入口（自动开浏览器）；README/设计 v2.4/版本 0.5.0。
+- [x] 验证：13 项 API 测试 + 浏览器真实 E2E（页面渲染、发送反馈、social_initiative 0.5→0.52 调制生效、截图确认）。**241 项测试全绿。**
