@@ -145,3 +145,10 @@ P2（工程化）：
 - [x] `proto/config.py`：proto.env 加载（export 解析、显式环境变量优先）；run/web/llm/backup 四入口自动加载——部署后零环境变量心智。
 - [x] 产物安全：env 文件 0600（含 key）；.venv 入 gitignore。
 - 验证：325 项测试全绿；deploy.sh + 非交互 setup 冒烟通过。
+
+### M15.1 — 向导 UX 修复（feat/m15c-wizard-ux）
+
+- [x] API Key 改 getpass 输入（屏幕不回显；明文只存 0600 env 文件，界面仅掩码 sk-\*\*\*\*后4）。
+- [x] 可回退多步状态机：任意步 `<` 回上一步；确认摘要页输入数字跳回对应步骤重选。
+- [x] 人设步骤支持数字选预设（与控制台芯片同源 PERSONA_PRESETS）+ 6 自由填写 + 菜单处直接输入文本即人设。
+- 验证：332 项测试全绿；管道 stdin 交互冒烟通过。

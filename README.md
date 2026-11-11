@@ -53,7 +53,7 @@ git clone https://github.com/seecrazy/proto-agent && cd proto-agent
 bash scripts/deploy.sh
 ```
 
-脚本依次完成：Python 检查（≥3.9）→ 独立 venv（`.venv`，不污染系统）→ 安装 → **部署向导**。向导引导你：选 LLM（智谱 Coding Plan 默认推荐，粘贴 key 即可）→ 连通性自检 → 固定控制台令牌 → 人设/优先级 → 可选 `--install-service` 安装 macOS 开机自启（launchd，KeepAlive）。全部产物是 `proto_data/proto.env`（0600）——之后 **proto-web 启动时自动加载它，零环境变量心智负担**：
+脚本依次完成：Python 检查（≥3.9）→ 独立 venv（`.venv`，不污染系统）→ 安装 → **部署向导**。向导引导你：选 LLM（智谱 Coding Plan 默认推荐；**key 用 getpass 输入不回显**）→ 连通性自检 → 固定控制台令牌 → 人设（**数字一键选预设**：软件专家/技术导师/安全研究员/产品全栈/毒舌评审，或 6 自由填写）→ 确认摘要页（**key 只显示掩码，输入数字跳回任意步重选，任意步 `<` 回上一步**）→ 可选 `--install-service` 安装 macOS 开机自启（launchd，KeepAlive）。全部产物是 `proto_data/proto.env`（0600）——之后 **proto-web 启动时自动加载它，零环境变量心智负担**：
 
 ```bash
 python3 -m proto.web          # 日常启动，一条命令
