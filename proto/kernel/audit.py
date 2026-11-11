@@ -104,3 +104,7 @@ class AuditSpine:
     def tail(self, n: int) -> List[dict]:
         rows = sorted(self._store.find(self._collection, lambda _d: True), key=lambda r: r["seq"])
         return rows[-n:]
+
+    def find(self, predicate: Callable[[dict], bool]) -> List[dict]:
+        """按谓词查询审计事件（按 seq 升序）。"""
+        return sorted(self._store.find(self._collection, predicate), key=lambda r: r["seq"])
