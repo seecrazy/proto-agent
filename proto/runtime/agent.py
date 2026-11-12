@@ -155,6 +155,9 @@ class ProtoAgent:
 
     def _on_task_completed(self, result) -> None:
         self.distiller.distill(result, domain="chat")
+        if result.status == "completed":
+            self.desires.satisfy("goal_urgency", 0.25)      # 任务完成消减紧迫感
+            self.desires.satisfy("curiosity_gap", 0.1)
         # 规矩应用记账：任务成功 = 在场的外部规矩被遵守一次
         if result.status == "completed":
             for rule in self.ledger.get_all():
@@ -255,6 +258,11 @@ class ProtoAgent:
         self._last_owner_ts = self._now()
         if any(w in text for w in self._PRAISE_WORDS):
             self.pad.apply_event("owner_praise")
+            self.desires.satisfy("social_connection_gap", 0.15)
+            self.desires.satisfy("recognition_need", 0.3)   # 被认可→需求消减
+        else:
+            self.desires.satisfy("social_connection_gap", 0.15)  # 交互本身即满足
+        self._turn_emotion = dict(self.state.emotion)   # 编码快照先于衰减
         self.pad.tick(1)   # 每轮向设定点自然衰减
         self.mgr.save()    # 情绪变化随对话落盘
         signals = self.attributor.attribute(text, Channel.OWNER)
@@ -269,7 +277,7 @@ class ProtoAgent:
                                for h in history)
             history_block = "\n\n最近对话（记忆）：\n" + lines
         # 长期记忆召回（相关×时近×重要），带非指令边界
-        recalled = self.memory.retrieve(text, k=5)
+        recalled = self.memory.retrieve(text, k=5, mood=dict(self.state.emotion))
         memory_block = ""
         if recalled:
             mem_lines = "\n".join(f"- [{m.kind}] {m.text}" for m in recalled)
@@ -291,12 +299,16 @@ class ProtoAgent:
         return reply
 
     def _remember_turn(self, owner_text: str, reply: str) -> None:
-        """一轮对话的记忆固化：情景写入（重要度受情绪影响）+ 事实抽取（去重/强化）。"""
+        """一轮对话的记忆固化：情景写入（情绪标记+编码强度，设计 §3.2）+ 事实抽取。"""
         praised = any(w in owner_text for w in self._PRAISE_WORDS)
-        importance = 0.8 if praised else 0.55
+        # 编码强度 = 事件基线 × 唤醒调制（闪光灯记忆近似）
+        base = 0.8 if praised else 0.55
+        arousal = self.state.emotion["arousal"]
+        importance = max(0.0, min(1.0, base * (0.8 + 0.4 * arousal)))
         self.memory.add(
             "episode", f"主人：{owner_text[:200]}｜我：{reply[:150]}",
-            importance=importance)
+            importance=importance,
+            emotion=getattr(self, "_turn_emotion", None) or dict(self.state.emotion))
         for fact in extract_facts(self, owner_text, reply):
             similar = self.memory.find_similar(fact["text"])
             if similar is not None:
@@ -364,6 +376,7 @@ class ProtoAgent:
         decision = self.arbiter.push_self_initiated(goal, cost={"tokens": 500})
         if not decision.pushed:
             return None
+        self.desires.satisfy(dim, 0.3)   # 发起行动即部分消减（内稳态闭环）
         # ① 自主学习：读 GitHub 开源项目 → 带来源的学习笔记（read_draft 自主执行）
         from proto.runtime.study import autonomous_study
         study = autonomous_study(self, goal_text)

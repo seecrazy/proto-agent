@@ -9,6 +9,7 @@
 
 PROTO 不假装无能来换取可塑性——第一天就能完整干活；成长发生在**倾向维度**而非能力维度：本能、欲望、性格是显式状态文件中的有界参数，被主人反馈缓慢塑造，被不可变内核锁死边界。v2.0 设计定稿 + 落地路径阶段 1–8 核心全部实现。
 
+- **内在机制详细设计**（本能·欲望·性格的内稳态环 / 主动循环总图 / 人类参照的记忆与遗忘）：[docs/specs/2026-11-12-inner-design.md](docs/specs/2026-11-12-inner-design.md)
 - 设计文档（v2.1，含评审修订 R1–R13 与实施状态矩阵）：[docs/specs/2026-11-11-proto-v2-design.md](docs/specs/2026-11-11-proto-v2-design.md)
 - 项目进度：[docs/PROGRESS.md](docs/PROGRESS.md)
 - 实现计划：[docs/plans/](docs/plans/)
@@ -53,7 +54,7 @@ git clone https://github.com/seecrazy/proto-agent && cd proto-agent
 bash scripts/deploy.sh
 ```
 
-脚本依次完成：Python 检查（≥3.9）→ 独立 venv（`.venv`，不污染系统）→ 安装 → **部署向导**。向导引导你：选 LLM（智谱 Coding Plan 默认推荐；**key 用 getpass 输入不回显**）→ 连通性自检 → 固定控制台令牌 → 人设（**数字一键选预设**：软件专家/技术导师/安全研究员/产品全栈/毒舌评审，或 6 自由填写）→ 确认摘要页（**key 只显示掩码，输入数字跳回任意步重选，任意步 `<` 回上一步**）→ 可选 `--install-service` 安装 macOS 开机自启（launchd，KeepAlive）。全部产物是 `proto_data/proto.env`（0600）——之后 **proto-web 启动时自动加载它，零环境变量心智负担**：
+脚本依次完成：Python 检查（≥3.9）→ 独立 venv（`.venv`，不污染系统）→ 安装 → **部署向导**。向导引导你：选 LLM（智谱 Coding Plan 默认推荐；**key 用 getpass 输入不回显**）→ 连通性自检 → 固定控制台令牌 → 人设（**数字一键选预设**：软件专家/技术导师/安全研究员/产品全栈/毒舌评审，或 6 自由填写）→ 确认摘要页（**key 只显示掩码，输入数字跳回任意步重选，任意步 `<` 回上一步**）→ 可选 `--install-service` 安装 macOS 开机自启（launchd，KeepAlive）。全部产物是 `proto_data/proto.env`（0600）。**部署完成即达**：向导最后询问"现在开始？"——回车直接拉起 Web 控制台并自动打开浏览器、`t` 进终端对话、装了开机自启则直接打开服务页面，日常启动零记忆负担：
 
 ```bash
 python3 -m proto.web          # 日常启动，一条命令

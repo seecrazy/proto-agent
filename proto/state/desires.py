@@ -23,6 +23,14 @@ class DesireDynamics:
         self._social = social_per_hour
         self._grace = grace_hours
 
+    def satisfy(self, desire_dim: str, amount: float) -> float:
+        """满足事件消减缺口（内稳态环的反馈支，设计 §1.2）。过量满足夹在 0。"""
+        dim = desire_dim if desire_dim.startswith("desires.") else f"desires.{desire_dim}"
+        current = self._mgr.state.get(dim)
+        self._mgr.state.set_within_bounds(dim, max(0.0, current - amount))
+        self._mgr.save()
+        return self._mgr.state.get(dim)
+
     def evolve(self, now_ts: float, last_owner_interaction_ts: float) -> None:
         idle_hours = max(0.0, (now_ts - last_owner_interaction_ts) / 3600.0 - self._grace)
         state = self._mgr.state
