@@ -338,10 +338,13 @@ def main() -> int:
     parser.add_argument("--install-service", action="store_true",
                         help="安装 macOS launchd 开机自启服务")
     parser.add_argument("--skip-llm-check", action="store_true")
+    parser.add_argument("--launch", choices=["web", "term", "none"], default="web",
+                        help="部署后到达方式（默认 web：直接打开控制台）")
     parser.add_argument("--yes", action="store_true", help="非交互模式")
     args = parser.parse_args()
 
     from proto import ui
+    _ARGS_DATA_DIR[0] = args.data_dir
     print(ui.banner("PROTO 部署向导", f"v{_version()} · 任意步输入 < 回上一步"))
 
     cli_complete = (args.provider or args.base_url or args.api_key) and args.yes
@@ -403,6 +406,33 @@ def main() -> int:
         ("身份", "owner.key 即主人身份，请备份", ui.yellow),
     ]))
     return 0
+
+
+
+def plan_post_deploy(installed_service: bool, launch: str, yes: bool):
+    """部署完成后的到达方式（部署完即交互/管理，不让用户猜怎么开）。
+    返回 (action, url)：action ∈ open_url / ask / print / term"""
+    from proto.config import load_default_env, load_env_file
+    import os
+    env_path = Path(args_data_dir()) / "proto.env"
+    if env_path.exists():
+        load_env_file(env_path)
+    token = os.environ.get("PROTO_WEB_TOKEN", "proto-console")
+    url = f"http://127.0.0.1:8420/#token={token}"
+    if installed_service and launch != "none":
+        return "open_url", url
+    if launch == "term":
+        return "term", url
+    if launch == "none" or yes:
+        return "print", url
+    return "ask", url
+
+
+_ARGS_DATA_DIR = ["./proto_data"]
+
+
+def args_data_dir():
+    return _ARGS_DATA_DIR[0]
 
 
 def _version():

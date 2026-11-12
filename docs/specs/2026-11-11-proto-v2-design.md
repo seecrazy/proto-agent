@@ -505,7 +505,7 @@ LangGraph 编排与 MongoDB 适配按 §4 的接口约定在后续阶段接入�
 | 活的 Agent 运行时 + REPL | `proto/runtime/agent.py` + `proto/run.py` | `test_runtime.py`（注册/对话/调制/主动提议/阻尼/审批执行） | ✅ |
 | §3.2 密钥托管 / 多设备 | 注册仪式已实现 | — | 📋 产品化阶段 |
 
-**验证基线**：`python3 -m pytest -q` → 352 项全绿（+2 可选跳过）；`python3 -m proto.demo` → 12 段全链路演示，退出码 0；`python3 -m proto.run` → 离线冒烟通过。
+**验证基线**：`python3 -m pytest -q` → 367 项全绿（+2 可选跳过）；`python3 -m proto.demo` → 12 段全链路演示，退出码 0；`python3 -m proto.run` → 离线冒烟通过。
 
 **v2.3（2026-11-11）**：活的 Agent 运行时——`python -m proto.run` 即得：主人密钥首次注册/持久化（本地控制台 = OWNER 通道，每条输入走完整 HMAC 认证）、对话（状态注入 + LLM，未配 key 自动离线模式）、LLM 归因（参数白名单 + 强度夹紧 + 解析失败回退启发式）、主动提议（欲望缺口 × 调度器 × 仲裁 × 审批，拒绝即阻尼）、任务执行（LLM 规划过工具白名单 → Router 安全管线）。
 
@@ -539,3 +539,6 @@ LangGraph 编排与 MongoDB 适配按 §4 的接口约定在后续阶段接入�
 
 
 **v3.3（2026-11-11）**：能力跃升——工作区信任边界与 workspace_write 分级（§3.3 扩展）、编码工具族（文件/检索/沙盒 run_python）、观察-行动 Agentic 循环（暂停可恢复）、外部编码 agent 桥（claude/codex/zcode）。类人（状态/记忆/主动）与能力（工具/循环）从此并重。
+
+
+**v3.4（2026-11-12）**：内在机制详细设计（[另文](2026-11-12-inner-design.md)）落地——欲望满足动力学（内稳态闭环）、情景情绪标记与闪光灯编码、重要度标度遗忘半衰期、心境一致性检索、部署后即达。

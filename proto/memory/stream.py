@@ -43,6 +43,7 @@ class Memory:
     importance: float = 0.5
     last_access: float = 0.0
     source: str = "chat"
+    emotion: dict = None    # 编码时情绪快照（情景记忆的"闪光灯"标记）
 
     def to_dict(self) -> dict:
         return vars(self)
@@ -65,13 +66,13 @@ class MemoryStream:
         return len(self._memories)
 
     def add(self, kind: str, text: str, importance: float = 0.5,
-            ts: float = None, source: str = "chat") -> Memory:
+            ts: float = None, source: str = "chat", emotion: dict = None) -> Memory:
         if kind not in KINDS:
             raise ValueError(f"未知记忆类型: {kind}")
         now = ts if ts is not None else time.time()
         memory = Memory(id=uuid.uuid4().hex[:12], kind=kind, text=text[:400],
-                         ts=now, importance=max(0.0, min(1.0, importance)),
-                         last_access=now, source=source)
+                        ts=now, importance=max(0.0, min(1.0, importance)),
+                        last_access=now, source=source, emotion=emotion)
         self._memories[memory.id] = memory
         self._store.put(self._collection, memory.id, memory.to_dict())
         return memory
@@ -96,11 +97,26 @@ class MemoryStream:
         self._store.put(self._collection, m.id, m.to_dict())
 
     def _recency(self, m: Memory, now: float) -> float:
+        # 艾宾浩斯衰减 + 重要度标度半衰期（设计 §3.4）：重要记忆衰减慢一个数量级
+        half_life = HALF_LIFE_H * (0.5 + m.importance)
         age_h = max(0.0, (now - m.last_access) / 3600.0)
-        score = math.exp(-math.log(2) * age_h / HALF_LIFE_H)
+        score = math.exp(-math.log(2) * age_h / half_life)
         return max(score, RECENCY_FLOOR.get(m.kind, 0.0))
 
-    def retrieve(self, query: str, k: int = 5, now: float = None) -> List[Memory]:
+    # 心境一致性（设计 §3.3）：编码情绪与当前情绪同号 → 检索加权 ±10%
+    MOOD_BONUS = 0.10
+
+    def _mood_boost(self, m: Memory, mood: dict) -> float:
+        if not mood or not m.emotion:
+            return 0.0
+        encoded = m.emotion.get("pleasure", 0.0)
+        current = mood.get("pleasure", 0.0)
+        if encoded * current > 0:          # 同号（都正或都负）
+            return self.MOOD_BONUS * abs(current)
+        return 0.0
+
+    def retrieve(self, query: str, k: int = 5, now: float = None,
+                 mood: dict = None) -> List[Memory]:
         now = now if now is not None else time.time()
         q = _tokens(query)
         scored = []
@@ -110,7 +126,8 @@ class MemoryStream:
             relevance = (len(q & toks) / union) if q and union else 0.0
             score = (W_RELEVANCE * relevance
                      + W_RECENCY * self._recency(m, now)
-                     + W_IMPORTANCE * m.importance)
+                     + W_IMPORTANCE * m.importance
+                     + self._mood_boost(m, mood or {}))
             scored.append((score, m))
         scored.sort(key=lambda pair: pair[0], reverse=True)
         return [m for _s, m in scored[:k]]
