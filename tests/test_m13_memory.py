@@ -77,7 +77,8 @@ class TestAgentMemory:
     def test_chat_creates_episode_and_extracts_fact(self, tmp_path, dead_web):
         agent = ProtoAgent(data_dir=tmp_path, llm=MemLLM(), goal_interval_s=10**9,
                            webtools=dead_web)
-        agent.chat("我叫小明，以后叫我小明就行")
+        reply = agent.chat("我叫小明，以后叫我小明就行")
+        agent.remember_turn("我叫小明，以后叫我小明就行", reply)
         assert any("小明" in m.text for m in agent.memory.facts())
 
     def test_memory_injected_into_later_context_with_boundary(self, tmp_path, dead_web):
@@ -93,7 +94,8 @@ class TestAgentMemory:
     def test_memory_survives_restart(self, tmp_path, dead_web):
         a1 = ProtoAgent(data_dir=tmp_path, llm=MemLLM(), goal_interval_s=10**9,
                         webtools=dead_web)
-        a1.chat("我叫小明")
+        reply = a1.chat("我叫小明")
+        a1.remember_turn("我叫小明", reply)
         a2 = ProtoAgent(data_dir=tmp_path, llm=MemLLM(), goal_interval_s=10**9,
                         webtools=dead_web)
         assert any("小明" in m.text for m in a2.memory.facts())

@@ -120,6 +120,7 @@ def main(argv=None) -> int:
 
         reply = agent.chat(line)
         print(f"PROTO> {reply}\n")
+        agent.remember_turn(line, reply)   # 回复先出，固化后置（与 Web 一致）
 
         # 每轮检查是否到了主动提议的时机
         proposal = agent.maybe_proactive()

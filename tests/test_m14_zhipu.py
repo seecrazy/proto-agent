@@ -121,7 +121,8 @@ class TestAgentFastModelRouting:
         agent = ProtoAgent(data_dir=tmp_path, llm=Main(), fast_llm=fast,
                            goal_interval_s=10 ** 9,
                            webtools=WebToolkit(fetch=lambda u, a="t": (_ for _ in ()).throw(OSError("禁网"))))
-        agent.chat("我叫小明")
+        reply = agent.chat("我叫小明")
+        agent.remember_turn("我叫小明", reply)
         assert fast.hits                       # 抽取走快模型
         assert any("小明" in m.text for m in agent.memory.facts())
         assert agent.llm is not agent.llm_fast

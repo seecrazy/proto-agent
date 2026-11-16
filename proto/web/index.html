@@ -84,6 +84,7 @@
   <div class="logo">PROTO<span>·</span>console</div>
   <div class="meta" id="model">…</div>
   <div class="meta">审计链 <span class="dot ok" id="chain-dot"></span></div>
+  <div class="meta" id="budget-view" title="预算三分池余量（自主/主人任务/全局）"></div>
   <div class="spacer"></div>
   <button id="awake-btn" onclick="toggleAwake()">☕防休眠</button>
   <button id="mute-btn" onclick="toggleMute()">静音</button>
@@ -206,12 +207,21 @@ async function sendChat() {
   const text = input.value.trim(); if (!text) return;
   input.value = "";
   addMsg(text, "owner");
+  const btn = document.querySelector("#composer button.primary");
+  btn.disabled = true; btn.textContent = "思考中…";
   try {
     const data = await api("POST", "/api/chat", { text });
     addMsg(data.reply, "agent");
-    if (data.proposal) addMsg(data.proposal, "system");
     refreshSide();
+    refreshInboxOnce();
   } catch (e) { /* 已提示 */ }
+  btn.disabled = false; btn.textContent = "发送";
+}
+async function refreshInboxOnce() {
+  try {
+    const inbox = await api("GET", "/api/inbox", {});
+    for (const m of inbox.messages) addMsg(m, "system");
+  } catch (e) {}
 }
 
 async function refreshState() {
@@ -220,6 +230,10 @@ async function refreshState() {
   document.getElementById("chain-dot").className = "dot " + (s.chain_ok ? "ok" : "bad");
   document.getElementById("mute-btn").textContent = s.muted ? "解除静音" : "静音";
   document.getElementById("awake-btn").textContent = s.awake ? "☕防休眠中" : "☕防休眠";
+  const b = s.budgets || {};
+  const fmt = (p) => b[p] && b[p].tokens != null ? Math.round(b[p].tokens) : "?";
+  document.getElementById("budget-view").textContent =
+    `额度 自主${fmt("self_initiated")} / 主人${fmt("owner_tasks")} / 全局${fmt("global")}`;
   document.getElementById("emo").textContent =
     `P${s.emotion.pleasure} A${s.emotion.arousal} D${s.emotion.dominance}`;
   if (document.activeElement !== document.getElementById("priority-input"))
@@ -310,13 +324,29 @@ async function refreshMemory() {
   for (const f of r.facts.slice(-8).reverse()) {
     const d = document.createElement("div");
     d.style.cssText = "font-size:12px;margin-bottom:4px;line-height:1.5";
-    d.innerHTML = `<span class="badge">事实</span> ${esc(f)}`;
+    const btn = document.createElement("button");
+    btn.textContent = "让它忘"; btn.style.cssText = "font-size:10px;padding:0 6px;margin-left:6px";
+    btn.onclick = async () => {
+      await api("POST", "/api/memory/forget", { id: f.id });
+      refreshMemory();
+    };
+    const span = document.createElement("span");
+    span.innerHTML = `<span class="badge">事实</span> ${esc(f.text)}`;
+    d.appendChild(span); d.appendChild(btn);
     box.appendChild(d);
   }
   for (const t of r.reflections.slice(-3).reverse()) {
     const d = document.createElement("div");
     d.style.cssText = "font-size:12px;margin-bottom:4px;line-height:1.5;border-left:2px solid var(--warn);padding-left:6px";
-    d.innerHTML = `<span class="badge lock">反思</span> ${esc(t)}`;
+    const btn = document.createElement("button");
+    btn.textContent = "让它忘"; btn.style.cssText = "font-size:10px;padding:0 6px;margin-left:6px";
+    btn.onclick = async () => {
+      await api("POST", "/api/memory/forget", { id: t.id });
+      refreshMemory();
+    };
+    const span = document.createElement("span");
+    span.innerHTML = `<span class="badge lock">反思</span> ${esc(t.text)}`;
+    d.appendChild(span); d.appendChild(btn);
     box.appendChild(d);
   }
 }
