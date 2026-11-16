@@ -89,6 +89,11 @@ class MemoryStream:
                 best, best_score = m, overlap
         return best if best_score >= threshold else None
 
+    def forget(self, memory_id: str) -> None:
+        """主人遗忘权专用：从内存与持久层删除一条记忆。"""
+        self._memories.pop(memory_id, None)
+        self._store.delete(self._collection, memory_id)
+
     def reinforce(self, memory_id: str, ts: float = None) -> None:
         m = self._memories.get(memory_id)
         if m is None:

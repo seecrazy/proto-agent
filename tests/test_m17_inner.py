@@ -50,7 +50,8 @@ class TestDesireSatisfaction:
 class TestEmotionalEncoding:
     def test_episode_records_emotion_snapshot(self, agent):
         agent.state.emotion["arousal"] = 0.9
-        agent.chat("重要的事情")
+        reply = agent.chat("重要的事情")
+        agent.remember_turn("重要的事情", reply)
         latest = agent.memory.episodes()[-1]
         assert latest.emotion["arousal"] == pytest.approx(0.9)
         assert latest.importance >= 0.55   # 高唤醒上调编码强度（闪光灯）
