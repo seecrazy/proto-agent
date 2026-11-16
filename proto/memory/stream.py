@@ -44,6 +44,7 @@ class Memory:
     last_access: float = 0.0
     source: str = "chat"
     emotion: dict = None    # 编码时情绪快照（情景记忆的"闪光灯"标记）
+    reinforce_count: int = 0  # 提取练习次数（间隔效应：越多想起越难忘记）
 
     def to_dict(self) -> dict:
         return vars(self)
@@ -99,11 +100,13 @@ class MemoryStream:
         if m is None:
             return
         m.last_access = ts if ts is not None else time.time()
+        m.reinforce_count = (m.reinforce_count or 0) + 1
         self._store.put(self._collection, m.id, m.to_dict())
 
     def _recency(self, m: Memory, now: float) -> float:
-        # 艾宾浩斯衰减 + 重要度标度半衰期（设计 §3.4）：重要记忆衰减慢一个数量级
-        half_life = HALF_LIFE_H * (0.5 + m.importance)
+        # 艾宾浩斯衰减 + 重要度标度半衰期 + 间隔强化（提取练习效应）
+        half_life = (HALF_LIFE_H * (0.5 + m.importance)
+                     * (1.0 + 0.5 * (m.reinforce_count or 0)))
         age_h = max(0.0, (now - m.last_access) / 3600.0)
         score = math.exp(-math.log(2) * age_h / half_life)
         return max(score, RECENCY_FLOOR.get(m.kind, 0.0))

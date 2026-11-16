@@ -34,6 +34,7 @@ def agent(tmp_path):
 class TestAgenticLoop:
     def test_observe_act_until_done(self, agent):
         agent.llm.decisions = [
+            "先写脚本再运行验证",                       # plan 调用（M19）
             {"tool": "write_file", "args": {"path": "calc.py", "content": "print(6*7)"},
              "category": "workspace_write"},
             {"tool": "run_python", "args": {"code": "print(6*7)"}, "category": "read_draft"},
@@ -48,6 +49,7 @@ class TestAgenticLoop:
 
     def test_loop_prompt_carries_observations(self, agent):
         agent.llm.decisions = [
+            "先跑一下看看",                              # plan
             {"tool": "run_python", "args": {"code": "print(1)"}, "category": "read_draft"},
             {"done": True, "summary": "ok"},
         ]
@@ -57,6 +59,7 @@ class TestAgenticLoop:
 
     def test_paused_on_visible_write_resumable(self, agent):
         agent.llm.decisions = [
+            "写好后请主人批准",                          # plan
             {"tool": "write_file",
              "args": {"path": "shared.md", "content": "对外内容"},
              "category": "visible_write"},
@@ -70,6 +73,8 @@ class TestAgenticLoop:
 
     def test_max_steps_reached(self, agent):
         agent.llm.decisions = [
+            "循环执行",                                  # plan
+        ] + [
             {"tool": "run_python", "args": {"code": "print(1)"}, "category": "read_draft"},
         ] * 10
         result = AgenticLoop(agent, max_steps=3).run("t")
@@ -87,6 +92,7 @@ class TestAgenticLoop:
 class TestAgentTaskUsesLoop:
     def test_run_task_uses_agentic_loop(self, agent):
         agent.llm.decisions = [
+            "跑一段打印并汇报",                          # plan
             {"tool": "run_python", "args": {"code": "print('proto')"}, "category": "read_draft"},
             {"done": True, "summary": "执行完成"},
         ]

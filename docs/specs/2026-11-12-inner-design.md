@@ -216,3 +216,20 @@ score = 0.5·相关度 + 0.3·时近度 + 0.2·重要度
 | 重要度标度半衰期 | §3.4 | MemoryStream._recency |
 | 心境一致性检索 | §3.3 | retrieve 加 pleasure 加权 |
 | 部署后即达（web 直开/终端即启） | 部署体验 | setup 尾部 launch 行为 |
+
+
+---
+
+## 5. 研究对齐附录（M19 三轮调研驱动的机制与出处）
+
+| 机制 | 出处/现象 | PROTO 实现 |
+|---|---|---|
+| 写入时 LLM 重要度评分 | [Generative Agents（Park et al., 2023）](https://arxiv.org/pdf/2304.03442)：记忆对象创建时由 LLM 评 1-10 分 | `score_importance`（fast 模型，离线回退情绪启发式） |
+| 失败教训注入后续决策 | [Reflexion（Shinn et al., 2023）](https://arxiv.org/abs/2303.11366)："failure becomes a note" | Agentic 循环显式检索负效价策略注入"过往教训"块 |
+| 先想后做 | Plan-and-Execute 模式（社区共识实践） | 循环首步前 fast 模型一行计划注入 |
+| 享乐适应 / 奖励预测误差习惯化 | [Schultz 多巴胺 RPE 研究](https://pmc.ncbi.nlm.nih.gov/articles/PMC4826767)：可预测的奖励引发递减反应 | 3 小时窗口内重复夸奖，pleasure 增量 ×0.5ⁿ 几何衰减，随时间恢复 |
+| 昼夜节律 | 时间生物学：唤醒度随昼夜波动 | arousal 设定点正弦调制（0.37±0.08）+ 夜间心跳 ×5 节流 |
+| Zeigarnik 效应 | [未完成任务记忆更牢](https://en.wikipedia.org/wiki/Zeigarnik_effect)（1927） | 暂停/未完成任务情景重要度 +0.1 |
+| 间隔效应 / 提取练习 | Ebbinghaus + 测试效应：越被想起越难忘记 | reinforce_count → 半衰期 ×(1+0.5n) |
+| LLM 熔断器 | [生产 agent 可靠性模式](https://dev.to/waxell/ai-agent-circuit-breakers-the-reliability-pattern-production-teams-are-missing-5bpg)：防重试风暴 | 三态 CircuitBreaker（3 败开 10 分钟，半开试探），chat/归因/草稿全守卫 |
+| 新颖性偏好 | 好奇心研究：对已熟悉刺激的兴趣下降 | 研读仓库 30 天内去重，跳过已学取下一个 |

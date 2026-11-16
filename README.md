@@ -9,7 +9,7 @@
 
 PROTO 不假装无能来换取可塑性——第一天就能完整干活；成长发生在**倾向维度**而非能力维度：本能、欲望、性格是显式状态文件中的有界参数，被主人反馈缓慢塑造，被不可变内核锁死边界。v2.0 设计定稿 + 落地路径阶段 1–8 核心全部实现。
 
-- **内在机制详细设计**（本能·欲望·性格的内稳态环 / 主动循环总图 / 人类参照的记忆与遗忘）：[docs/specs/2026-11-12-inner-design.md](docs/specs/2026-11-12-inner-design.md)
+- **内在机制详细设计**（含 §5 研究对齐附录：每个机制的研究出处——Generative Agents/Reflexion/多巴胺 RPE/Zeigarnik/间隔效应）：[docs/specs/2026-11-12-inner-design.md](docs/specs/2026-11-12-inner-design.md)
 - 设计文档（v2.1，含评审修订 R1–R13 与实施状态矩阵）：[docs/specs/2026-11-11-proto-v2-design.md](docs/specs/2026-11-11-proto-v2-design.md)
 - 项目进度：[docs/PROGRESS.md](docs/PROGRESS.md)
 - 实现计划：[docs/plans/](docs/plans/)

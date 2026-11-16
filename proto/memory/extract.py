@@ -5,6 +5,24 @@ from __future__ import annotations
 import json
 import re
 
+IMPORTANCE_PROMPT = (
+    "给下面这条经历评定重要度（1=琐碎日常，10=改变关系/项目走向的大事）。"
+    "只输出 1-10 的整数。"
+)
+
+
+def score_importance(agent, text: str):
+    """写入时 LLM 评重要度（Generative Agents 核心机制）；离线返回 None。"""
+    if agent.llm_fast is None:
+        return None
+    try:
+        raw = agent.llm_fast.complete(IMPORTANCE_PROMPT, text[:400])
+        score = int(re.findall(r"\d+", raw)[0])
+        return max(0.0, min(1.0, score / 10.0))
+    except Exception:
+        return None
+
+
 EXTRACT_PROMPT = (
     "你是 PROTO 的记忆系统。从下面这轮对话中提取**关于主人的稳定事实**"
     "（称呼/偏好/项目/规矩/习惯；一次性的寒暄不算事实）。\n"
