@@ -45,13 +45,23 @@ def study_topic(agent) -> str:
     return "software engineering"
 
 
+def _novel_repos(repos, memory, days: float = 30.0):
+    """新颖性偏好：跳过近期（days 天）已研读过的仓库。"""
+    import time as _time
+    cutoff = _time.time() - days * 86400
+    recent = {m.text for m in memory.episodes() if m.ts >= cutoff}
+    return [r for r in repos
+            if not any(r["full_name"] in text for text in recent)]
+
+
 def autonomous_study(agent, goal_text: str) -> dict:
     """执行一次学习。返回 {path, source, summary}；失败回退离线草稿。"""
     import time as _time
 
     topic = study_topic(agent)
     source, material = "", ""
-    repos = agent.webtools.github_search_repos(topic)
+    repos = _novel_repos(agent.webtools.github_search_repos(topic),
+                         agent.memory)
     if repos:
         readme = agent.webtools.github_readme(repos[0]["full_name"])
         if readme.get("ok"):

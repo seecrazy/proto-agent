@@ -37,9 +37,11 @@ from proto.metacog.scheduler import MetacogScheduler
 from proto.metacog.strategies import StrategyLibrary
 from proto.state.agent_state import AgentState, StateManager
 from proto.state.desires import DesireDynamics
+from proto.llm.breaker import CircuitBreaker
 from proto.memory.extract import extract_facts, reflect as llm_reflect
+from proto.memory.extract import score_importance
 from proto.memory.stream import MemoryStream
-from proto.state.emotion import PAD
+from proto.state.emotion import PAD, circadian_arousal_setpoint
 from proto.state.modulation import AttributionAccumulator, ModulationPipeline
 from proto.storage.mongo_store import create_store
 from proto.storage.store import FileSystemStore
@@ -68,6 +70,8 @@ class ProtoAgent:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.llm = llm
         self.llm_fast = fast_llm if fast_llm is not None else llm  # 高频低风险调用用快模型
+        self._breaker = CircuitBreaker()
+        self._praise_times = []   # 享乐适应：近期夸奖时间戳
 
         store = create_store(self.data_dir)   # 文件默认；PROTO_STORE=mongo 切换
         self.spine = AuditSpine(store)
@@ -110,7 +114,7 @@ class ProtoAgent:
         if raw is None:
             self.mgr.save()   # 首启即落盘：备份始终有意义
 
-        self.attributor = (LLMAttributor(llm) if llm is not None
+        self.attributor = (LLMAttributor(_GuardedClient(self, llm)) if llm is not None
                            else HeuristicAttributor())
         self.accumulator = AttributionAccumulator(self.spine)
         self.pipeline = ModulationPipeline(self.accumulator, self.mgr)
@@ -225,6 +229,23 @@ class ProtoAgent:
     _PRAISE_WORDS = ("干得好", "干得漂亮", "漂亮", "不错", "很好", "赞", "谢谢",
                      "保持", "厉害", "好样的")
 
+    def _complete(self, client, system: str, user: str) -> str:
+        """熔断守卫的 LLM 调用：熔断打开时直接抛 LLMError（走离线回退）。"""
+        from proto.llm.client import LLMError
+        if not self._breaker.allow():
+            raise LLMError("circuit_breaker_open")
+        try:
+            reply = client.complete(system, user)
+        except Exception:
+            self._breaker.record_failure()
+            if (self._breaker.state == "open"
+                    and not self.spine.find(lambda d: d["event_type"] == "llm_breaker_trip")):
+                self.spine.append("llm_breaker_trip",
+                                  {"fails": self._breaker._fails})
+            raise
+        self._breaker.record_success()
+        return reply
+
     def _system_prompt(self) -> str:
         return (SYSTEM_PROMPT
                 + f"\n你的人设：{self.persona}。独处学习与草稿都应体现这个人设。")
@@ -266,14 +287,23 @@ class ProtoAgent:
     def chat(self, text: str) -> str:
         assert self._owner_verified(text), "OWNER 通道认证失败"
         self._last_owner_ts = self._now()
+        now = self._now()
+        self._praise_times = [t for t in self._praise_times
+                              if now - t < 3 * 3600]      # 3h 习惯化窗口
         if any(w in text for w in self._PRAISE_WORDS):
-            self.pad.apply_event("owner_praise")
+            habituation = 0.5 ** len(self._praise_times)  # 享乐适应：重复夸奖增量几何衰减
+            self._praise_times.append(now)
+            if habituation > 0.05:
+                self.state.emotion["pleasure"] = round(max(
+                    -1.0, min(1.0, self.state.emotion["pleasure"]
+                              + 0.3 * habituation)), 4)   # RPE 式增量（绕过 PAD 常量）
             self.desires.satisfy("social_connection_gap", 0.15)
             self.desires.satisfy("recognition_need", 0.3)   # 被认可→需求消减
         else:
             self.desires.satisfy("social_connection_gap", 0.15)  # 交互本身即满足
         self._turn_emotion = dict(self.state.emotion)   # 编码快照先于衰减
-        self.pad.tick(1)   # 每轮向设定点自然衰减
+        hour = time.localtime(self._now()).tm_hour + time.localtime(self._now()).tm_min / 60
+        self.pad.tick(1, arousal_setpoint=circadian_arousal_setpoint(hour))
         self.mgr.save()    # 情绪变化随对话落盘
         signals = self.attributor.attribute(text, Channel.OWNER)
         self.pipeline.process(signals)
@@ -296,8 +326,8 @@ class ProtoAgent:
         reply = ""
         if self.llm is not None:
             try:
-                reply = self.llm.complete(
-                    self._system_prompt(),
+                reply = self._complete(
+                    self.llm, self._system_prompt(),
                     context + memory_block + history_block + "\n\n主人说：" + text)
             except Exception:
                 reply = ""  # 回退离线回复
@@ -317,7 +347,11 @@ class ProtoAgent:
         # 编码强度 = 事件基线 × 唤醒调制（闪光灯记忆近似）
         base = 0.8 if praised else 0.55
         arousal = self.state.emotion["arousal"]
-        importance = max(0.0, min(1.0, base * (0.8 + 0.4 * arousal)))
+        heuristic = max(0.0, min(1.0, base * (0.8 + 0.4 * arousal)))
+        # Generative Agents：写入时 LLM 评重要度（离线/失败回退启发式）
+        importance = score_importance(self, owner_text)
+        if importance is None:
+            importance = heuristic
         self.memory.add(
             "episode", f"主人：{owner_text[:200]}｜我：{reply[:150]}",
             importance=importance,
@@ -413,8 +447,8 @@ class ProtoAgent:
     def _compose_draft(self) -> str:
         if self.llm is not None:
             try:
-                return self.llm.complete(
-                    self._DRAFT_PROMPT,
+                return self._complete(
+                    self.llm, self._DRAFT_PROMPT,
                     f"主人优先级：{self.state.owner_priority or '（未设置）'}\n"
                     f"当前好奇缺口：{self.state.get('desires.curiosity_gap')}")
             except Exception:
@@ -612,3 +646,14 @@ class ProtoAgent:
                           "status": v.status} for v in evo["archive"].all()],
             "testset_count": len(evo["testset"].cases()),
         }
+
+
+
+class _GuardedClient:
+    """把任意 LLM 客户端包进 agent 的熔断守卫（归因等内部调用点用）。"""
+    def __init__(self, agent, client):
+        self._agent = agent
+        self._client = client
+
+    def complete(self, system: str, user: str) -> str:
+        return self._agent._complete(self._client, system, user)

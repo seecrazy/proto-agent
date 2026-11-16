@@ -36,13 +36,14 @@ def agent(tmp_path):
 
 class TestLoopStateInjection:
     def test_loop_prompt_contains_inner_state(self, agent):
-        agent.llm.decisions = [{"done": True, "summary": "ok"}]
+        agent.llm.decisions = ["直接完成", {"done": True, "summary": "ok"}]
         agent.state.set_within_bounds("instincts.exploration", 0.85)
         from proto.exec.agentic import AgenticLoop
         AgenticLoop(agent, max_steps=2).run("做点什么")
-        system, user = agent.llm.prompts[0]
-        assert "内在状态" in user                 # 状态调制循环决策
-        assert "exploration" in user and "0.85" in user
+        # prompts[0] 是 plan 调用；状态注入在决策调用里
+        decision_users = [u for s_, u in agent.llm.prompts if "内在状态" in u]
+        assert decision_users
+        assert "exploration" in decision_users[0] and "0.85" in decision_users[0]
 
     def test_loop_declares_external_output_boundary(self, agent):
         from proto.exec.agentic import LOOP_SYSTEM

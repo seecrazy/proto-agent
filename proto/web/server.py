@@ -276,8 +276,15 @@ class ProtoWebServer(ThreadingHTTPServer):
             threading.Thread(target=self._heartbeat, args=(heartbeat_s,),
                              daemon=True, name="proto-heartbeat").start()
 
+    @staticmethod
+    def _effective_interval(interval: float, hour: int) -> float:
+        """昼夜节律节流：默认 8-23 点为活跃期，夜间间隔×5——凌晨的 PROTO 也在睡觉。"""
+        return interval if 8 <= hour < 23 else interval * 5
+
     def _heartbeat(self, interval: float) -> None:
-        while not self._hb_stop.wait(interval):
+        import time as _time
+        while not self._hb_stop.wait(
+                self._effective_interval(interval, _time.localtime().tm_hour)):
             try:
                 with self.mut_lock:
                     self.agent.maybe_proactive()
