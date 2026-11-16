@@ -16,13 +16,20 @@ warn() { printf "%s⚠%s %s\n" "$C_YELLOW" "$C_OFF" "$1"; }
 die()  { printf "%s✗ %s%s\n" "$C_RED" "$1" "$C_OFF" >&2; exit 1; }
 step() { printf "%s▸ [%s/4]%s %s\n" "$C_BOLD$C_CYAN" "$1" "$C_OFF" "$2"; }
 
-printf "%s" "$C_BOLD$C_CYAN"
-cat <<'BANNER'
-╔══════════════════════════════════════════╗
-║   PROTO · 可控成长型 Agent · 部署引导   ║
-╚══════════════════════════════════════════╝
-BANNER
-printf "%s" "$C_OFF"
+python3 - <<'PYBANNER'
+import sys, unicodedata
+w = lambda t: sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in t)
+title = "PROTO · 可控成长型 Agent · 部署引导"
+width = w(title) + 6
+if sys.stdout.isatty():
+    print("\033[1;36m" + ("╔" + "═"*width + "╗") + "\033[0m")
+    print("\033[1;36m" + ("║  " + title + " "*(width - w(title) - 2) + "║") + "\033[0m")
+    print("\033[1;36m" + ("╚" + "═"*width + "╝") + "\033[0m")
+else:
+    print("╔" + "═"*width + "╗")
+    print("║  " + title + " "*(width - w(title) - 2) + "║")
+    print("╚" + "═"*width + "╝")
+PYBANNER
 
 # 1) Python
 command -v python3 >/dev/null || die "未找到 python3，请先安装 Python 3.9+"
@@ -33,8 +40,8 @@ if sys.version_info < (3, 9):
     sys.exit(1)
 PY
 PYVER=$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])')
-step 1 "Python $PYVER 检查"
-ok "Python $PYVER（≥3.9）"
+step 1 "Python ${PYVER} 检查"
+ok "Python ${PYVER}（≥3.9）"
 
 # 2) venv
 if [ ! -x ".venv/bin/python" ]; then
