@@ -656,16 +656,21 @@ function renderRules(rules) {
     const div = document.createElement("div");
     div.className = "proposal";
     const tag = r.status === "internal" ? '<span class="badge hot">已内化</span>' : '<span class="badge">外部 ' + r.applications + '/5</span>';
-    div.innerHTML = `<div class="desc">${r.text} ${tag}</div>` +
+    div.innerHTML = `<div class="desc">${esc(r.text)} ${tag}</div>` +
+      `<div class="btns">` +
+      `<button style="font-size:11px" onclick="editRulePrompt('${r.id}', this)">改</button>` +
+      `<button class="danger" style="font-size:11px" onclick="delRule('${r.id}')">删</button>` +
       (r.status === "internal"
-        ? `<div class="btns"><button class="danger" onclick="deint('${r.id}')">降级为外部规矩</button></div>` : "");
+        ? `<button class="danger" style="font-size:11px" onclick="deint('${r.id}')">降级为外部</button>` : "") +
+      `</div>`;
     box.appendChild(div);
   }
 }
-async function editRule(id, current) {
+async function editRulePrompt(id, btn) {
+  const current = btn.closest(".proposal").querySelector(".desc").childNodes[0].textContent.trim();
   const text = prompt("修改规矩：", current);
-  if (text === null) return;
-  await api("POST", `/api/rules/${id}/edit`, { text });
+  if (text === null || !text.trim()) return;
+  await api("POST", `/api/rules/${id}/edit`, { text: text.trim() });
   refreshRules();
 }
 async function delRule(id) {
