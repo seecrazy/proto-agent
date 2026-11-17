@@ -66,8 +66,10 @@ DEFAULT_POOLS = {
 class ProtoAgent:
     def __init__(self, data_dir: Path, llm=None, now=time.time,
                  goal_interval_s: float = 4 * 3600,
-                 persona: str = None, webtools=None, fast_llm=None):
+                 persona: str = None, webtools=None, fast_llm=None,
+                 blackboard=None):
         self._now = now
+        self.blackboard = blackboard
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.llm = llm
@@ -138,6 +140,10 @@ class ProtoAgent:
         self.scheduler.start()
         self._inbox = []
         self._last_self_act = 0.0        # 上次自主行动时刻（冷却制）
+        from proto.runtime.quota import AutoApproveQuota
+        import os as _os
+        _quota_n = int(_os.environ.get("PROTO_AUTO_APPROVE_N", "0"))
+        self.auto_quota = AutoApproveQuota(_quota_n) if _quota_n > 0 else None
         self.memory = MemoryStream(store)
         self.goal_tree = GoalTree(store)
         self.goal_tree.on_milestone = self._on_milestone
@@ -395,6 +401,29 @@ class ProtoAgent:
         self._save_transient()
         return {"acted": message is not None, "message": message or "",
                 "reason": "" if message else "行动未产生提案（预算/条件不足）"}
+
+    def post_to_blackboard(self, text: str, kind: str = "help") -> str:
+        """向舰队黑板发帖（求助/分享）。无黑板时静默返回空。"""
+        if self.blackboard is None:
+            return ""
+        return self.blackboard.post(self.data_dir.name, text, kind=kind)
+
+    def answer_blackboard(self, note_id: str, text: str) -> None:
+        if self.blackboard is not None:
+            self.blackboard.claim(note_id, self.data_dir.name)
+            self.blackboard.reply(note_id, self.data_dir.name, text)
+
+    def read_blackboard(self) -> list:
+        return self.blackboard.read() if self.blackboard else []
+
+    def read_blackboard_replies(self) -> list:
+        notes = self.read_blackboard()
+        me = self.data_dir.name
+        out = []
+        for n in notes:
+            if n["from"] == me:
+                out.extend(n.get("replies", []))
+        return out
 
     def pop_inbox(self) -> list:
         """取走积压的主动消息（心跳产出，控制台拉取展示）。"""
@@ -737,9 +766,23 @@ class ProtoAgent:
         self._persist_metacog()
 
     def pending_proposals(self) -> List[dict]:
-        return [{"proposal_id": p.proposal_id, "description": p.description,
-                 "desire_dim": p.desire_dim, "payload": p.payload}
-                for p in self.queue.pending()]
+        rows = []
+        for p in self.queue.pending():
+            preview = ""
+            note = (p.payload or {}).get("note")
+            if note:
+                try:
+                    preview = (self.workspace._scratch / note).read_text(
+                        encoding="utf-8")[:160]
+                except OSError:
+                    preview = ""
+            rows.append({"proposal_id": p.proposal_id,
+                         "description": p.description,
+                         "desire_dim": p.desire_dim,
+                         "goal": (p.payload or {}).get("goal", ""),
+                         "note": note or "",
+                         "preview": preview})
+        return rows
 
     def deny_proposal(self, proposal_id: str):
         """拒绝提议（触发阻尼）；返回受影响欲望的最新触发阈值。"""

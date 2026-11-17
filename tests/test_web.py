@@ -178,3 +178,4 @@ class TestM10Endpoints:
         status, data = call(server, "GET", "/api/scratch", token=server.token)
         assert status == 200
         assert data["notes"] and "github.com/x/y" in data["notes"][0]["preview"]
+        assert data["notes"][0]["mtime"] > 0

@@ -199,6 +199,24 @@
     </div>
 
     <div class="card">
+      <h3>时 · 天 · 周 · 月 · 年 汇总</h3>
+      <div id="time-buckets" class="empty">（加载中）</div>
+      <div class="kv" style="margin-top:6px">
+        <input type="text" id="quota-input" placeholder="24h 自主白名单次数（0=关）" style="max-width:180px">
+        <button onclick="setQuota()">设置</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Agent 黑板（相互协作）</h3>
+      <div id="blackboard" class="empty">（暂无帖子——它们会互相求助与分享）</div>
+      <div class="kv">
+        <input type="text" id="bb-input" placeholder="以当前 agent 名义发帖…">
+        <button onclick="postBB()">发帖</button>
+      </div>
+    </div>
+
+    <div class="card">
       <h3>审计链（最近 20 条）</h3>
       <div id="audit"></div>
     </div>
@@ -463,6 +481,46 @@ async function refreshWorld() {
     box.appendChild(d);
   }
 }
+async function refreshBuckets() {
+  try {
+    const r = await api("GET", "/api/summary");
+    const b = r.buckets;
+    const label = {hour:"时",day:"天",week:"周",month:"月",year:"年"};
+    const top = (o) => Object.entries(o.by_type||{}).sort((a,c)=>c[1]-a[1]).slice(0,3)
+      .map(([k,v])=>`${k}×${v}`).join(" ")||"";
+    document.getElementById("time-buckets").innerHTML =
+      Object.keys(label).map(k=>`<div style="font-size:12px;margin-bottom:3px">`+
+        `<b style="display:inline-block;width:2.5em">${label[k]}</b> ${b[k].total} 事件 `+
+        `<span style="color:var(--dim)">${top(b[k])}</span></div>`).join("");
+  } catch (e) {}
+}
+async function refreshBlackboard() {
+  try {
+    const r = await api("GET", "/api/blackboard");
+    const box = document.getElementById("blackboard");
+    box.innerHTML = r.notes.length ? "" : "（暂无帖子——它们会互相求助与分享）";
+    for (const n of r.notes.slice(0, 6)) {
+      const d = document.createElement("div");
+      d.style.cssText = "font-size:12px;margin-bottom:6px;border-left:2px solid var(--accent);padding-left:8px";
+      d.innerHTML = `<b>${esc(n.from)}</b>: ${esc(n.text)}<br>` +
+        (n.claimed_by ? `<span class="badge">已认领:${esc(n.claimed_by)}</span>` : '<span class="badge hot">待认领</span>') +
+        (n.replies||[]).map(r=>`<div style="color:var(--dim);font-size:11px">↳ <b>${esc(r.from)}</b>: ${esc(r.text)}</div>`).join("");
+      box.appendChild(d);
+    }
+  } catch (e) {}
+}
+async function setQuota() {
+  const n = parseInt(document.getElementById("quota-input").value) || 0;
+  await api("POST", "/api/quota", { n });
+  addMsg(n > 0 ? `已开启 24h 自主白名单：${n} 次 workspace 级动作免审批` : "已关闭自主白名单", "system");
+}
+async function postBB() {
+  const text = document.getElementById("bb-input").value.trim();
+  if (!text) return;
+  document.getElementById("bb-input").value = "";
+  await api("POST", "/api/blackboard", { text });
+  refreshBlackboard();
+}
 async function refreshProjectsRoot() {
   try {
     const r = await api("GET", "/api/projects-root");
@@ -682,8 +740,13 @@ async function refreshAudit() {
   const data = await api("GET", "/api/audit?n=20");
   const box = document.getElementById("audit");
   box.innerHTML = data.events.slice().reverse()
-    .map(e => `<div><span class="t">#${e.seq}</span> ${e.event_type} <span style="opacity:.6">${esc(JSON.stringify(e.payload)).slice(0, 80)}</span></div>`)
+    .map(e => `<div><span style="color:var(--dim)">${esc(fmtTime(e.ts))}</span> <span class="t">#${e.seq}</span> ${e.event_type} <span style="opacity:.6">${esc(JSON.stringify(e.payload)).slice(0, 70)}</span></div>`)
     .join("");
+}
+function fmtTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  return (d.getMonth()+1)+"-"+String(d.getDate()).padStart(2,"0")+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
 }
 function esc(s) { const d = document.createElement("i"); d.textContent = s; return d.innerHTML; }
 

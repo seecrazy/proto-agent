@@ -222,6 +222,22 @@ class _Handler(BaseHTTPRequestHandler):
             agent.forget_memory(self._body().get("id", ""))
             return self._json(200, agent.memory.snapshot())
 
+        if path == "/api/summary" and method == "GET":
+            from proto.runtime.summaries import bucket_events
+            events = agent.audit_tail(500)
+            return self._json(200, {"buckets": bucket_events(events)})
+        if path == "/api/blackboard" and method == "GET":
+            return self._json(200, {"notes": agent.read_blackboard()})
+        if path == "/api/blackboard" and method == "POST":
+            nid = agent.post_to_blackboard(self._body().get("text", ""))
+            return self._json(200, {"id": nid})
+        if path == "/api/quota" and method == "POST":
+            import os
+            n = int(self._body().get("n", 0))
+            os.environ["PROTO_AUTO_APPROVE_N"] = str(n)
+            from proto.runtime.quota import AutoApproveQuota
+            agent.auto_quota = AutoApproveQuota(n) if n > 0 else None
+            return self._json(200, {"auto_approve_n": n})
         if path == "/api/inbox" and method == "GET":
             return self._json(200, {"messages": agent.pop_inbox()})
 
@@ -230,11 +246,14 @@ class _Handler(BaseHTTPRequestHandler):
             for rel in agent.workspace.list_scratch():
                 if not rel.startswith("notes/"):
                     continue
+                note_path = agent.workspace._scratch / rel
                 try:
-                    content = (agent.workspace._scratch / rel).read_text(encoding="utf-8")
+                    content = note_path.read_text(encoding="utf-8")
+                    mtime = note_path.stat().st_mtime
                 except OSError:
                     continue
-                notes.append({"path": rel, "preview": content[:160]})
+                notes.append({"path": rel, "preview": content[:160],
+                              "mtime": mtime})
             return self._json(200, {"notes": notes[-10:]})
 
         if path == "/api/rules" and method == "GET":

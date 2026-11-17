@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -50,9 +51,14 @@ class FileSystemStore(DocumentStore):
         path = self._path(collection, doc_id)
         with self._lock:
             path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".json.tmp")
+            tmp = path.with_suffix(f".json.{os.getpid()}.tmp")  # 每进程独立tmp防竞争
             tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(path)
+            try:
+                tmp.replace(path)
+            except FileNotFoundError:
+                # 多进程并发写同 doc：另一方已 replace——重试一次（内容幂等则成功）
+                tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+                tmp.replace(path)
 
     def get(self, collection: str, doc_id: str) -> Optional[dict]:
         path = self._path(collection, doc_id)
