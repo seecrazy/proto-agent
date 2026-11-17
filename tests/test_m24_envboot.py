@@ -35,3 +35,12 @@ def test_offline_reply_names_env_path(tmp_path):
                                            (_ for _ in ()).throw(OSError("禁网"))))
     reply = agent.chat("你好")
     assert "proto.env" in reply                        # 指出修法，而非只提 BASE_URL
+
+
+def test_all_entrypoints_importable():
+    """所有 python -m 入口可被导入（防语法/缩进破坏逃过测试套件）。"""
+    import importlib
+    for module in ("proto.run", "proto.web.__main__", "proto.llm.__main__",
+                   "proto.backup", "proto.agents.__main__",
+                   "proto.appshell.__main__", "proto.demo", "proto.setup"):
+        importlib.import_module(module)

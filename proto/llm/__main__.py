@@ -15,8 +15,9 @@ import time
 
 def main() -> int:
     from proto.config import load_default_env
-from proto.llm.client import create_llm_stack
+    from proto.llm.client import create_llm_stack
 
+    load_default_env()
     stack = create_llm_stack()
     if stack is None:
         print("未配置 LLM（离线模式）。")
