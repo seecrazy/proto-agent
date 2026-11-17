@@ -392,6 +392,7 @@ async function refreshFleet() {
     const e = a.emotion || {};
     const act = a.activity || {};
     d.innerHTML =
+      (a.paused ? `<div style="font-size:11px;color:var(--warn);margin-bottom:4px;border-bottom:1px dashed var(--border);padding-bottom:3px">⏸ 已暂停 —— 心跳停止，记忆/目标保留</div>` : "") +
       `<div style="margin-bottom:4px"><b>${esc(a.name)}</b>` +
       (a.paused ? ' <span class="badge lock">已暂停</span>' : "") +
       ` <span class="badge">${esc((a.persona || "").slice(0, 12))}</span>` +
@@ -400,7 +401,7 @@ async function refreshFleet() {
       `<div style="font-size:11px;color:var(--dim)">${des} · P${(e.pleasure ?? 0).toFixed(1)} A${(e.arousal ?? 0).toFixed(1)} · 记忆${a.memory_total ?? 0} · 待批${a.pending_proposals ?? 0} · 目标${a.goals_active ?? 0}(${Math.round((a.goals_progress ?? 0) * 100)}%)</div>` +
       `<div class="btns" style="margin-top:6px">` +
       `<button style="font-size:11px" onclick="switchAgent('${a.id}')">切换</button>` +
-      `<button style="font-size:11px" onclick="pauseAgent('${a.id}', ${!a.paused})">${a.paused ? "恢复" : "暂停"}</button>` +
+      `<button style="font-size:11px" onclick="pauseAgent('${a.id}', ${!a.paused}, this)">${a.paused ? "▶ 恢复" : "⏸ 暂停"}</button>` +
       `<button style="font-size:11px" onclick="forceAct('${a.id}', this)">立即行动</button>` +
       `<button style="font-size:11px" onclick="toggleActivity('${a.id}')">活动</button>` +
       `<button class="danger" style="font-size:11px" onclick="archiveAgent('${a.id}')">归档</button></div>`;
@@ -433,9 +434,20 @@ async function switchAgent(id) {
   await api("POST", `/api/agents/${id}/select`, {});
   location.reload();
 }
-async function pauseAgent(id, on) {
-  await api("POST", `/api/agents/${id}/pause`, { on });
-  refreshFleet();
+async function pauseAgent(id, on, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = on ? "暂停中…" : "恢复中…"; }
+  try {
+    await api("POST", `/api/agents/${id}/pause`, { on });
+    if (on) {
+      addMsg("⏸ 已暂停该 Agent：心跳停止（不再学习/反思/自主行动），记忆与目标完整保留；对话仍可进行。", "system");
+    } else {
+      addMsg("▶ 已恢复该 Agent：心跳重启，它从中断处继续自主行动。", "system");
+    }
+    await refreshFleet();
+  } catch (e) {
+    addMsg("操作失败：" + e.message, "system");
+    if (btn) { btn.disabled = false; btn.textContent = on ? "▶ 恢复" : "⏸ 暂停"; }
+  }
 }
 async function archiveAgent(id) {
   if (!confirm("归档该 Agent？（数据保留在 archive/，可手工恢复）")) return;
