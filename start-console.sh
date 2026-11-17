@@ -8,15 +8,15 @@ cd "$(dirname "$0")"
 PORT=8431
 TOKEN="${PROTO_WEB_TOKEN:-niI72Mesx1eRYKrTpLn1bA}"
 if lsof -nP -iTCP:$PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
-  echo "✓ 控制台已在运行（端口 $PORT）——直接打开页面"
+  echo "✓ 控制台已在运行（端口 ${PORT}）——直接打开页面"
   open "http://127.0.0.1:$PORT/#token=$TOKEN"
   exit 0
 fi
 
 echo "PROTO 控制台启动中…"
 echo "  数据   : ./proto_data（你的 agent 舰队）"
-echo "  地址   : http://127.0.0.1:$PORT/#token=$TOKEN"
+echo "  地址   : http://127.0.0.1:${PORT}/#token=${TOKEN}"
 echo "  停止   : Ctrl+C"
 echo
-open "http://127.0.0.1:$PORT/#token=$TOKEN" 2>/dev/null || true
-exec python3 -u -m proto.web --data-dir ./proto_data --port $PORT --token "$TOKEN"
+open "http://127.0.0.1:${PORT}/#token=${TOKEN}" 2>/dev/null || true
+exec python3 -u -m proto.web --data-dir ./proto_data --port ${PORT} --token "${TOKEN}"
