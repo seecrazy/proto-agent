@@ -217,3 +217,10 @@ P2（工程化）：
 - [x] UI：顶栏 Agent 选择器 + ＋新建；「Agent 舰队」总览卡（每人设/缺口/情绪/记忆/待批/目标进度/切换/暂停/归档）。
 - [x] 坑（根因级）：单 agent 收编时 manager root 不能取 data_dir.parent——同父目录的兄弟实例会共享 registry.json 互相劫持 current（pytest 全量偶发心跳失效的根源）；修复为 root=data_dir/.fleet 天然隔离。
 - 验证：400 项测试全绿。
+
+### M22 — 舰队 CLI 与原生 App 壳（feat/m22-app）
+
+- [x] `python3 -m proto.agents`：舰队管理 CLI（list/create/select/pause/resume/archive，带观测快照与 UI 层输出；--root 或 PROTO_FLEET_ROOT 指定根）。
+- [x] `proto/appshell/generator.py`：一键生成 PROTO.app——macOS 原生壳（~110 行 Swift：WKWebView 窗口 + 托管 proto.web 子进程、退出即带走、就绪探测后加载带令牌 URL、令牌经环境变量不落源码）。swiftc 编译（本机验证通过，产物 ~2MB），无 swiftc 时降级为源码+说明。
+- [x] Electron 取舍：不引入（~200MB Chromium/Node 依赖，违背零依赖立身之本）；原生壳以 2MB swiftc 产物获得窗口/Dock/生命周期管理。
+- 验证：404 项测试全绿；真实 swiftc 编译通过。
