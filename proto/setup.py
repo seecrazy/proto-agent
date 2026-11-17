@@ -30,6 +30,9 @@ PERSONA_PRESETS = [
 
 WIZARD_STEPS = ["provider", "api_key", "llm_detail", "token", "persona", "priority", "confirm"]
 
+# 人设预设与 runtime/personas.py 保持单一来源
+from proto.runtime.personas import PERSONA_DEFAULTS as _RUNTIME_PERSONAS
+
 PRIORITY_EXAMPLES = [
     "补齐支付模块的单元测试",
     "学习 agent 编排框架",
