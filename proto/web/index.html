@@ -201,10 +201,13 @@ const TOKEN = (location.hash.match(/token=([^&]+)/) || [])[1] || "";
 if (!TOKEN) document.body.innerHTML = "<p style='padding:30px'>缺少访问令牌：请使用终端打印的完整 URL（含 #token=…）打开。</p>";
 
 async function api(method, path, body) {
+  // GET/HEAD 绝不带 body（浏览器 fetch 会直接拒绝——曾致全页卡片静默挂死）
+  const payload = (method === "GET" || method === "HEAD")
+    ? undefined : (body ? JSON.stringify(body) : undefined);
   const resp = await fetch(path, {
     method, headers: { "X-Proto-Token": TOKEN,
-                       ...(body ? {"Content-Type": "application/json"} : {}) },
-    body: body ? JSON.stringify(body) : undefined,
+                       ...(payload ? {"Content-Type": "application/json"} : {}) },
+    body: payload,
   });
   if (resp.status === 401) { addMsg("令牌失效，请用终端里的完整 URL 重新打开。", "system"); throw new Error("unauthorized"); }
   return resp.json();
@@ -236,7 +239,7 @@ async function sendChat() {
 }
 async function refreshInboxOnce() {
   try {
-    const inbox = await api("GET", "/api/inbox", {});
+    const inbox = await api("GET", "/api/inbox");
     for (const m of inbox.messages) addMsg(m, "system");
   } catch (e) {}
 }
@@ -334,7 +337,7 @@ async function savePersona() {
   addMsg(`人设已设为：「${r.persona}」——独处学习将围绕这个人设展开。`, "system");
 }
 async function refreshFleet() {
-  const r = await api("GET", "/api/agents", {});
+  const r = await api("GET", "/api/agents");
   const sel = document.getElementById("agent-select");
   sel.innerHTML = "";
   for (const a of r.agents) {
@@ -398,7 +401,7 @@ function showCreateAgent() {
   api("POST", "/api/agents", { name, persona, priority }).then(() => location.reload());
 }
 async function refreshGoalTree() {
-  const r = await api("GET", "/api/goaltree", {});
+  const r = await api("GET", "/api/goaltree");
   const box = document.getElementById("goaltree");
   const active = r.nodes.filter(n => n.status === "active");
   box.innerHTML = active.length ? "" : "（暂无——设定主人优先级会播种长期目标并自动分解）";
@@ -414,7 +417,7 @@ async function refreshGoalTree() {
   }
 }
 async function refreshWorld() {
-  const r = await api("GET", "/api/world", {});
+  const r = await api("GET", "/api/world");
   const box = document.getElementById("world");
   const topics = Object.entries(r.topics || {});
   const preds = topics.flatMap(([t, d]) => d.predictions.map(p => ({t, ...p})));
@@ -431,7 +434,7 @@ async function refreshWorld() {
   }
 }
 async function refreshMemory() {
-  const r = await api("GET", "/api/memory", {});
+  const r = await api("GET", "/api/memory");
   const box = document.getElementById("memory-facts");
   if (!r.facts.length && !r.reflections.length) return;
   box.innerHTML = `<div style="color:var(--dim);font-size:11px;margin-bottom:6px">情景 ${r.episodes} 条 · 事实 ${r.facts.length} 条 · 反思 ${r.reflections.length} 条</div>`;
@@ -465,7 +468,7 @@ async function refreshMemory() {
   }
 }
 async function refreshScratch() {
-  const r = await api("GET", "/api/scratch", {});
+  const r = await api("GET", "/api/scratch");
   const box = document.getElementById("scratch-notes");
   box.innerHTML = r.notes.length ? "" : "（暂无——独处时它会带着人设去 GitHub 研读开源项目）";
   for (const n of r.notes.slice().reverse()) {
@@ -551,7 +554,7 @@ async function deint(id) {
   renderRules(r.rules);
 }
 async function refreshRules() {
-  const r = await api("GET", "/api/rules", {});
+  const r = await api("GET", "/api/rules");
   renderRules(r.rules);
 }
 async function addTestCase() {
@@ -583,7 +586,7 @@ async function mutate() {
   refreshEvolution();
 }
 async function refreshEvolution() {
-  const r = await api("GET", "/api/evolution", {});
+  const r = await api("GET", "/api/evolution");
   const box = document.getElementById("variants");
   box.innerHTML = r.variants.length ? "" : "（变体列表）";
   for (const v of r.variants.slice(-6).reverse()) {
@@ -640,7 +643,7 @@ const SAFE = (name, fn) => async () => {
 async function loop() {
   await SAFE("tick", async () => { await api("POST", "/api/tick", {}); })();
   await SAFE("inbox", async () => {
-    const inbox = await api("GET", "/api/inbox", {});
+    const inbox = await api("GET", "/api/inbox");
     for (const m of inbox.messages) addMsg(m, "agent");
   })();
   for (const [name, fn] of [["state", refreshState], ["proposals", refreshProposals],
