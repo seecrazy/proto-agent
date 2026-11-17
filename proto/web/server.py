@@ -92,7 +92,8 @@ class _Handler(BaseHTTPRequestHandler):
     # ---- 路由入口（锁分离） ----
     def _api(self, method: str, parsed):
         server: ProtoWebServer = self.server
-        agent: ProtoAgent = server.agent
+        agent = server.manager.agent_for_request(
+            self.headers.get("X-Proto-Agent"))
         path, query = parsed.path, parse_qs(parsed.query)
         if method == "GET" and path in READ_ONLY_GETS:
             return self._routes(method, path, query, agent, server)
@@ -101,6 +102,29 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _routes(self, method: str, path: str, query, agent: ProtoAgent,
                 server: ProtoWebServer):
+        if path == "/api/agents" and method == "GET":
+            return self._json(200, {"agents": server.manager.list(),
+                                    "current": server.manager.current_id()})
+        if path == "/api/agents" and method == "POST":
+            info = server.manager.create(**{
+                k: v for k, v in self._body().items()
+                if k in ("name", "persona", "priority")})
+            server.manager.set_current(info["id"])
+            return self._json(200, {"created": info,
+                                    "agents": server.manager.list()})
+        m4 = re.match(r"^/api/agents/([0-9a-f]+)/(select|pause|archive)$", path)
+        if m4 and method == "POST":
+            aid, action = m4.group(1), m4.group(2)
+            if action == "select":
+                server.manager.set_current(aid)
+            elif action == "pause":
+                server.manager.pause(aid, bool(self._body().get("on", True)))
+            elif action == "archive":
+                if not server.manager.archive(aid):
+                    return self._json(404, {"error": "no_such_agent"})
+            return self._json(200, {"agents": server.manager.list(),
+                                    "current": server.manager.current_id()})
+
         if path == "/api/state" and method == "GET":
             return self._json(200, _state_payload(agent, server))
 
@@ -267,9 +291,20 @@ def _state_payload(agent: ProtoAgent, server: ProtoWebServer = None) -> dict:
 class ProtoWebServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, agent: ProtoAgent, host: str = "127.0.0.1", port: int = 8420,
-                 token: str = None, heartbeat_s: float = 30.0, keep_awake=None):
-        self.agent = agent
+    def __init__(self, agent: ProtoAgent = None, host: str = "127.0.0.1",
+                 port: int = 8420, token: str = None, heartbeat_s: float = 30.0,
+                 keep_awake=None, manager=None):
+        from proto.runtime.manager import AgentManager
+        if manager is None:
+            assert agent is not None, "需要 agent 或 manager 之一"
+            # 单 agent 收编：registry 放 agent 自家 .fleet/，与兄弟实例隔离
+            # （root=parent 会让同父目录的多实例共享 registry、互相劫持 current）
+            manager = AgentManager(root=agent.data_dir / ".fleet", llm=agent.llm,
+                                   fast_llm=agent.llm_fast,
+                                   webtools=agent.webtools)
+            manager.adopt(agent)
+        self.manager = manager
+        self.agent = agent or manager.get(manager.current_id())  # 遗留引用
         self.token = token or secrets.token_urlsafe(16)
         from proto.system.keepawake import KeepAwake
         self.keeper = keep_awake if keep_awake is not None else KeepAwake()
@@ -292,9 +327,9 @@ class ProtoWebServer(ThreadingHTTPServer):
                 self._effective_interval(interval, _time.localtime().tm_hour)):
             try:
                 with self.mut_lock:
-                    self.agent.maybe_proactive()
+                    self.manager.tick_all()      # M21：驱动整支舰队
             except Exception:
-                pass  # 心跳失败不致命——下个周期重试
+                pass  # 心跳失败不致命——下个周期重试  # 心跳失败不致命——下个周期重试
 
     def server_close(self) -> None:
         self._hb_stop.set()

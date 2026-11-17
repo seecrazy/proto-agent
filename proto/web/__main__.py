@@ -35,13 +35,26 @@ def main() -> int:
     args = parser.parse_args()
     load_default_env()  # 部署配置（proto.env）自动生效
 
+    from proto.runtime.manager import AgentManager
     stack = create_llm_stack()
     llm = stack["main"] if stack else None
-    agent = ProtoAgent(data_dir=Path(args.data_dir), llm=llm,
-                       fast_llm=stack["fast"] if stack else None)
+    data_root = Path(args.data_dir)
+    if (data_root / "owner.key").exists():
+        # 旧单 agent 布局：收编为舰队默认成员
+        manager = AgentManager(root=data_root / ".fleet", llm=llm,
+                               fast_llm=stack["fast"] if stack else None)
+        agent = ProtoAgent(data_dir=data_root, llm=llm,
+                           fast_llm=stack["fast"] if stack else None)
+        manager.adopt(agent, name="默认")
+    else:
+        manager = AgentManager(root=data_root, llm=llm,
+                               fast_llm=stack["fast"] if stack else None)
+        if not manager.list():
+            manager.create(name="主 Agent")
+        agent = manager.get(manager.current_id())
     from proto.system.keepawake import KeepAwake
     keeper = KeepAwake()
-    server = ProtoWebServer(agent, host="127.0.0.1", port=args.port,
+    server = ProtoWebServer(manager=manager, host="127.0.0.1", port=args.port,
                             token=args.token.strip() or None, keep_awake=keeper)
     if args.caffeinate:
         if keeper.start():
