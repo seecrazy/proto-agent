@@ -214,6 +214,10 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/api/goaltree" and method == "GET":
             return self._json(200, agent.goal_tree.snapshot())
+        m6 = re.match(r"^/api/goals/([0-9a-f]+)/drop$", path)
+        if m6 and method == "POST":
+            agent.goal_tree.drop(m6.group(1))
+            return self._json(200, agent.goal_tree.snapshot())
         if path == "/api/world" and method == "GET":
             return self._json(200, agent.world.snapshot())
         if path == "/api/memory" and method == "GET":
