@@ -109,7 +109,12 @@ class Router:
                 "step": i, "results": step_results, "task": task_spec,
             }, variant_id=VARIANT_ID)
             if step["tool"] == "write_file":
-                path = step["args"]["path"]
+                args = step.get("args", {}) or {}
+                path = args.get("path") or args.get("file_path") or args.get("filename")
+                if not path:
+                    step_results.append(
+                        f"错误：write_file 需要 path 参数（收到键：{list(args)}）")
+                    continue
                 if category is ActionCategory.WORKSPACE_WRITE and self._workspace is not None:
                     self._workspace.write_file(path, step["args"]["content"])
                     step_results.append(f"written:{path}")
