@@ -392,7 +392,9 @@ class ProtoAgent:
                 f"当前 social_initiative={self.state.get('instincts.social_initiative')}，"
                 f"curiosity_gap={self.state.get('desires.curiosity_gap')}，"
                 f"探索={self.state.get('instincts.exploration')}。"
-                "配置 PROTO_LLM_BASE_URL 后我会用真实模型与你对话。")
+                "修复：检查 proto_data/proto.env 的 LLM 配置，或重跑 "
+                "bash scripts/deploy.sh（智谱 Coding Plan 填 key 即可），"
+                "再用 python3 -m proto.llm 自检。")
 
     # ------------------------------------------------------------------
     _DRAFT_PROMPT = (

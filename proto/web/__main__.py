@@ -33,7 +33,8 @@ def main() -> int:
     parser.add_argument("--token", default=os.environ.get("PROTO_WEB_TOKEN", ""),
                         help="固定访问令牌（默认随机；设 PROTO_WEB_TOKEN 可固定，便于长驻）")
     args = parser.parse_args()
-    load_default_env()  # 部署配置（proto.env）自动生效
+    # 部署配置绑定数据目录加载（与启动目录无关——修"部署后仍离线"）
+    load_default_env(data_dir=args.data_dir)
 
     from proto.runtime.manager import AgentManager
     stack = create_llm_stack()
