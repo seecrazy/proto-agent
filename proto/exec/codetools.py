@@ -20,8 +20,11 @@ MAX_GREP_HITS = 50
 
 
 def _safe_rel(rel_path: str) -> Path:
+    rel_path = (rel_path or "").strip() or "."
+    if rel_path == ".":
+        return Path()                                  # 工作区根（LLM 常用 "."）
     parts = Path(rel_path).parts
-    if not parts or any(p in ("", ".", "..") for p in parts) or Path(rel_path).is_absolute():
+    if not parts or any(p in ("", "..") for p in parts) or Path(rel_path).is_absolute():
         raise ValueError(f"非法工作区相对路径: {rel_path!r}")
     return Path(*parts)
 
