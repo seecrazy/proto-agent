@@ -40,7 +40,9 @@ from proto.state.desires import DesireDynamics
 from proto.llm.breaker import CircuitBreaker
 from proto.memory.extract import extract_facts, reflect as llm_reflect
 from proto.memory.extract import score_importance
+from proto.goals.system import GoalTree
 from proto.memory.stream import MemoryStream
+from proto.world.model import PREDICT_PROMPT, VERDICT_PROMPT, WorldModel
 from proto.state.emotion import PAD, circadian_arousal_setpoint
 from proto.state.modulation import AttributionAccumulator, ModulationPipeline
 from proto.storage.mongo_store import create_store
@@ -134,6 +136,9 @@ class ProtoAgent:
         self.scheduler.start()
         self._inbox = []
         self.memory = MemoryStream(store)
+        self.goal_tree = GoalTree(store)
+        self.goal_tree.on_milestone = self._on_milestone
+        self.world = WorldModel(store)
         self.desires = DesireDynamics(self.mgr)
         self.workspace = ScratchWorkspace(self.data_dir / "ws", audit=self.spine)
         self.queue = ApprovalQueue(self.kernel, self.spine, damping=self.damping)
@@ -408,6 +413,7 @@ class ProtoAgent:
         if "deep_review" in fired:
             self._deep_review()
         self.maybe_reflect()
+        self._review_predictions()          # L3：预测误差闭环
         if "goal_generation" not in fired:
             return None
         over = [dim for dim, spec in self.state.desires.items()
@@ -415,8 +421,16 @@ class ProtoAgent:
         if not over:
             return None
         dim = over[0]
-        goal_text = (f"围绕『{self.state.owner_priority or '当前主人优先级'}』"
-                     f"推进一个可以验证的小目标，回应{dim}缺口")
+        # L3：优先从目标树选真实目标（自主/主人播种），无树才退模板
+        selected = self.goal_tree.select_executable(
+            self.state.owner_priority or "")
+        if selected is not None:
+            goal_text = selected.text
+            selected_id = selected.id
+        else:
+            goal_text = (f"围绕『{self.state.owner_priority or '当前主人优先级'}』"
+                         f"推进一个可以验证的小目标，回应{dim}缺口")
+            selected_id = None
         goal = Goal(description=goal_text, desire_dim=dim, gap=self.state.get(f"desires.{dim}"),
                     feasibility=0.7, interest=self.interest.weight("chat"),
                     verification="产出草稿或笔记", domain="chat")
@@ -432,12 +446,21 @@ class ProtoAgent:
         # ② 晋升提案：visible_write 等主人
         sub = self.queue.submit(ActionProposal(
             ActionCategory.VISIBLE_WRITE, f"晋升草稿为可见文档：{goal_text}",
-            {"goal": goal_text, "note": note_path}, task_id=f"self-{int(self._now())}",
+            {"goal": goal_text, "note": note_path, "goal_id": selected_id},
+            task_id=f"self-{int(self._now())}",
             self_initiated=True, desire_dim=dim))
+        self._selected_goal_id = selected_id
         if sub.rejected:
             return None
         src = f"，来源 {study['source']}" if study["source"] else "（离线模板）"
-        message = (f"〔主动学习〕围绕『{study['topic']}』研读开源项目并写了学习笔记"
+        if study.get("topic"):
+            topic = study["topic"][:60]
+            if study["source"]:
+                self.world.add_fact(topic, f"研读 {study['source']}",
+                                    study["source"])
+            self._record_predictions(topic)
+        message = (f"〔主动学习〕为推进目标『{goal_text}』研读开源项目"
+                   f"（主题：{study['topic']}）并写了学习笔记"
                 f" scratch:{note_path}{src}——零外部性；"
                 f"〔提案〕晋升为可见文档？—— /accept {sub.proposal_id} 同意，"
                 f"/deny {sub.proposal_id} 拒绝（拒绝会让我收敛一点）")
@@ -456,6 +479,89 @@ class ProtoAgent:
         return (f"# 工作草稿（离线模板）\n\n"
                 f"- 围绕主人优先级『{self.state.owner_priority or '未设置'}』整理三个待办\n"
                 f"- 标记一条可外部验证的完成标准\n- 下次交互时请主人确认方向")
+
+    def _on_milestone(self, node) -> None:
+        """中期/长期目标达成：情绪事件 + 高重要度记忆 + 收件箱播报。"""
+        self.pad.apply_event("goal_met")
+        self.memory.add("episode", f"里程碑达成：{node.text}",
+                        importance=0.9, emotion=dict(self.state.emotion))
+        self._inbox.append(f"〔里程碑〕{node.text} 完成。")
+
+    def _record_predictions(self, topic: str) -> None:
+        """学习后生成可检验预测（世界模型第二支柱）。"""
+        if self.llm_fast is None:
+            return
+        import json as _json
+        import re as _re
+        try:
+            raw = self._complete(self.llm_fast, PREDICT_PROMPT, topic)
+            cleaned = _re.sub(r"```(?:json)?", "", raw).strip()
+            start, end = cleaned.find("["), cleaned.rfind("]")
+            rows = _json.loads(cleaned[start:end + 1]) if start >= 0 else []
+        except Exception:
+            return
+        import time as _time
+        for row in rows[:3]:
+            statement = str(row.get("statement", "")).strip()
+            if not statement:
+                continue
+            days = max(1, min(365, int(row.get("days_ahead", 30))))
+            self.world.record_prediction(
+                topic, statement, deadline_ts=_time.time() + days * 86400,
+                confidence=float(row.get("confidence", 0.5)))
+
+    def _review_predictions(self) -> None:
+        """L3 第三支柱：预测误差闭环——到期复核，误差触发好奇上抬与自主目标。"""
+        import json as _json
+        import re as _re
+        import time as _time
+        for pred in self.world.due_predictions(limit=2):
+            topic = pred["topic"]
+            repos = self.webtools.github_search_repos(topic)
+            material = ""
+            if repos:
+                readme = self.webtools.github_readme(repos[0]["full_name"])
+                material = readme.get("text", "")[:2000]
+            verdict, evidence = "unknown", ""
+            if self.llm_fast is not None and material:
+                try:
+                    raw = self._complete(
+                        self.llm_fast, VERDICT_PROMPT,
+                        f"预测：{pred['statement']}\n\n观察材料：{material}")
+                    cleaned = _re.sub(r"```(?:json)?", "", raw).strip()
+                    start, end = cleaned.find("{"), cleaned.rfind("}")
+                    data = _json.loads(cleaned[start:end + 1])
+                    verdict = data.get("verdict", "unknown")
+                    evidence = str(data.get("evidence", ""))[:200]
+                except Exception:
+                    pass
+            if verdict == "unknown":
+                # 无法判定：期限顺延一轮再观察
+                self.world.record_prediction(
+                    topic, pred["statement"],
+                    deadline_ts=_time.time() + 7 * 86400,
+                    confidence=pred["confidence"])
+                self.world.settle(pred["id"], "renewed", evidence)
+                continue
+            self.world.settle(pred["id"], verdict, evidence)
+            if verdict == "wrong":
+                # 预测误差 → 好奇上抬 + 自主生成调查目标（挂到最相关长期目标下）
+                grown = self.state.get("desires.curiosity_gap") + 0.15
+                self.state.set_within_bounds("desires.curiosity_gap", grown)
+                self.mgr.save()
+                anchor = self.goal_tree.active_long_term()
+                parent_id = anchor[0].id if anchor else None
+                self.goal_tree.add(f"调查：为何『{pred['statement'][:60]}』落空",
+                                   level="short", parent_id=parent_id,
+                                   source="self")
+                self._inbox.append(
+                    f"〔预测落空〕我曾预测『{pred['statement'][:60]}』，"
+                    f"但观察不支持（{evidence or '依据不足'}）——已生成调查目标。")
+                self.spine.append("prediction_error",
+                                  {"statement": pred["statement"][:120]})
+            elif verdict == "correct":
+                self.pad.apply_event("task_success")
+                self.desires.satisfy("recognition_need", 0.1)
 
     def _deep_review(self) -> None:
         """每日深度回顾：修剪低效策略（保每簇覆盖）+ 兴趣向中性衰减。"""
@@ -500,6 +606,11 @@ class ProtoAgent:
         result = self.router.run(task)
         if result.status == "completed":
             self.pad.apply_event("goal_met")
+            # L3 里程碑：关联目标树节点完成 → 进度上传 + 情绪 + 记忆
+            goal_id = (proposal.payload or {}).get("goal_id") or getattr(
+                self, "_selected_goal_id", None)
+            if goal_id:
+                self.goal_tree.complete(goal_id)   # 里程碑副作用由 on_milestone 统一处理
         self.scheduler.on_task_completed(result)
         return {"status": result.status, "steps": result.step_results,
                 "approved": record.granted}
@@ -587,6 +698,7 @@ class ProtoAgent:
         self.state.owner_priority = text
         self.arbiter.owner_priority = text
         self.mgr.save()
+        self.goal_tree.seed_from_priority(text, self.llm_fast)  # L3:播种长期目标
         return {"owner_priority": text}
 
     # ------------------ L5 进化（OWNER 通道驱动） ------------------
