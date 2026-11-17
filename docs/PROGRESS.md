@@ -284,3 +284,12 @@ P2（工程化）：
 - 用户实例实测：自由文本"数据可视化专家"→ LLM 生成 {perfectionism 0.8, rigor 0.8, risk 0.4, proactiveness 0.6} 并应用 + 具体种子目标；第一次 iPhone 测试因该 agent 参数已被塑造而正确跳过（成长保护生效）。
 - "有交互就交互，没交互就自主行动"：M28 已闭环（chat 即交互；心跳目标牵引+晨间简报+缺口开新活三层自主驱动）。
 - 验证：444 项测试全绿。
+
+### M30 — 项目工位（feat/m30-projects，回应"会自己开发软件么/文件放哪/可配么"）
+
+- [x] `work_on_goal(node)`：目标牵引执行自动进入**项目模式**——任务约定写入 `projects/<目标slug>/`（中英保留、标点转-、40 字符）；执行走 Agentic 循环 + 质量门（验收定义→轨迹→独立验证，verified 才完成目标树节点触发里程碑）。
+- [x] 目录布局（默认）：`proto_data/.fleet/agents/<agent>/workspace/projects/<目标>/`——按 agent 物理隔离；scratch（草稿/笔记）与 projects（正式产出）分离。
+- [x] **可配置**：`PROTO_PROJECTS_ROOT=/path/to/dev` 则全部 agent 的项目统一落到该目录下（仍按 agent 名隔离子目录）。
+- [x] 目标 slug 规则（`_goal_slug`）与 per-agent 隔离有测试钉死。
+- 真实实例实测：给"插件专家"下任务，自主在 projects/tab-counter-extension/ 写出 Chrome MV3 manifest.json + popup.html + popup.js（真实可装的插件三件套；本次验证门判 failed_verification 是因为任务含"点图标"行为验证无浏览器环境——门正确拒绝了无证据的完成，属预期行为）。
+- 验证：448 项测试全绿。

@@ -146,7 +146,11 @@ class ProtoAgent:
         self.workspace = ScratchWorkspace(self.data_dir / "ws", audit=self.spine)
         self.queue = ApprovalQueue(self.kernel, self.spine, damping=self.damping)
         self.checkpoints = CheckpointStore(store)
-        self.code_workspace = CodeTools(self.data_dir / "workspace")
+        import os as _os
+        _projects_root = _os.environ.get("PROTO_PROJECTS_ROOT")
+        self.code_workspace = CodeTools(
+            Path(_projects_root) / self.data_dir.name if _projects_root
+            else self.data_dir / "workspace")
         self.tools = ToolRegistry()
         self.tools.register("clock", lambda: time.strftime("%Y-%m-%d %H:%M:%S"))
         self.code_workspace.register_all(self.tools)
@@ -335,6 +339,42 @@ class ProtoAgent:
     SELF_ACT_COOLDOWN_S = float(__import__("os").environ.get(
         "PROTO_ACT_COOLDOWN_S", "1800"))    # 自主行动冷却（默认 30 分钟）
 
+    @staticmethod
+    def _goal_slug(text: str) -> str:
+        """目标→目录名：保留中英文数字，标点转 -，截断 40 字符。"""
+        import re as _re
+        slug = _re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "-", text.strip()).strip("-")
+        return slug[:40] or "untitled"
+
+    def work_on_goal(self, node) -> dict:
+        """目标牵引执行：在 projects/<目标slug>/ 下自主开发，验收走质量门。"""
+        from proto.exec.agentic import AgenticLoop
+        from proto.quality.gate import generate_acceptance
+        project_dir = f"projects/{self._goal_slug(node.text)}"
+        acceptance = node.acceptance or generate_acceptance(
+            self.llm_fast, f"{node.text}（产出落在 {project_dir}）")
+        # 项目目录约定注入任务描述
+        task = (f"{node.text}。产出必须写入项目目录 {project_dir}/ "
+                f"（write_file 的 path 以 {project_dir}/ 开头）。")
+        result = AgenticLoop(self, max_steps=10).run(task, acceptance=acceptance)
+        if result.get("status") == "awaiting_retry":
+            retry = AgenticLoop(self, max_steps=6).run(
+                task, acceptance=acceptance,
+                feedback="；".join(result.get("missing", [])))
+            if retry.get("verified") is not None:
+                result = retry
+                if result.get("verified") is False:
+                    result["status"] = "failed_verification"
+        if result.get("verified") is True:
+            self.goal_tree.complete(node.id)     # 里程碑回调自动触发
+        self.scheduler.on_task_completed(
+            type("R", (), {"status": result.get("status", "completed"),
+                           "retries": 0, "reason": ""})())
+        self._inbox.append(
+            f"〔目标推进〕{node.text} → {result.get('status')}，"
+            f"产出目录 {project_dir}/")
+        return result
+
     def force_act(self) -> dict:
         """立即行动（观察入口）：缺口不足先注入好奇刺激，再走完整
         学习→目标→提案链。尊重静音/主人锁定；审计 force_act。"""
@@ -504,6 +544,8 @@ class ProtoAgent:
         # L3：优先从目标树选真实目标（自主/主人播种），无树才退模板
         selected = self.goal_tree.select_executable(
             self.state.owner_priority or "")
+        if selected is not None and selected.level in ("short", "mid", "task"):
+            return self.work_on_goal(selected)      # M30：可执行目标→项目工位开发
         if selected is not None:
             goal_text = selected.text
             selected_id = selected.id
