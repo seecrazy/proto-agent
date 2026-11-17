@@ -441,14 +441,16 @@ class ProtoAgent:
             self._deep_review()
         self.maybe_reflect()
         self._review_predictions()          # L3：预测误差闭环
-        # M27 冷却制：缺口达标即行动，不再死等 4h 节拍（节拍保留为无缺口时的定期自查）
+        self._morning_brief()               # 专家习惯：每日晨间领域扫描
+        # M28 专家工作模型：有活干活（目标牵引优先），缺口只管开新方向
+        has_work = self.goal_tree.select_executable(
+            self.state.owner_priority or "") is not None
         gap_ready = any(spec["value"] >= spec["threshold"]
                         for spec in self.state.desires.values())
         cooled = (self._now() - self._last_self_act) >= self.SELF_ACT_COOLDOWN_S
-        if ("goal_generation" not in fired) and not (gap_ready and cooled):
+        if ("goal_generation" not in fired) and not ((has_work or gap_ready) and cooled):
             return None
-        if "goal_generation" in fired or (gap_ready and cooled):
-            self._last_self_act = self._now()
+        self._last_self_act = self._now()
         over = [dim for dim, spec in self.state.desires.items()
                 if spec["value"] >= spec["threshold"]]
         if not over:
@@ -595,6 +597,46 @@ class ProtoAgent:
             elif verdict == "correct":
                 self.pad.apply_event("task_success")
                 self.desires.satisfy("recognition_need", 0.1)
+
+    _BRIEF_PROMPT = (
+        "你是 PROTO（人设：{persona}）。这是晨间领域扫描：基于下面的 GitHub "
+        "趋势观察，写一份 3-5 条要点的简短简报（Markdown，每条一行，"
+        "标注与自己主人优先级『{priority}』的关联或'无关'）。只输出简报正文。"
+    )
+
+    def _morning_brief(self) -> None:
+        """专家习惯：每日第一次心跳做领域扫描（简报进 scratch + 收件箱）。
+        同日幂等；离线无 LLM 时跳过正文但 trending 标题仍记录。"""
+        import time as _time
+        today = _time.strftime("%Y-%m-%d", _time.localtime(self._now()))
+        key = "brief"
+        doc = self.spine.store.get("habits", key) or {}
+        if doc.get("last_day") == today:
+            return
+        doc["last_day"] = today
+        self.spine.store.put("habits", key, doc)
+        topic = self.state.owner_priority or "software engineering"
+        repos = self.webtools.github_search_repos(topic)
+        lines = [f"- {r['full_name']}（★{r['stars']}）{r['description'][:50]}"
+                 for r in repos[:5]]
+        body = ""
+        if self.llm_fast is not None and repos:
+            try:
+                body = self._complete(
+                    self.llm_fast,
+                    self._BRIEF_PROMPT.format(persona=self.persona,
+                                              priority=self.state.owner_priority or "（未设）"),
+                    "\n".join(lines))
+            except Exception:
+                body = ""
+        note = (f"# 晨间简报 {today}\n\n主题：{topic}\n\n"
+                + ("\n".join(lines) or "（趋势抓取失败）")
+                + (f"\n\n{body}" if body else ""))
+        path = f"notes/brief-{today}.md"
+        self.workspace.write(path, note)
+        self._inbox.append(f"〔晨间简报〕{today}：扫了 {len(repos)} 个热门项目，"
+                           f"简报在 scratch:{path}")
+        self.spine.append("morning_brief", {"day": today, "repos": len(repos)})
 
     def _deep_review(self) -> None:
         """每日深度回顾：修剪低效策略（保每簇覆盖）+ 兴趣向中性衰减。"""
