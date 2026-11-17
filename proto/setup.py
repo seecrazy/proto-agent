@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 import plistlib
+import secrets
 import shlex
 import subprocess
 import sys
@@ -66,7 +67,7 @@ def run_wizard(ask, secure_ask, initial=None) -> dict:
     secure_ask(prompt)    机密输入（getpass，不回显）
     """
     values = {"provider": "", "base_url": "", "api_key": "", "model": "",
-              "fast_model": "", "token": "proto-console",
+              "fast_model": "", "token": "",
               "persona": "", "priority": ""}
     values.update({k: v for k, v in (initial or {}).items() if v})
     i = 0
@@ -145,12 +146,34 @@ def _run_step(step, pos, values, ask, secure_ask):
         # 离线模式：跳过
 
     if step == "token":
+        import secrets as _secrets
+        from proto import ui
         print()
-        print(step_ui(_pos_index[0], len(WIZARD_STEPS), "控制台固定访问令牌（重启不变的访问口令）"))
-        token = ask(f"令牌 [{values['token']}]（< 回上一步）: ", values["token"])
-        if token == "<":
-            return "back"
-        values["token"] = token
+        print(step_ui(_pos_index[0], len(WIZARD_STEPS),
+                      "控制台访问令牌（像密码一样对待）"))
+        print(dim_text(
+            "它是浏览器打开控制台的口令（出现在地址栏 #token= 之后）。\n"
+            "· 拿到它的人就能操作你的 Agent——请勿使用弱口令\n"
+            "· 回车 = 自动生成强随机令牌（推荐，完成后从 URL 收藏即可）"))
+        if values["token"]:
+            print(ok_line(f"已设置：{mask_key(values['token'])}"
+                          "（回车保留 / 输入新值替换）"))
+            token = secure_ask("新令牌（不回显；回车保留；< 回上一步）: ")
+            if token == "<":
+                return "back"
+            if token:
+                values["token"] = token
+                print(ok_line(f"已收到：{mask_key(values['token'])}"))
+        else:
+            token = secure_ask("令牌（不回显；回车=自动生成随机令牌）: ")
+            if token == "<":
+                return "back"
+            if token:
+                values["token"] = token
+                print(ok_line(f"已收到：{mask_key(values['token'])}"))
+        if not values["token"]:
+            values["token"] = _secrets.token_urlsafe(12)
+            print(ok_line("已生成强随机令牌（完成页 URL 中可见并收藏）"))
         return None
 
     if step == "persona":
@@ -207,7 +230,7 @@ def _run_step(step, pos, values, ask, secure_ask):
         ("2 API Key", mask_key(values["api_key"]) if values["api_key"] else "（无）", ui.yellow),
         ("3 模型", (values["model"] or "默认")
          + (f" / 快: {values['fast_model']}" if values["fast_model"] else ""), None),
-        ("4 令牌", values["token"], None),
+        ("4 令牌", mask_key(values["token"]), ui.yellow),
         ("5 人设", values["persona"] or "（未设置）", None),
         ("6 优先级", values["priority"] or "（未设置）", None),
     ], key_width=12))
@@ -238,8 +261,11 @@ def ensure_env_file(data_dir: Path, provider=None, base_url=None, api_key=None,
         "PROTO_LLM_API_KEY": api_key or "",
         "PROTO_LLM_MODEL": model or "",
         "PROTO_LLM_FAST_MODEL": fast_model or "",
-        "PROTO_WEB_TOKEN": token or "",
+        "PROTO_WEB_TOKEN": token,
     }
+    if not token:
+        import secrets as _secrets
+        token = _secrets.token_urlsafe(12)   # 兜底：绝不落弱默认
     lines = ["# PROTO 部署配置（由 proto.setup 生成；含密钥，权限 0600）"]
     for key in ENV_KEYS:
         value = values.get(key)
@@ -417,7 +443,7 @@ def plan_post_deploy(installed_service: bool, launch: str, yes: bool):
     env_path = Path(args_data_dir()) / "proto.env"
     if env_path.exists():
         load_env_file(env_path)
-    token = os.environ.get("PROTO_WEB_TOKEN", "proto-console")
+    token = os.environ.get("PROTO_WEB_TOKEN") or secrets.token_urlsafe(12)
     url = f"http://127.0.0.1:8420/#token={token}"
     if installed_service and launch != "none":
         return "open_url", url
