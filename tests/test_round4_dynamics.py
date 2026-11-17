@@ -112,6 +112,7 @@ class TestDesireDynamics:
         spine, kernel, state, mgr = env
         dyn = DesireDynamics(mgr)
         last_interaction = 0.0
+        dyn.evolve(now_ts=last_interaction, last_owner_interaction_ts=last_interaction)  # 基线
         dyn.evolve(now_ts=last_interaction + 10 * 3600, last_owner_interaction_ts=last_interaction)
         # 宽限期 1h：有效闲置 9h
         assert state.get("desires.curiosity_gap") == pytest.approx(0.3 + 0.03 * 9)
