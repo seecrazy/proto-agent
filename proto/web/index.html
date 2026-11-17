@@ -297,10 +297,20 @@ function renderParam(box, p, cat) {
       <div class="fill" style="left:0;width:${pct(p.value)}%"></div>
       <div class="setpoint" style="left:${pct(p.setpoint)}%"></div>
       ${p.threshold !== undefined ? `<div class="threshold" style="left:${pct(p.threshold)}%"></div>` : ""}
-    </div>`;
+    </div>
+    <input type="range" min="${p.bounds[0]}" max="${p.bounds[1]}" step="0.01"
+           value="${p.value}" ${p.owner_locked ? "disabled" : ""}
+           style="width:100%;margin-top:2px;height:4px"
+           onchange="slideParam('${cat}.${p.name}', this.value)"
+           title="拖动调整（主人覆写，走审计）">`;
   box.appendChild(div);
 }
 
+async function slideParam(param, value) {
+  const r = await api("POST", "/api/override", { param, value: parseFloat(value) });
+  addMsg(`主人调参 ${r.param} → ${r.value}${r.clamped ? "（截断到边界）" : ""}`, "system");
+  refreshState();
+}
 async function toggleLock(param, locked) {
   await api("POST", "/api/lock", { param, on: !locked });
   refreshState();

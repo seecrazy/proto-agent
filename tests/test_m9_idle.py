@@ -67,8 +67,12 @@ class TestIdleLife:
         # 所有缺口都压到阈值之下
         agent.state.set_within_bounds("desires.curiosity_gap", 0.31)
         agent.state.set_within_bounds("desires.goal_urgency", 0.31)
+        agent.state.set_within_bounds("desires.social_connection_gap", 0.31)
+        agent.state.set_within_bounds("desires.recognition_need", 0.31)
         assert agent.maybe_proactive() is None
-        assert not any(p.startswith("notes/") for p in agent.workspace.list_scratch())
+        # 学习草稿不产生（晨间简报 notes/brief- 属专家习惯，不算缺口草稿）
+        assert not any(p.startswith("notes/learning") or p.startswith("notes/17")
+                       for p in agent.workspace.list_scratch())
 
 
 class TestDeepReview:
