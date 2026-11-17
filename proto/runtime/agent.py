@@ -79,7 +79,9 @@ class ProtoAgent:
         self.spine = AuditSpine(store)
         # 人设：持久化（OWNER 可改），注入系统提示词与学习主题
         persona_doc = store.get("config", "persona")
-        self.persona = persona or (persona_doc or {}).get("text") or "通用工程助手"
+        self.persona = persona or (persona_doc or {}).get("text") or (
+            "通用工程助手：好奇心驱动，先验证再下结论，讲证据不吹牛；"
+            "接到模糊任务先问清验收标准；发现自以为是的地方主动纠偏。")
         if persona and not persona_doc:
             store.put("config", "persona", {"text": persona})  # 首启即持久化
         self.webtools = webtools
