@@ -209,3 +209,11 @@ P2（工程化）：
 - 定位跃迁：PROTO 从 L2+（心理层自主）进入 L3（认知层自主）——它现在有持续议程（目标树）、对外部世界的结构化认知与预测（世界模型）、以及由预测误差驱动的自主目标生成。
 - 坑：测试桩脚本键需最长优先匹配（"预测"是"预测复核器"的子串）；children_of_level 传的是节点 id 非层级字符串；选优的对齐度必须沿父链继承（词面重叠看不见语义从属）。
 - 验证：392 项测试全绿。
+
+### M21 — 多自主 Agent（feat/m21-multi）
+
+- [x] AgentManager（proto/runtime/manager.py）：创建（独立锚定/人设/记忆/目标树/预算）、收编旧单 agent、列表观测快照（欲望/情绪/记忆量/待批/目标进度）、暂停/恢复（停心跳+静音）、归档（移 archive/ 不删除）。
+- [x] 服务器 fleet 化：X-Proto-Agent 头作用域路由；/api/agents CRUD；心跳驱动整支舰队（单 Agent 异常不影响他者）。
+- [x] UI：顶栏 Agent 选择器 + ＋新建；「Agent 舰队」总览卡（每人设/缺口/情绪/记忆/待批/目标进度/切换/暂停/归档）。
+- [x] 坑（根因级）：单 agent 收编时 manager root 不能取 data_dir.parent——同父目录的兄弟实例会共享 registry.json 互相劫持 current（pytest 全量偶发心跳失效的根源）；修复为 root=data_dir/.fleet 天然隔离。
+- 验证：400 项测试全绿。

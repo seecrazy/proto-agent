@@ -85,6 +85,8 @@
   <div class="meta" id="model">…</div>
   <div class="meta">审计链 <span class="dot ok" id="chain-dot"></span></div>
   <div class="meta" id="budget-view" title="预算三分池余量（自主/主人任务/全局）"></div>
+  <select id="agent-select" onchange="switchAgent(this.value)" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px"></select>
+  <button onclick="showCreateAgent()" style="font-size:12px">＋Agent</button>
   <div class="spacer"></div>
   <button id="awake-btn" onclick="toggleAwake()">☕防休眠</button>
   <button id="mute-btn" onclick="toggleMute()">静音</button>
@@ -117,6 +119,11 @@
         <input type="text" id="priority-input" placeholder="优先级，例：补齐支付模块的单元测试">
         <button onclick="savePriority()">保存</button>
       </div>
+    </div>
+
+    <div class="card">
+      <h3>Agent 舰队（多自主 Agent 总览）</h3>
+      <div id="fleet" class="empty">（加载中…）</div>
     </div>
 
     <div class="card">
@@ -325,6 +332,54 @@ async function savePersona() {
   const text = document.getElementById("persona-input").value.trim();
   const r = await api("POST", "/api/persona", { text });
   addMsg(`人设已设为：「${r.persona}」——独处学习将围绕这个人设展开。`, "system");
+}
+async function refreshFleet() {
+  const r = await api("GET", "/api/agents", {});
+  const sel = document.getElementById("agent-select");
+  sel.innerHTML = "";
+  for (const a of r.agents) {
+    const opt = document.createElement("option");
+    opt.value = a.id; opt.textContent = a.name + (a.paused ? "（暂停）" : "");
+    opt.selected = a.id === r.current;
+    sel.appendChild(opt);
+  }
+  const box = document.getElementById("fleet");
+  box.innerHTML = "";
+  for (const a of r.agents) {
+    const d = document.createElement("div");
+    d.style.cssText = "border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:8px;background:var(--panel2)";
+    const des = a.desires ? `好奇${(a.desires.curiosity_gap ?? 0).toFixed(2)} 社交${(a.desires.social_connection_gap ?? 0).toFixed(2)}` : "（未激活）";
+    const e = a.emotion || {};
+    d.innerHTML =
+      `<div style="margin-bottom:4px"><b>${esc(a.name)}</b>` +
+      (a.paused ? ' <span class="badge lock">已暂停</span>' : "") +
+      ` <span class="badge">${esc((a.persona || "").slice(0, 12))}</span></div>` +
+      `<div style="font-size:11px;color:var(--dim)">${des} · P${(e.pleasure ?? 0).toFixed(1)} A${(e.arousal ?? 0).toFixed(1)} · 记忆${a.memory_total ?? 0} · 待批${a.pending_proposals ?? 0} · 目标${a.goals_active ?? 0}(${Math.round((a.goals_progress ?? 0) * 100)}%)</div>` +
+      `<div class="btns" style="margin-top:6px">` +
+      `<button style="font-size:11px" onclick="switchAgent('${a.id}')">切换</button>` +
+      `<button style="font-size:11px" onclick="pauseAgent('${a.id}', ${a.paused ? "false" : "true"})">${a.paused ? "恢复" : "暂停"}</button>` +
+      `<button class="danger" style="font-size:11px" onclick="archiveAgent('${a.id}')">归档</button></div>`;
+    box.appendChild(d);
+  }
+}
+async function switchAgent(id) {
+  await api("POST", `/api/agents/${id}/select`, {});
+  location.reload();
+}
+async function pauseAgent(id, on) {
+  await api("POST", `/api/agents/${id}/pause`, { on });
+  refreshFleet();
+}
+async function archiveAgent(id) {
+  if (!confirm("归档该 Agent？（数据保留在 archive/，可手工恢复）")) return;
+  await api("POST", `/api/agents/${id}/archive`, {});
+  location.reload();
+}
+function showCreateAgent() {
+  const name = prompt("Agent 名字："); if (!name) return;
+  const persona = prompt("人设（可空，如：资深软件专家）：") || "";
+  const priority = prompt("主人优先级（可空）：") || "";
+  api("POST", "/api/agents", { name, persona, priority }).then(() => location.reload());
 }
 async function refreshGoalTree() {
   const r = await api("GET", "/api/goaltree", {});
@@ -558,7 +613,7 @@ function esc(s) { const d = document.createElement("i"); d.textContent = s; retu
     await api("POST", "/api/tick", {});   // 驱动欲望动态/调度器
     const inbox = await api("GET", "/api/inbox", {});
     for (const m of inbox.messages) addMsg(m, "agent");
-    await refreshState(); await refreshProposals(); await refreshAudit(); await refreshRules(); await refreshEvolution(); await refreshScratch(); await refreshMemory(); await refreshGoalTree(); await refreshWorld();
+    await refreshState(); await refreshProposals(); await refreshAudit(); await refreshRules(); await refreshEvolution(); await refreshScratch(); await refreshMemory(); await refreshGoalTree(); await refreshWorld(); await refreshFleet();
   } catch (e) {}
   setTimeout(loop, 8000);
 })();

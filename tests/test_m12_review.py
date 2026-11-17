@@ -37,7 +37,9 @@ class TestReliability:
         class Buggy:
             pass
 
-        server.agent = Buggy()   # 触发路由内部异常
+        # M21 起按请求经 manager 解析 agent——从解析层注入坏对象触发 500
+        server.manager.get = lambda aid: Buggy()
+        server.manager.agent_for_request = lambda aid: Buggy()
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
             req = urllib.request.Request(
