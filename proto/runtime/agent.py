@@ -137,6 +137,7 @@ class ProtoAgent:
         self._wire_metacog_callbacks()
         self.scheduler.start()
         self._inbox = []
+        self._last_self_act = 0.0        # 上次自主行动时刻（冷却制）
         self.memory = MemoryStream(store)
         self.goal_tree = GoalTree(store)
         self.goal_tree.on_milestone = self._on_milestone
@@ -286,6 +287,28 @@ class ProtoAgent:
         history.append({"role": role, "text": text[:400]})
         self.spine.store.put("dialogue", "main", history[-self._HISTORY_TURNS:])
 
+    SELF_ACT_COOLDOWN_S = float(__import__("os").environ.get(
+        "PROTO_ACT_COOLDOWN_S", "1800"))    # 自主行动冷却（默认 30 分钟）
+
+    def force_act(self) -> dict:
+        """立即行动（观察入口）：缺口不足先注入好奇刺激，再走完整
+        学习→目标→提案链。尊重静音/主人锁定；审计 force_act。"""
+        if self.kernel.muted:
+            return {"acted": False, "reason": "已静音——解除静音后再试"}
+        gap = self.state.get("desires.curiosity_gap")
+        threshold = self.state.desires["curiosity_gap"]["threshold"]
+        if gap < threshold:
+            result = self.state.set_within_bounds(
+                "desires.curiosity_gap", gap + 0.35)   # 新奇刺激
+            self.mgr.save()
+            self.spine.append("force_act",
+                              {"stimulated": True, "gap": result.value})
+        else:
+            self.spine.append("force_act", {"stimulated": False})
+        message = self.maybe_proactive()
+        return {"acted": message is not None, "message": message or "",
+                "reason": "" if message else "行动未产生提案（预算/条件不足）"}
+
     def pop_inbox(self) -> list:
         """取走积压的主动消息（心跳产出，控制台拉取展示）。"""
         messages, self._inbox = self._inbox, []
@@ -418,8 +441,14 @@ class ProtoAgent:
             self._deep_review()
         self.maybe_reflect()
         self._review_predictions()          # L3：预测误差闭环
-        if "goal_generation" not in fired:
+        # M27 冷却制：缺口达标即行动，不再死等 4h 节拍（节拍保留为无缺口时的定期自查）
+        gap_ready = any(spec["value"] >= spec["threshold"]
+                        for spec in self.state.desires.values())
+        cooled = (self._now() - self._last_self_act) >= self.SELF_ACT_COOLDOWN_S
+        if ("goal_generation" not in fired) and not (gap_ready and cooled):
             return None
+        if "goal_generation" in fired or (gap_ready and cooled):
+            self._last_self_act = self._now()
         over = [dim for dim, spec in self.state.desires.items()
                 if spec["value"] >= spec["threshold"]]
         if not over:

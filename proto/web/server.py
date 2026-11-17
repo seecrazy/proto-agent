@@ -112,6 +112,14 @@ class _Handler(BaseHTTPRequestHandler):
             server.manager.set_current(info["id"])
             return self._json(200, {"created": info,
                                     "agents": server.manager.list()})
+        m5 = re.match(r"^/api/agents/([0-9a-f]+)/act$", path)
+        if m5 and method == "POST":
+            target = server.manager.get(m5.group(1))
+            if target is None:
+                return self._json(404, {"error": "no_such_agent"})
+            result = target.force_act()
+            target._inbox.append(result.get("message") or f"行动未成：{result.get('reason','')}")
+            return self._json(200, result)
         m4 = re.match(r"^/api/agents/([0-9a-f]+)/(select|pause|archive)$", path)
         if m4 and method == "POST":
             aid, action = m4.group(1), m4.group(2)

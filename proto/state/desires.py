@@ -22,6 +22,7 @@ class DesireDynamics:
         self._curiosity = curiosity_per_hour
         self._social = social_per_hour
         self._grace = grace_hours
+        self._last_evolve_ts = None    # 增量制：只按距上次 evolve 的流逝计费
 
     def satisfy(self, desire_dim: str, amount: float) -> float:
         """满足事件消减缺口（内稳态环的反馈支，设计 §1.2）。过量满足夹在 0。"""
@@ -32,12 +33,20 @@ class DesireDynamics:
         return self._mgr.state.get(dim)
 
     def evolve(self, now_ts: float, last_owner_interaction_ts: float) -> None:
-        idle_hours = max(0.0, (now_ts - last_owner_interaction_ts) / 3600.0 - self._grace)
+        """增量制（M27）：按距上次 evolve 的新增闲置时长计费——
+        多次小步与一次大步结果一致，不重复计数。宽限按主人交互时间截断。"""
         state = self._mgr.state
-        if idle_hours <= 0:
+        if self._last_evolve_ts is None:
+            self._last_evolve_ts = now_ts
+            return                                   # 首拍只建立基线
+        new_hours = max(0.0, (now_ts - self._last_evolve_ts) / 3600.0)
+        since_owner_h = max(0.0, (now_ts - last_owner_interaction_ts) / 3600.0)
+        billable = min(new_hours, max(0.0, since_owner_h - self._grace))
+        self._last_evolve_ts = now_ts
+        if billable <= 0:
             return
         for dim, rate in (("desires.curiosity_gap", self._curiosity),
                           ("desires.social_connection_gap", self._social)):
-            grown = state.get(dim) + rate * idle_hours
+            grown = state.get(dim) + rate * billable
             state.set_within_bounds(dim, grown)
         self._mgr.save()
