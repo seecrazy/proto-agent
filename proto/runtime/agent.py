@@ -397,6 +397,8 @@ class ProtoAgent:
                               {"stimulated": True, "gap": result.value})
         else:
             self.spine.append("force_act", {"stimulated": False})
+        # 主人显式指令不受自主冷却限制（冷却约束的是自发节律，不是主人的"现在就做"）
+        self._last_self_act = 0.0
         message = self.maybe_proactive()
         self._save_transient()
         return {"acted": message is not None, "message": message or "",
@@ -577,6 +579,14 @@ class ProtoAgent:
         # L3：优先从目标树选真实目标（自主/主人播种），无树才退模板
         selected = self.goal_tree.select_executable(
             self.state.owner_priority or "")
+        if selected is not None and selected.level == "long":
+            # 长期目标没有可执行子目标时先分解一层（专家：把愿景变成活儿）
+            children = self.goal_tree.children_of_level(selected.id, "mid")
+            if not children and self.llm_fast is not None:
+                self.goal_tree.decompose(selected, self.llm_fast)
+                children = self.goal_tree.children_of_level(selected.id, "mid")
+            if children:
+                selected = children[0]
         if selected is not None and selected.level in ("short", "mid", "task"):
             return self.work_on_goal(selected)      # M30：可执行目标→项目工位开发
         if selected is not None:
