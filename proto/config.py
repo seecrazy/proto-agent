@@ -31,9 +31,14 @@ def load_env_file(path: Path) -> int:
     return loaded
 
 
-def load_default_env() -> int:
-    for candidate in ENV_FILE_CANDIDATES:
-        path = Path(candidate)
+def load_default_env(data_dir=None) -> int:
+    """加载部署配置。优先级：显式数据目录下的 proto.env（绝对路径，与 CWD
+    无关——从任何目录启动都找得到）→ ./proto_data/proto.env → ./proto.env。"""
+    candidates = []
+    if data_dir is not None:
+        candidates.append(Path(data_dir) / "proto.env")
+    candidates += [Path(c) for c in ENV_FILE_CANDIDATES]
+    for path in candidates:
         if path.exists():
             return load_env_file(path)
     return 0

@@ -471,3 +471,18 @@ def _version():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _boot_agent(data_dir):
+    """部署后即达：构建带真实 LLM 与真实 Web 感官的 Agent。"""
+    from pathlib import Path as _P
+    from proto.config import load_default_env
+    from proto.exec.webtools import WebToolkit
+    from proto.llm.client import create_llm_stack
+    from proto.runtime.agent import ProtoAgent
+    load_default_env(data_dir=data_dir)          # 绑定数据目录（与 CWD 无关）
+    stack = create_llm_stack()
+    return ProtoAgent(data_dir=_P(data_dir),
+                      llm=stack["main"] if stack else None,
+                      fast_llm=stack["fast"] if stack else None,
+                      webtools=WebToolkit())     # 真实感官（禁网占位是 bug）
