@@ -240,3 +240,11 @@ P2（工程化）：
 - [x] 向导令牌步骤改 getpass 不回显；引导说明（它是控制台访问口令、出现在 URL #token= 后、泄漏即可操作 Agent）。
 - [x] 回车=自动生成强随机令牌（secrets.token_urlsafe(12)）；废除弱默认 "proto-console"；确认页与重输回执均掩码显示；ensure_env_file/plan_post_deploy 双兜底随机。
 - 验证：414 项测试全绿；管道冒烟确认 env 中令牌为随机强值。
+
+### M24 — 修复部署后离线（fix/m24-offline-boot，用户报告）
+
+- 根因（复现确认）：env 自动加载按 CWD 相对路径找 proto.env——从非仓库目录启动 proto-web 时找不到配置 → LLM stack 为 None → 离线；且部署即达的 _boot_agent 误用禁网占位 WebToolkit。
+- [x] load_default_env(data_dir=…)：优先加载 <数据目录>/proto.env（绝对路径，与 CWD 无关）；proto.web/proto.run 均按 --data-dir 显式加载。
+- [x] _boot_agent：真实 WebToolkit + env 绑定加载（E2E：从 /tmp 启动，zhipu-coding 配置生效）。
+- [x] 离线可归因：控制台启动横幅显示"离线原因：未找到 <路径>/proto.env + 修复指引"；离线回复文案同步指向 proto.env 与重跑向导。
+- 验证：417 项测试全绿。
