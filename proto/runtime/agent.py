@@ -275,6 +275,51 @@ class ProtoAgent:
         self.persona = text
         self.spine.store.put("config", "persona", {"text": text})
         self.spine.append("owner_override", {"action": "set_persona", "text": text})
+        self._apply_persona_defaults(text)
+
+    def _apply_persona_defaults(self, persona_text: str) -> None:
+        """人设 → 推荐内在状态与种子目标（M29）。只覆盖仍等于出厂值的参数——
+        反馈塑造/主人手调过的成长痕迹不抹掉。"""
+        import json as _json
+        import re as _re
+        from proto.runtime.personas import LLM_PERSONA_PROMPT, PERSONA_DEFAULTS
+        from proto.state.schema import DEFAULT_SPECS
+        preset = PERSONA_DEFAULTS.get(persona_text.strip())
+        if preset is not None:
+            params, seed_goal = preset["params"], preset["seed_goal"]
+        elif self.llm_fast is not None:
+            try:
+                raw = self._complete(self.llm_fast, LLM_PERSONA_PROMPT, persona_text)
+                cleaned = _re.sub(r"```(?:json)?", "", raw).strip()
+                start, end = cleaned.find("{"), cleaned.rfind("}")
+                data = _json.loads(cleaned[start:end + 1])
+                params = {k: float(v) for k, v in data.get("params", {}).items()}
+                seed_goal = str(data.get("seed_goal", "")).strip()
+            except Exception:
+                return
+        else:
+            return
+        applied = {}
+        for path, value in params.items():
+            try:
+                current = self.state.get(path)
+                group, _, name = path.partition(".")
+                factory = DEFAULT_SPECS.get(group, {}).get(name, {}).get("value")
+                if factory is not None and current != factory:
+                    continue                      # 已被塑造，保留成长
+                if self.state.spec(path).get("owner_locked"):
+                    continue
+                result = self.state.set_within_bounds(path, value)
+                applied[path] = result.value
+            except (KeyError, ValueError):
+                continue
+        if applied:
+            self.mgr.save()
+            self.spine.append("persona_defaults",
+                              {"persona": persona_text[:60], "applied": applied})
+        if seed_goal and not any(g.text == seed_goal
+                                 for g in self.goal_tree.all_active()):
+            self.goal_tree.seed_from_priority(seed_goal, self.llm_fast)
 
     _HISTORY_TURNS = 8
 

@@ -336,7 +336,7 @@ const PERSONA_PRESETS = [
     b.onclick = async () => {
       document.getElementById("persona-input").value = text;
       const r = await api("POST", "/api/persona", { text });
-      addMsg(`人设已切换：「${name}」——独处学习与反思将随之变化。`, "system");
+      addMsg(`人设已切换：「${name}」——已应用配套的内在状态与种子长期目标（未被塑造过的参数才会覆盖），独处学习与反思随之变化。`, "system");
     };
     box.appendChild(b);
   }
