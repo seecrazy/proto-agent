@@ -165,6 +165,15 @@
     </div>
 
     <div class="card">
+      <h3>项目目录（它们开发软件的落盘位置）</h3>
+      <div id="projects-root" class="empty" style="font-size:11px;word-break:break-all"></div>
+      <div class="kv">
+        <input type="text" id="projects-root-input" placeholder="绝对路径，如 /Users/you/dev/proto-projects">
+        <button onclick="setProjectsRoot()">设置</button>
+      </div>
+    </div>
+
+    <div class="card">
       <h3>规矩与内化</h3>
       <div class="kv">
         <input type="text" id="rule-input" placeholder="立一条规矩，例：改动先写测试">
@@ -454,6 +463,19 @@ async function refreshWorld() {
     box.appendChild(d);
   }
 }
+async function refreshProjectsRoot() {
+  try {
+    const r = await api("GET", "/api/projects-root");
+    document.getElementById("projects-root").textContent = r.root;
+  } catch (e) {}
+}
+async function setProjectsRoot() {
+  const path = document.getElementById("projects-root-input").value.trim();
+  if (!path) return;
+  const r = await api("POST", "/api/projects-root", { path });
+  addMsg(r.root ? `项目目录已设为：${r.root}（新项目将落于此；已有项目不动）` : `设置失败`, "system");
+  refreshProjectsRoot();
+}
 async function refreshMemory() {
   const r = await api("GET", "/api/memory");
   const box = document.getElementById("memory-facts");
@@ -569,6 +591,17 @@ function renderRules(rules) {
         ? `<div class="btns"><button class="danger" onclick="deint('${r.id}')">降级为外部规矩</button></div>` : "");
     box.appendChild(div);
   }
+}
+async function editRule(id, current) {
+  const text = prompt("修改规矩：", current);
+  if (text === null) return;
+  await api("POST", `/api/rules/${id}/edit`, { text });
+  refreshRules();
+}
+async function delRule(id) {
+  if (!confirm("删除这条规矩？（审计留痕，不可撤销）")) return;
+  await api("POST", `/api/rules/${id}/delete`, {});
+  refreshRules();
 }
 async function deint(id) {
   const r = await api("POST", `/api/rules/${id}/deinternalize`, {});

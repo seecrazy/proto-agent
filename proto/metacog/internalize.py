@@ -31,8 +31,8 @@ class RuleLedger:
         }
         return rid
 
-    def get(self, rule_id: str) -> dict:
-        return self._rules[rule_id]
+    def get(self, rule_id: str):
+        return self._rules.get(rule_id)
 
     def record_application(self, rule_id: str, context: str, success: bool) -> None:
         rule = self._rules[rule_id]
@@ -58,6 +58,21 @@ class RuleLedger:
         rule["cooldown_active"] = False
         self._audit.append(AuditEvent.INTERNALIZE, {"rule_id": rule_id, "text": rule["text"]})
         return True
+
+    def edit(self, rule_id: str, new_text: str) -> None:
+        rule = self._rules.get(rule_id)
+        if rule is None:
+            raise KeyError(rule_id)
+        old = rule["text"]
+        rule["text"] = new_text[:300]
+        self._audit.append("rule_edit", {"rule_id": rule_id,
+                                         "old": old[:100], "new": new_text[:100]})
+
+    def delete(self, rule_id: str) -> None:
+        if rule_id not in self._rules:
+            raise KeyError(rule_id)
+        text = self._rules.pop(rule_id)["text"]
+        self._audit.append("rule_delete", {"rule_id": rule_id, "text": text[:100]})
 
     def de_internalize(self, rule_id: str) -> None:
         rule = self._rules[rule_id]
