@@ -484,8 +484,14 @@ async function runTask() {
   input.value = "";
   addMsg(`〔任务〕${text}`, "owner");
   const r = await api("POST", "/api/task", { text });
+  const verdict = r.verified === true ? "✓独立验证通过（做对了）"
+    : r.verified === false ? "✗验证未过：缺少 " + (r.missing || []).join("；")
+    : "（未验证：无验收定义或离线）";
   document.getElementById("task-result").textContent =
-    r.status === "no_plan" ? r.reason : `${r.status}: ${JSON.stringify(r.step_results || r.proposal_id)}`;
+    r.status === "no_plan" ? r.reason
+    : r.status === "verified" ? `${verdict} — ${r.summary || ""}`
+    : r.status === "failed_verification" ? verdict + "（教训已记录，目标未完成）"
+    : `${r.status}: ${JSON.stringify(r.step_results || r.proposal_id)} ${r.verified === undefined ? "" : verdict}`;
   const box = document.getElementById("task-resume");
   if (r.status === "paused" && r.task_id) {
     pausedTaskId = r.task_id;

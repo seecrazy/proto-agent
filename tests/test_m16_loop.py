@@ -92,6 +92,7 @@ class TestAgenticLoop:
 class TestAgentTaskUsesLoop:
     def test_run_task_uses_agentic_loop(self, agent):
         agent.llm.decisions = [
+            "好的。",                                    # acceptance 生成（M23，不可解析→空）
             "跑一段打印并汇报",                          # plan
             {"tool": "run_python", "args": {"code": "print('proto')"}, "category": "read_draft"},
             {"done": True, "summary": "执行完成"},

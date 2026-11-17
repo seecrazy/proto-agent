@@ -63,11 +63,13 @@ class AgenticLoop:
         }
         return "\n".join(f"- {n}: {hints.get(n, '')}" for n in names)
 
-    def run(self, task_text: str) -> Dict:
+    def run(self, task_text: str, acceptance: str = "",
+            feedback: str = "") -> Dict:
         if self._agent.llm is None:
             return {"status": "no_llm",
                     "reason": "Agentic 循环需要 LLM（离线模式请用直接步骤）"}
         observations: List[str] = []
+        trace: List[dict] = []
         task_id = f"loop-{int(time.time() * 1000)}"
         # 状态调制循环（设计原则 1）：注入与对话同源的内在状态
         state_block = self._agent.injector.render(
@@ -91,7 +93,10 @@ class AgenticLoop:
             except Exception:
                 pass
         for step in range(self.max_steps):
-            user = (f"{state_block}{lesson_block}{plan_block}\n\n任务：{task_text}\n\n"
+            feedback_block = (f"\n上一轮独立验证未通过，缺少：{feedback}\n"
+                              "本轮必须补齐这些证据。" if feedback else "")
+            user = (f"{state_block}{lesson_block}{plan_block}{feedback_block}"
+                    f"\n\n任务：{task_text}\n\n"
                     f"可用工具：\n{self._tool_catalog()}\n\n"
                     f"已有观察：\n"
                     + ("\n".join(f"{i+1}. {o}" for i, o in enumerate(observations[-12:]))
@@ -103,8 +108,25 @@ class AgenticLoop:
                         "observations": observations}
             decision = _parse_decision(raw)
             if decision.get("done"):
-                return {"status": "completed", "summary": decision.get("summary", ""),
-                        "observations": observations}
+                # M23 质量门："做完了"≠"做对了"——独立验证（隔离执行叙述）
+                from proto.quality.gate import artifacts_from_trace, verify
+                verdict = verify(task_text, acceptance, trace,
+                                 artifacts_from_trace(trace), self._agent.llm)
+                if verdict is None:
+                    return {"status": "completed",
+                            "summary": decision.get("summary", ""),
+                            "observations": observations, "trace": trace,
+                            "acceptance": acceptance, "verified": None}
+                if verdict.passed:
+                    return {"status": "verified",
+                            "summary": decision.get("summary", ""),
+                            "observations": observations, "trace": trace,
+                            "acceptance": acceptance, "verified": True}
+                return {"status": "awaiting_retry", "verified": False,
+                        "missing": verdict.missing, "trace": trace,
+                        "observations": observations,
+                        "acceptance": acceptance,
+                        "summary": decision.get("summary", "")}
             tool = decision.get("tool", "")
             if tool not in self._agent.tools.names():
                 observations.append(f"错误：未知工具 {tool!r}（从清单里选）")
@@ -124,13 +146,19 @@ class AgenticLoop:
                 self._agent.scheduler.on_task_completed(result)
                 return {"status": "paused", "task_id": step_task_id,
                         "proposal_id": result.proposal_id,
-                        "observations": observations,
+                        "observations": observations, "trace": trace,
+                        "acceptance": acceptance,
                         "reason": "等待主人批准（approve 后 resume_task 续跑）"}
             if result.status in ("failed", "denied", "no_budget"):
                 observations.append(f"{tool} → {result.status}: {result.reason}")
                 continue
             observation = result.step_results[0] if result.step_results else ""
             observations.append(f"{tool} → {str(observation)[:600]}")
+            trace.append({"step": step, "tool": tool,
+                          "args": decision.get("args", {}),
+                          "category": decision.get("category", ""),
+                          "result": str(observation)[:600]})
         self._agent.scheduler.on_task_completed(
             type("R", (), {"status": "completed", "retries": 0, "reason": ""})())
-        return {"status": "max_steps", "observations": observations}
+        return {"status": "max_steps", "observations": observations,
+                "trace": trace, "acceptance": acceptance}
