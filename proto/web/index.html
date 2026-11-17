@@ -350,17 +350,33 @@ async function refreshFleet() {
     d.style.cssText = "border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:8px;background:var(--panel2)";
     const des = a.desires ? `好奇${(a.desires.curiosity_gap ?? 0).toFixed(2)} 社交${(a.desires.social_connection_gap ?? 0).toFixed(2)}` : "（未激活）";
     const e = a.emotion || {};
+    const act = a.activity || {};
     d.innerHTML =
       `<div style="margin-bottom:4px"><b>${esc(a.name)}</b>` +
       (a.paused ? ' <span class="badge lock">已暂停</span>' : "") +
-      ` <span class="badge">${esc((a.persona || "").slice(0, 12))}</span></div>` +
+      ` <span class="badge">${esc((a.persona || "").slice(0, 12))}</span>` +
+      ` <span class="badge hot">${esc(act.status || "?")}</span></div>` +
+      `<div id="act-${a.id}" style="font-size:11px;color:var(--dim);margin:4px 0"></div>` +
       `<div style="font-size:11px;color:var(--dim)">${des} · P${(e.pleasure ?? 0).toFixed(1)} A${(e.arousal ?? 0).toFixed(1)} · 记忆${a.memory_total ?? 0} · 待批${a.pending_proposals ?? 0} · 目标${a.goals_active ?? 0}(${Math.round((a.goals_progress ?? 0) * 100)}%)</div>` +
       `<div class="btns" style="margin-top:6px">` +
       `<button style="font-size:11px" onclick="switchAgent('${a.id}')">切换</button>` +
-      `<button style="font-size:11px" onclick="pauseAgent('${a.id}', ${a.paused ? "false" : "true"})">${a.paused ? "恢复" : "暂停"}</button>` +
+      `<button style="font-size:11px" onclick="pauseAgent('${a.id}', ${!a.paused})">${a.paused ? "恢复" : "暂停"}</button>` +
+      `<button style="font-size:11px" onclick="toggleActivity('${a.id}')">活动</button>` +
       `<button class="danger" style="font-size:11px" onclick="archiveAgent('${a.id}')">归档</button></div>`;
+    d.dataset.events = JSON.stringify(a.last_events || []);
     box.appendChild(d);
   }
+}
+function toggleActivity(id) {
+  const el = document.getElementById("act-" + id);
+  if (!el) return;
+  if (el.textContent) { el.textContent = ""; return; }
+  const card = el.closest("[data-events]");
+  let events = [];
+  try { events = JSON.parse(card.dataset.events || "[]"); } catch (e) {}
+  el.innerHTML = events.length
+    ? events.slice().reverse().map(e => `· ${esc(e.event_type)}`).join("<br>")
+    : "（暂无活动）";
 }
 async function switchAgent(id) {
   await api("POST", `/api/agents/${id}/select`, {});
@@ -614,15 +630,28 @@ async function refreshAudit() {
 }
 function esc(s) { const d = document.createElement("i"); d.textContent = s; return d.innerHTML; }
 
-(async function loop() {
-  try {
-    await api("POST", "/api/tick", {});   // 驱动欲望动态/调度器
+const SAFE = (name, fn) => async () => {
+  try { await fn(); } catch (e) {                 // 单卡片失败不拖死其他刷新
+    console.warn(`[proto] ${name} 刷新失败:`, e);
+    const d = document.getElementById(name + "-err");
+    if (d) { d.textContent = "刷新失败：" + (e && e.message ? e.message : e); }
+  }
+};
+async function loop() {
+  await SAFE("tick", async () => { await api("POST", "/api/tick", {}); })();
+  await SAFE("inbox", async () => {
     const inbox = await api("GET", "/api/inbox", {});
     for (const m of inbox.messages) addMsg(m, "agent");
-    await refreshState(); await refreshProposals(); await refreshAudit(); await refreshRules(); await refreshEvolution(); await refreshScratch(); await refreshMemory(); await refreshGoalTree(); await refreshWorld(); await refreshFleet();
-  } catch (e) {}
+  })();
+  for (const [name, fn] of [["state", refreshState], ["proposals", refreshProposals],
+    ["audit", refreshAudit], ["rules", refreshRules], ["evolution", refreshEvolution],
+    ["scratch", refreshScratch], ["memory", refreshMemory],
+    ["goaltree", refreshGoalTree], ["world", refreshWorld], ["fleet", refreshFleet]]) {
+    await SAFE(name, fn)();
+  }
   setTimeout(loop, 8000);
-})();
+}
+loop();
 addMsg("PROTO 控制台已就绪。直接说话即可；你的反馈会经归因累积、有界地塑造它的倾向。", "system");
 </script>
 </body>

@@ -36,10 +36,23 @@ class AgentManager:
     def _load_registry(self) -> dict:
         if self._registry_path.exists():
             try:
-                return json.loads(self._registry_path.read_text(encoding="utf-8"))
+                reg = json.loads(self._registry_path.read_text(encoding="utf-8"))
             except ValueError:
-                pass
-        return {"agents": [], "current": None}
+                reg = {"agents": [], "current": None}
+        else:
+            reg = {"agents": [], "current": None}
+        # 自动去重历史脏数据：同一 external_dir/目录 只保留最新一条
+        seen = {}
+        for a in reg["agents"]:
+            key = a.get("external_dir") or str(self.root / "agents" / a["id"])
+            if key not in seen:
+                seen[key] = a
+            else:
+                seen[key] = a                 # 后写的覆盖（保留最新 created_at 语义）
+        reg["agents"] = list(seen.values())
+        if reg.get("current") not in [a["id"] for a in reg["agents"]]:
+            reg["current"] = reg["agents"][0]["id"] if reg["agents"] else None
+        return reg
 
     def _save_registry(self, reg: dict) -> None:
         self._registry_path.write_text(
@@ -58,9 +71,14 @@ class AgentManager:
         return info
 
     def adopt(self, agent: ProtoAgent, name: str = "默认") -> dict:
-        """收编一个既有 Agent（单 Agent 旧布局兼容）。"""
+        """收编一个既有 Agent（单 Agent 旧布局兼容，幂等：同一目录只收一次）。"""
         with self._lock:
             reg = self._load_registry()
+            existing = next((a for a in reg["agents"]
+                             if a.get("external_dir") == str(agent.data_dir)), None)
+            if existing is not None:
+                self._cache[existing["id"]] = agent
+                return existing                    # 重启再收编 → 复用
             info = {"id": agent.data_dir.name or uuid.uuid4().hex[:10],
                     "name": name, "created_at": time.time(), "paused": False,
                     "external_dir": str(agent.data_dir)}
@@ -138,6 +156,29 @@ class AgentManager:
                             f"{agent_id}-{int(time.time())}"))
         return True
 
+    # ---- 活动观测：它现在在干什么 ----
+    ACTIVITY_LABELS = [
+        ("web_fetch", "学习中"), ("prediction_error", "调查预测落空"),
+        ("goal_pushed", "生成目标"), ("reflection_write", "反思中"),
+        ("evolution_merge", "自我进化"), ("verification_failed", "补证据"),
+        ("task", "做事中"), ("modulation", "被反馈塑造"),
+        ("memory_forget", "遗忘指令"), ("approval", "获批准"), ("denial", "被拒绝"),
+    ]
+
+    @classmethod
+    def activity_of(cls, events: List[dict]) -> dict:
+        """由最近审计事件推导当前活动状态（人可读）。"""
+        if not events:
+            return {"status": "待命", "detail": "尚无活动记录"}
+        latest = events[-1]
+        status = "交互中"
+        for event_type, label in cls.ACTIVITY_LABELS:
+            if event_type in latest["event_type"]:
+                status = label
+                break
+        return {"status": status, "detail": str(latest.get("payload", ""))[:80],
+                "at": latest.get("ts")}
+
     # ---- 观测与驱动 ----
     def list(self) -> List[dict]:
         rows = []
@@ -155,6 +196,9 @@ class AgentManager:
         goals = agent.goal_tree.all_active()
         progress = (sum(g.progress for g in goals) / len(goals)) if goals else 0.0
         return {
+            "activity": AgentManager.activity_of(agent.audit_tail(3)),
+            "last_events": [{"event_type": e["event_type"], "ts": e.get("ts")}
+                            for e in agent.audit_tail(6)],
             "persona": agent.persona,
             "priority": agent.state.owner_priority,
             "emotion": dict(agent.state.emotion),
