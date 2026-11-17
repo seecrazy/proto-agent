@@ -619,10 +619,39 @@ class ProtoAgent:
         """主人指派任务：Agentic 循环——模型自主决定每一步工具调用，
         观察回灌迭代，工作区内自动、对外审批暂停可恢复。"""
         if self.llm is not None:
-            result = AgenticLoop(self).run(description)
+            # 想法出关门：先钉死"什么算做对"，无定义不进入验证执行
+            from proto.quality.gate import generate_acceptance
+            acceptance = generate_acceptance(self.llm_fast, description)
+            result = AgenticLoop(self).run(description, acceptance=acceptance)
+            if result.get("status") == "awaiting_retry":
+                retry = AgenticLoop(self).run(
+                    description, acceptance=acceptance,
+                    feedback="；".join(result.get("missing", [])))
+                retry["retried"] = True
+                result = retry if retry.get("verified") is not None else result
+                if result.get("verified") is False:
+                    result["status"] = "failed_verification"   # 重试后仍失败
+            if result["status"] == "verified":
+                self.pad.apply_event("task_success")
+                self.desires.satisfy("goal_urgency", 0.25)
+                self._inbox.append(
+                    f"〔任务验证通过〕{description} → {result.get('summary', '')}")
+                return result
             if result["status"] == "completed":
                 self.pad.apply_event("task_success")
-                self._inbox.append(f"〔任务完成〕{description} → {result.get('summary', '')}")
+                self._inbox.append(f"〔任务完成·未验证〕{description} → "
+                                   f"{result.get('summary', '')}（无验收定义或离线）")
+                return result
+            if result.get("verified") is False:
+                # 验证未过：目标不完成，失败蒸馏为教训（Reflexion）
+                self.pad.apply_event("blocked")
+                missing = "；".join(result.get("missing", []))
+                self.library.add(f"当任务类似「{description[:40]}」时缺少证据：{missing}",
+                                 cluster="chat", utility=0.4, valence=-0.1)
+                self._inbox.append(f"〔验证未过〕{description}——缺少：{missing}。"
+                                   "我已把教训记下，目标保持未完成。")
+                self.spine.append("verification_failed",
+                                  {"task": description[:100], "missing": missing[:200]})
             self.scheduler.on_task_completed(
                 type("R", (), {"status": result["status"], "retries": 0,
                                "reason": result.get("reason", "")})())

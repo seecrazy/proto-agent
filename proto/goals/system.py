@@ -20,8 +20,9 @@ CHILD_LEVEL = {"long": "mid", "mid": "short", "short": "task"}
 DEPTH_BONUS = {"long": 0.2, "mid": 0.5, "short": 0.8, "task": 1.0}
 
 DECOMPOSE_PROMPT = (
-    "你是 PROTO 的目标分解器。把下面的父目标拆成 2-3 个更具体的子目标"
-    "（各自可独立验证完成）。只输出 JSON 数组：[{\"text\": \"...\"}]。"
+    "你是 PROTO 的目标分解器。把下面的父目标拆成 2-3 个更具体的子目标，"
+    "每个附带**最小可检验定义**（什么操作下观察到什么结果算完成）。"
+    '只输出 JSON 数组：[{"text": "...", "acceptance": "..."}]。'
 )
 
 
@@ -48,6 +49,7 @@ class GoalNode:
     progress: float = 0.0
     source: str = "owner"           # owner | self
     created_at: float = field(default_factory=time.time)
+    acceptance: str = ""            # 最小可检验定义（想法出关门，M23）
 
     def to_dict(self) -> dict:
         return vars(self)
@@ -66,11 +68,12 @@ class GoalTree:
                 for r in store.find(collection, lambda _d: True))}
 
     def add(self, text: str, level: str, parent_id: str = None,
-            source: str = "owner") -> GoalNode:
+            source: str = "owner", acceptance: str = "") -> GoalNode:
         if level not in LEVELS:
             raise ValueError(f"非法层级: {level}")
         node = GoalNode(id=uuid.uuid4().hex[:12], text=text[:200], level=level,
-                        parent_id=parent_id, source=source)
+                        parent_id=parent_id, source=source,
+                        acceptance=acceptance[:300])
         self._nodes[node.id] = node
         self._store.put(self._collection, node.id, node.to_dict())
         return node
@@ -170,8 +173,9 @@ class GoalTree:
         for row in rows[:3]:
             text = str(row.get("text", "")).strip()
             if text:
-                children.append(self.add(text, child_level,
-                                         parent_id=node.id, source=node.source))
+                children.append(self.add(
+                    text, child_level, parent_id=node.id, source=node.source,
+                    acceptance=str(row.get("acceptance", ""))[:300]))
         return children
 
     def seed_from_priority(self, owner_priority: str, llm) -> Optional[GoalNode]:

@@ -224,3 +224,13 @@ P2（工程化）：
 - [x] `proto/appshell/generator.py`：一键生成 PROTO.app——macOS 原生壳（~110 行 Swift：WKWebView 窗口 + 托管 proto.web 子进程、退出即带走、就绪探测后加载带令牌 URL、令牌经环境变量不落源码）。swiftc 编译（本机验证通过，产物 ~2MB），无 swiftc 时降级为源码+说明。
 - [x] Electron 取舍：不引入（~200MB Chromium/Node 依赖，违背零依赖立身之本）；原生壳以 2MB swiftc 产物获得窗口/Dock/生命周期管理。
 - 验证：404 项测试全绿；真实 swiftc 编译通过。
+
+### M23 — 质量三定律（feat/m23-quality-gate，回应自主质量分析）
+
+- [x] 想法出关门：`generate_acceptance`（执行前钉死最小可检验定义）；GoalNode.acceptance 字段（播种/分解/自生成都携带）。
+- [x] 结构化轨迹：Agentic 循环逐步记录 {tool,args,category,result}。
+- [x] 独立验证门 `proto/quality/gate.py`：输入=验收定义+轨迹+产物（**隔离执行叙述**，干净上下文）；失败关闭（解析失败即 fail）；fail→带缺少证据反馈重试一次→仍 fail 则 failed_verification。
+- [x] "做完了≠做对了"：TaskResult.verified 三态（None=门不适用/True=verified/False=failed）；里程碑/情绪/欲望满足仅在 verified 触发；失败蒸馏负效价教训入策略库（Reflexion）+审计 verification_failed。
+- [x] UI：任务结果三态显示（✓独立验证通过 / ✗缺少证据 / 未验证）。
+- 坑：测试桩分支键须与提示词原文子串一致（"最小可检验定义"≠"验收定义"）；新增前置 LLM 调用会整体平移旧脚本序列（各旧测试列首补哑应答）。
+- 验证：411 项测试全绿。
