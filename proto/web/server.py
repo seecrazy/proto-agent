@@ -25,6 +25,7 @@ INDEX_PATH = Path(__file__).with_name("index.html")
 READ_ONLY_GETS = {
     "/api/state", "/api/audit", "/api/proposals", "/api/rules",
     "/api/evolution", "/api/scratch", "/api/memory", "/api/inbox",
+    "/api/goaltree", "/api/world",
 }
 
 
@@ -171,6 +172,10 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(200, {"awake": keeper.is_active,
                                     "available": keeper.available})
 
+        if path == "/api/goaltree" and method == "GET":
+            return self._json(200, agent.goal_tree.snapshot())
+        if path == "/api/world" and method == "GET":
+            return self._json(200, agent.world.snapshot())
         if path == "/api/memory" and method == "GET":
             return self._json(200, agent.memory.snapshot())
         if path == "/api/memory/forget" and method == "POST":

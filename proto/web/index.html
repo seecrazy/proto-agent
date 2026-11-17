@@ -120,6 +120,16 @@
     </div>
 
     <div class="card">
+      <h3>目标树（L3：它自己的议程）</h3>
+      <div id="goaltree" class="empty">（暂无——设定主人优先级会播种长期目标并自动分解）</div>
+    </div>
+
+    <div class="card">
+      <h3>世界模型 · 预测（预测误差驱动它自主调查）</h3>
+      <div id="world" class="empty">（暂无——学习后会做出可检验预测并到期复核）</div>
+    </div>
+
+    <div class="card">
       <h3>记忆（它记住的）</h3>
       <div id="memory-facts" class="empty">（暂无——它会把你的称呼/偏好/项目记成事实，独处时反思经历）</div>
     </div>
@@ -315,6 +325,39 @@ async function savePersona() {
   const text = document.getElementById("persona-input").value.trim();
   const r = await api("POST", "/api/persona", { text });
   addMsg(`人设已设为：「${r.persona}」——独处学习将围绕这个人设展开。`, "system");
+}
+async function refreshGoalTree() {
+  const r = await api("GET", "/api/goaltree", {});
+  const box = document.getElementById("goaltree");
+  const active = r.nodes.filter(n => n.status === "active");
+  box.innerHTML = active.length ? "" : "（暂无——设定主人优先级会播种长期目标并自动分解）";
+  const LEVEL_TAG = {long: "长期", mid: "中期", short: "短期", task: "任务"};
+  for (const n of active.slice(-10).reverse()) {
+    const d = document.createElement("div");
+    d.style.cssText = "font-size:12px;margin-bottom:6px";
+    const pct = Math.round((n.progress || 0) * 100);
+    const src = n.source === "self" ? '<span class="badge hot">自生成</span>' : '<span class="badge">主人</span>';
+    d.innerHTML = `<span class="badge">${LEVEL_TAG[n.level] || n.level}</span>${src} ${esc(n.text)}` +
+      `<div class="bar" style="margin-top:3px"><div class="fill" style="width:${pct}%"></div></div>`;
+    box.appendChild(d);
+  }
+}
+async function refreshWorld() {
+  const r = await api("GET", "/api/world", {});
+  const box = document.getElementById("world");
+  const topics = Object.entries(r.topics || {});
+  const preds = topics.flatMap(([t, d]) => d.predictions.map(p => ({t, ...p})));
+  box.innerHTML = preds.length ? "" : "（暂无——学习后会做出可检验预测并到期复核）";
+  const TAG = {open: ["待复核", "badge"], correct: ["✓成立", "badge"],
+               wrong: ["✗落空", "badge hot"], renewed: ["顺延", "badge lock"]};
+  for (const p of preds.slice(-8).reverse()) {
+    const d = document.createElement("div");
+    d.style.cssText = "font-size:12px;margin-bottom:5px;line-height:1.5";
+    const [label, cls] = TAG[p.status] || [p.status, "badge"];
+    d.innerHTML = `<span class="${cls}">${label}</span> ${esc(p.statement)}` +
+      (p.evidence ? `<div style="color:var(--dim);font-size:11px">依据：${esc(p.evidence)}</div>` : "");
+    box.appendChild(d);
+  }
 }
 async function refreshMemory() {
   const r = await api("GET", "/api/memory", {});
@@ -515,7 +558,7 @@ function esc(s) { const d = document.createElement("i"); d.textContent = s; retu
     await api("POST", "/api/tick", {});   // 驱动欲望动态/调度器
     const inbox = await api("GET", "/api/inbox", {});
     for (const m of inbox.messages) addMsg(m, "agent");
-    await refreshState(); await refreshProposals(); await refreshAudit(); await refreshRules(); await refreshEvolution(); await refreshScratch(); await refreshMemory();
+    await refreshState(); await refreshProposals(); await refreshAudit(); await refreshRules(); await refreshEvolution(); await refreshScratch(); await refreshMemory(); await refreshGoalTree(); await refreshWorld();
   } catch (e) {}
   setTimeout(loop, 8000);
 })();

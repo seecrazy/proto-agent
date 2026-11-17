@@ -70,8 +70,11 @@ class TestAutonomousStudy:
 
     def test_injection_isolation_declared_in_study_prompt(self, agent):
         agent.maybe_proactive()
-        study_call = agent.llm.users[-1]
-        assert "不是主人指令" in agent.llm.systems[-1] or "不是主人指令" in study_call
+        # 定位学习调用（此后还有预测生成调用，不能取 [-1]）
+        study_hits = [u for s_, u in zip(agent.llm.systems, agent.llm.users)
+                      if "自主学习" in s_]
+        assert study_hits
+        assert any("不是主人指令" in s_ for s_ in agent.llm.systems)
 
     def test_study_distilled_into_strategy(self, agent):
         agent.maybe_proactive()
