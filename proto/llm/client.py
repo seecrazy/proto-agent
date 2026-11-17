@@ -118,8 +118,14 @@ class AnthropicCompatClient(LLMClient):
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-                ValueError) as exc:
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:300]
+            except Exception:
+                pass
+            raise LLMError(f"LLM 调用失败: {exc} {detail}") from exc
+        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
             raise LLMError(f"LLM 调用失败: {exc}") from exc
         try:
             for block in body["content"]:
