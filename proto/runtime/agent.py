@@ -143,14 +143,15 @@ class ProtoAgent:
         self.goal_tree.on_milestone = self._on_milestone
         self.world = WorldModel(store)
         self.desires = DesireDynamics(self.mgr)
+        # 瞬态恢复（享乐适应窗口/行动冷却）——重启后行为节律无缝衔接
+        _tr = store.get("transient", "main")
+        if _tr:
+            self._praise_times = list(_tr.get("praise_times", []))
+            self._last_self_act = _tr.get("last_self_act", 0.0)
         self.workspace = ScratchWorkspace(self.data_dir / "ws", audit=self.spine)
         self.queue = ApprovalQueue(self.kernel, self.spine, damping=self.damping)
         self.checkpoints = CheckpointStore(store)
-        import os as _os
-        _projects_root = _os.environ.get("PROTO_PROJECTS_ROOT")
-        self.code_workspace = CodeTools(
-            Path(_projects_root) / self.data_dir.name if _projects_root
-            else self.data_dir / "workspace")
+        self.code_workspace = self._build_projects_workspace()
         self.tools = ToolRegistry()
         self.tools.register("clock", lambda: time.strftime("%Y-%m-%d %H:%M:%S"))
         self.code_workspace.register_all(self.tools)
@@ -391,6 +392,7 @@ class ProtoAgent:
         else:
             self.spine.append("force_act", {"stimulated": False})
         message = self.maybe_proactive()
+        self._save_transient()
         return {"acted": message is not None, "message": message or "",
                 "reason": "" if message else "行动未产生提案（预算/条件不足）"}
 
@@ -416,6 +418,7 @@ class ProtoAgent:
             self.desires.satisfy("recognition_need", 0.3)   # 被认可→需求消减
         else:
             self.desires.satisfy("social_connection_gap", 0.15)  # 交互本身即满足
+        self._save_transient()                          # 习惯化窗口落盘
         self._turn_emotion = dict(self.state.emotion)   # 编码快照先于衰减
         hour = time.localtime(self._now()).tm_hour + time.localtime(self._now()).tm_min / 60
         self.pad.tick(1, arousal_setpoint=circadian_arousal_setpoint(hour))
@@ -450,6 +453,7 @@ class ProtoAgent:
             reply = self._offline_reply(text)
         self._append_history("owner", text)
         self._append_history("agent", reply)
+        self._save_transient()
         return reply    # 回复即返回；情景固化与事实抽取由 remember_turn 后置
 
     def remember_turn(self, owner_text: str, reply: str) -> None:
@@ -941,6 +945,56 @@ class ProtoAgent:
     def deinternalize_rule(self, rule_id: str) -> None:
         self.ledger.de_internalize(rule_id)
         self._persist_metacog()
+
+    def edit_rule(self, rule_id: str, new_text: str) -> None:
+        """修改规矩文本（保留应用史与内化状态）。"""
+        self.ledger.edit(rule_id, new_text)
+        self._persist_metacog()
+
+    def delete_rule(self, rule_id: str) -> None:
+        """删除规矩（主人操作，审计留痕）。"""
+        self.ledger.delete(rule_id)
+        self._persist_metacog()
+
+    def _save_transient(self) -> None:
+        """瞬态状态持久化：享乐适应窗口、行动冷却——重启后行为节律无缝衔接。"""
+        self.spine.store.put("transient", "main", {
+            "praise_times": list(self._praise_times),
+            "last_self_act": self._last_self_act,
+        })
+
+    def set_projects_root(self, path: str) -> str:
+        """控制台配置项目根目录（存 store，不污染进程环境变量）。
+        变更对新写入生效；已有项目目录不动。"""
+        from pathlib import Path as _P
+        root = _P(path).expanduser()
+        if not root.is_absolute():
+            raise ValueError("需要绝对路径")
+        # 允许尚不存在，但必须可创建（防拼写错误静默丢文件）
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ValueError(f"项目根目录不可创建: {exc}")
+        self.spine.store.put("config", "projects_root", {"path": str(root)})
+        self.spine.append("owner_override",
+                          {"action": "set_projects_root", "path": str(root)})
+        self.code_workspace = self._build_projects_workspace()
+        return str(self.code_workspace.root)
+
+    def _build_projects_workspace(self):
+        """项目根决策（单一来源）：控制台配置 > PROTO_PROJECTS_ROOT > 默认。"""
+        import os as _os
+        from proto.exec.codetools import CodeTools
+        doc = self.spine.store.get("config", "projects_root")
+        if doc:
+            return CodeTools(Path(doc["path"]) / self.data_dir.name)
+        env_root = _os.environ.get("PROTO_PROJECTS_ROOT")
+        if env_root:
+            return CodeTools(Path(env_root) / self.data_dir.name)
+        return CodeTools(self.data_dir / "workspace")
+
+    def projects_root(self):
+        return str(self.code_workspace.root)
 
     def evolution_snapshot(self) -> dict:
         evo = self._evolution()

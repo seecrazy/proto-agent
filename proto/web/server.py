@@ -189,6 +189,14 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/api/priority" and method == "POST":
             return self._json(200, agent.set_priority(self._body().get("text", "")))
+        if path == "/api/projects-root" and method == "GET":
+            return self._json(200, {"root": agent.projects_root()})
+        if path == "/api/projects-root" and method == "POST":
+            try:
+                root = agent.set_projects_root(self._body().get("path", ""))
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
+            return self._json(200, {"root": root})
         if path == "/api/persona" and method == "POST":
             agent.set_persona(self._body().get("text", ""))
             return self._json(200, {"persona": agent.persona})
@@ -234,6 +242,19 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/rules" and method == "POST":
             rid = agent.instruct(self._body().get("text", ""))
             return self._json(200, {"rule_id": rid, "rules": agent.rules_view()})
+        m2 = re.match(r"^/api/rules/([0-9a-f]+)/(deinternalize|edit|delete)$", path)
+        if m2 and method == "POST" and m2.group(2) == "edit":
+            try:
+                agent.edit_rule(m2.group(1), self._body().get("text", ""))
+            except KeyError:
+                return self._json(404, {"error": "no_such_rule"})
+            return self._json(200, {"rules": agent.rules_view()})
+        if m2 and method == "POST" and m2.group(2) == "delete":
+            try:
+                agent.delete_rule(m2.group(1))
+            except KeyError:
+                return self._json(404, {"error": "no_such_rule"})
+            return self._json(200, {"rules": agent.rules_view()})
         m2 = re.match(r"^/api/rules/([0-9a-f]+)/deinternalize$", path)
         if m2 and method == "POST":
             agent.deinternalize_rule(m2.group(1))
