@@ -83,11 +83,15 @@ class AuditSpine:
         self._secret = secret
         # 兼容旧记录；新记录在有 owner secret 时使用 HMAC。
         self._algorithm = "hmac-sha256" if secret is not None else "sha256"
-        # append O(1)：仅构造时扫一次全表建缓存（修复 M2 的 O(n²)）
+        # append O(1)：仅构造时扫一次全表建缓存（修复 M2 的 O(n²)）。
+        # 并发防护（M43）：记录构造时的存储 revision，append 前若外部进程
+        # 写过（revision 变化），必须重载真实链头——否则会拿陈旧链头覆写
+        # 已存在的 seq 记录造成断链（2026-11-18 生产事故根因）。
         rows = self._store.find(self._collection, lambda _d: True)
         last = max(rows, key=lambda r: r["seq"]) if rows else None
         self._last_seq = last["seq"] if last else 0
         self._last_hash = last["hash"] if last else GENESIS_HASH
+        self._seen_revision = self._store.revision(self._collection)
         self._verified_ok = None  # 缓存：append 后失效
         self._verified_revision = None
 
@@ -96,12 +100,24 @@ class AuditSpine:
         """底层存储（运行时组合持久化用）。"""
         return self._store
 
+    def _reload_head_if_stale(self) -> None:
+        """存储被外部进程写入后重载真实链头（防陈旧覆写）。"""
+        rev = self._store.revision(self._collection)
+        if rev == self._seen_revision:
+            return
+        rows = self._store.find(self._collection, lambda _d: True)
+        last = max(rows, key=lambda r: r["seq"]) if rows else None
+        self._last_seq = last["seq"] if last else 0
+        self._last_hash = last["hash"] if last else GENESIS_HASH
+        self._seen_revision = rev
+
     def _last_record(self) -> Optional[dict]:
         if self._last_seq == 0:
             return None
         return {"seq": self._last_seq, "hash": self._last_hash}
 
     def append(self, event_type: str, payload: dict) -> int:
+        self._reload_head_if_stale()
         last = self._last_record()
         seq = (last["seq"] + 1) if last else 1
         prev_hash = last["hash"] if last else GENESIS_HASH
@@ -119,6 +135,7 @@ class AuditSpine:
         self._store.put(self._collection, str(seq), record)
         self._last_seq = seq
         self._last_hash = record["hash"]
+        self._seen_revision = self._store.revision(self._collection)
         self._verified_ok = None  # 新事件 → 验证缓存失效
         self._verified_revision = None
         return seq
@@ -159,6 +176,61 @@ class AuditSpine:
         self._verified_ok = result
         self._verified_revision = revision
         return result
+
+    def reseal(self, reason: str) -> dict:
+        """owner 授权的断链重封（M43）。
+
+        适用场景：并发写覆写事故（链头陈旧导致单点断链）。做法：
+        1. 逐条校验每条记录的**自哈希**（payload 完整性）——任何真篡改拒绝重封；
+        2. 从断点起重算 prev_hash 链并重新哈希（ts/payload/seq 一律不动）；
+        3. 追加一条 chain_repair 事件把事故原因写进链本身。
+        返回 {"ok": bool, "repaired": bool, "repaired_from": seq, "reason": str}。
+        """
+        rows = sorted(self._store.find(self._collection, lambda _d: True),
+                      key=lambda r: r["seq"])
+        # 1) 自哈希校验：链可以断（prev 接错），但单条记录内容不可被改过
+        for row in rows:
+            algorithm = row.get("algorithm", "sha256")
+            try:
+                recomputed = _record_hash(
+                    row["seq"], row["ts"], row["event_type"], row["payload"],
+                    row["prev_hash"], secret=self._secret, algorithm=algorithm)
+            except ValueError:
+                return {"ok": False, "repaired": False, "repaired_from": row["seq"],
+                        "reason": f"seq {row['seq']} 算法/密钥不匹配，疑似篡改，拒绝重封"}
+            if recomputed != row["hash"]:
+                return {"ok": False, "repaired": False, "repaired_from": row["seq"],
+                        "reason": f"seq {row['seq']} 自哈希不匹配（payload 被篡改），拒绝重封"}
+        # 2) 找第一个断点，从那里重串链
+        prev_hash = GENESIS_HASH
+        broken_at = None
+        for i, row in enumerate(rows):
+            if row["seq"] != i + 1 or row["prev_hash"] != prev_hash:
+                broken_at = i + 1
+                break
+            prev_hash = row["hash"]
+        if broken_at is None:
+            return {"ok": True, "repaired": False, "repaired_from": None,
+                    "reason": "链完好，无需重封"}
+        for seq in range(broken_at, len(rows) + 1):
+            row = rows[seq - 1]
+            row["seq"] = seq  # 重新编号（覆写事故可能留下空洞/乱序）
+            row["prev_hash"] = prev_hash
+            row["hash"] = _record_hash(row["seq"], row["ts"], row["event_type"],
+                                       row["payload"], prev_hash,
+                                       secret=self._secret,
+                                       algorithm=row.get("algorithm", "sha256"))
+            prev_hash = row["hash"]
+            self._store.put(self._collection, str(seq), row)
+        # 3) 事故记录进链
+        self.append("chain_repair", {
+            "repaired_from": broken_at,
+            "records": len(rows),
+            "reason": reason,
+        })
+        result = self.verify_chain()
+        return {"ok": result.ok, "repaired": True, "repaired_from": broken_at,
+                "reason": reason}
 
     def tail(self, n: int) -> List[dict]:
         rows = sorted(self._store.find(self._collection, lambda _d: True), key=lambda r: r["seq"])
