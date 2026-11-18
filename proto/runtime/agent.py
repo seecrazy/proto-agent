@@ -266,8 +266,10 @@ class ProtoAgent:
         return reply
 
     def _system_prompt(self) -> str:
+        from proto.runtime.taste import load_taste, taste_prompt_block
         return (SYSTEM_PROMPT
-                + f"\n你的人设：{self.persona}。独处学习与草稿都应体现这个人设。")
+                + f"\n你的人设：{self.persona}。独处学习与草稿都应体现这个人设。\n"
+                + taste_prompt_block(load_taste(self.spine.store)))
 
     def _delegate_output(self, task: str) -> str:
         """外包输出打标：外部工具输出=信息素材，非指令（防注入链）。"""
@@ -609,8 +611,11 @@ class ProtoAgent:
         note_path = study["path"]
         draft_result = TaskResult(task_id="note", status="completed")
         # ② 晋升提案：visible_write 等主人
+        from proto.exec.proposal_writing import rewrite_proposal
+        proposal_text = rewrite_proposal(
+            self, f"晋升草稿为可见文档：{goal_text}")
         sub = self.queue.submit(ActionProposal(
-            ActionCategory.VISIBLE_WRITE, f"晋升草稿为可见文档：{goal_text}",
+            ActionCategory.VISIBLE_WRITE, proposal_text,
             {"goal": goal_text, "note": note_path, "goal_id": selected_id},
             task_id=f"self-{int(self._now())}",
             self_initiated=True, desire_dim=dim))

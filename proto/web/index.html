@@ -208,6 +208,20 @@
     </div>
 
     <div class="card">
+      <h3>它的审美（好玩/有趣/有用/美/优雅——它自己的定义）</h3>
+      <div id="taste-dims" class="empty">（加载中）</div>
+      <div class="kv" style="margin-top:6px">
+        <input type="text" id="taste-feedback" placeholder="校准反馈，如：你觉得有趣的太无聊了">
+        <button onclick="refineTaste()">校准</button>
+      </div>
+      <div class="kv">
+        <input type="text" id="judge-subject" placeholder="考考它：输入任何东西让它评">
+        <button onclick="judgeSubject()">评一评</button>
+      </div>
+      <div id="judge-result" class="empty"></div>
+    </div>
+
+    <div class="card">
       <h3>Agent 黑板（相互协作）</h3>
       <div id="blackboard" class="empty">（暂无帖子——它们会互相求助与分享）</div>
       <div class="kv">
@@ -510,6 +524,42 @@ async function refreshBuckets() {
         `<b style="display:inline-block;width:2.5em">${label[k]}</b> ${b[k].total} 事件 `+
         `<span style="color:var(--dim)">${top(b[k])}</span></div>`).join("");
   } catch (e) {}
+}
+async function refreshTaste() {
+  try {
+    const r = await api("GET", "/api/taste");
+    const box = document.getElementById("taste-dims");
+    box.innerHTML = "";
+    for (const [key, d] of Object.entries(r.taste)) {
+      const div = document.createElement("div");
+      div.style.cssText = "font-size:12px;margin-bottom:5px;line-height:1.5";
+      div.innerHTML = `<b>${d.label}</b> <span class="badge">权重 ${d.weight}</span><br>` +
+        `<span style="color:var(--dim)">= ${esc(d.anchor)}</span><br>` +
+        `<span style="color:var(--dim);opacity:.6">≠ ${esc(d.anti_anchor)}</span>`;
+      box.appendChild(div);
+    }
+  } catch (e) {}
+}
+async function refineTaste() {
+  const feedback = document.getElementById("taste-feedback").value.trim();
+  if (!feedback) return;
+  document.getElementById("taste-feedback").value = "";
+  const r = await api("POST", "/api/taste", { feedback });
+  addMsg(r.refined ? "审美已按你的反馈校准（锚点更新，保留它的视角）"
+                   : "离线或解析失败，暂未校准", "system");
+  refreshTaste();
+}
+async function judgeSubject() {
+  const subject = document.getElementById("judge-subject").value.trim();
+  if (!subject) return;
+  const box = document.getElementById("judge-result");
+  box.textContent = "评判中…";
+  const r = await api("POST", "/api/judge", { subject });
+  if (!r.verdicts.length) { box.textContent = "（离线或无法评判）"; return; }
+  box.innerHTML = `<b style="font-size:14px">综合 ${r.score} / 5</b>` +
+    r.verdicts.map(v => `<div style="font-size:12px;margin-top:3px">` +
+      `<b>${v.label}</b> ${"★".repeat(v.score)}${"☆".repeat(5-v.score)} ` +
+      `<span style="color:var(--dim)">${esc(v.reason)}</span></div>`).join("");
 }
 async function refreshBlackboard() {
   try {
