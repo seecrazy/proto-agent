@@ -257,6 +257,7 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/budget/refill" and method == "POST":
             agent.kernel.pools.refill()
             remaining = agent.kernel.pools.remaining_all()
+            from proto.kernel.audit import AuditEvent
             agent.spine.append(AuditEvent.OWNER_OVERRIDE,
                                {"action": "budget_refill"})
             return self._json(200, {"refilled": True, "remaining": remaining})
