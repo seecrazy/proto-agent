@@ -316,3 +316,10 @@ P2（工程化）：
 - [x] 修复①②：agent id 路由正则 `[0-9a-f]+` 不匹配"默认" agent 的 id（目录名 `proto_data` 含非 hex 字符）→ 切换/暂停/行动全部 404。放宽为 `[A-Za-z0-9_-]+`，实测默认 agent 可切换、可暂停、可恢复。
 - [x] 新增 `docs/specs/idea-quality.md`：五层淘汰流水线完整设计（外部信号捡想法/廉价筛选/验收前置/执行轨迹/独立验证门），含 Mermaid 流程图、研究对齐表、端到端示例。README 增对应章节。
 - 验证：463 项测试全绿。
+
+### M34 — 提议简明 + 审美系统（feat/m34-taste）
+
+- [x] ①提议简明：LLM 重写为固定 3 句（做什么/为什么/产出什么，各限字数），质量门+截断兜底；接入 maybe_proactive。
+- [x] ②审美系统 proto/runtime/taste.py：5 感官维度（好玩/有趣/有用/美/优雅）各带 agent 自己的正负锚点+权重；judge() 按锚点打分给理由；refine_from_feedback() 主人校准锚点；审美宣言注入对话提示；控制台「它的审美」卡（定义+校准+考考它）。真实 E2E：judge 综合分+分维度星级+理由（引用自己的锚点）。
+- [x] 修复链：glm anthropic 端点 thinking 块吃满 1024 max_tokens（提到 4096）；轻量 GET 无锁化；judge 路由缩进；熔断期 judge 失败审计带原因。
+- 验证：472 项测试全绿。
