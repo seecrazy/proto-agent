@@ -50,7 +50,18 @@
   /* ---- 右：仪表 ---- */
   #side { overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
-  .card h3 { font-size: 12px; color: var(--dim); font-weight: 600; margin-bottom: 8px; letter-spacing: .5px; }
+  .card h3 { font-size: 12px; color: var(--dim); font-weight: 600; margin-bottom: 8px; letter-spacing: .5px;
+             display: flex; align-items: center; cursor: pointer; user-select: none; }
+  .card h3::after { content: "▾"; font-size: 10px; color: var(--dim); transition: transform .15s; }
+  .card.collapsed h3::after { transform: rotate(-90deg); }
+  .card.collapsed h3 { margin-bottom: 0; }
+  .card.collapsed .card-body { display: none; }
+  #emo { margin-left: auto; margin-right: 6px; }
+  .card h3 > span[style*="float:right"] { margin-left: auto; margin-right: 6px; }
+  /* M42：侧栏整体收起——对话区占满 */
+  main.side-hidden { grid-template-columns: 1fr 0; }
+  main.side-hidden #side { display: none; }
+  main.side-hidden #chat { border-right: none; }
   .param { margin-bottom: 8px; }
   .param .row { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px; }
   .param .name { color: var(--text); } .param .val { color: var(--dim); font-variant-numeric: tabular-nums; }
@@ -127,6 +138,7 @@
   <select id="agent-select" onchange="switchAgent(this.value)" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px"></select>
   <button onclick="showCreateAgent()" style="font-size:12px">＋Agent</button>
   <div class="spacer"></div>
+  <button id="side-btn" onclick="toggleSide()" aria-label="打开或收起侧栏" title="收起/展开右侧全部卡片栏">▤侧栏</button>
   <button id="view-btn" onclick="toggleView()" aria-label="切换工程/伙伴视角" title="工程视角看仪表，伙伴视角只留相处">🤝伙伴视角</button>
   <button id="awake-btn" onclick="toggleAwake()">☕防休眠</button>
   <button id="mute-btn" onclick="toggleMute()">静音</button>
@@ -298,6 +310,46 @@
 <script>
 const TOKEN = (location.hash.match(/token=([^&]+)/) || [])[1] || "";
 if (!TOKEN) document.body.innerHTML = "<p style='padding:30px'>缺少访问令牌：请使用终端打印的完整 URL（含 #token=…）打开。</p>";
+
+/* ---- M42：卡片折叠（标题点击，localStorage 记忆）+ 侧栏收起 ---- */
+function initCollapsible() {
+  const saved = new Set(JSON.parse(localStorage.getItem("proto-collapsed") || "[]"));
+  document.querySelectorAll("#side .card").forEach(card => {
+    if (card.querySelector(".card-body")) return;
+    const h3 = card.querySelector("h3");
+    if (!h3) return;
+    const body = document.createElement("div");
+    body.className = "card-body";
+    while (h3.nextSibling) body.appendChild(h3.nextSibling);
+    card.appendChild(body);
+    const key = "c:" + h3.textContent.trim().slice(0, 24);
+    const apply = (collapsed) => {
+      card.classList.toggle("collapsed", collapsed);
+      h3.setAttribute("aria-expanded", String(!collapsed));
+    };
+    apply(saved.has(key));
+    h3.setAttribute("role", "button");
+    h3.setAttribute("tabindex", "0");
+    h3.addEventListener("click", () => {
+      const now = !card.classList.contains("collapsed");
+      apply(now);
+      now ? saved.add(key) : saved.delete(key);
+      localStorage.setItem("proto-collapsed", JSON.stringify([...saved]));
+    });
+    h3.addEventListener("keydown", e => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); h3.click(); }
+    });
+  });
+}
+function toggleSide() {
+  const hidden = document.querySelector("main").classList.toggle("side-hidden");
+  localStorage.setItem("proto-side", hidden ? "hidden" : "");
+  document.getElementById("side-btn").textContent = hidden ? "▤侧栏已收" : "▤侧栏";
+}
+if (localStorage.getItem("proto-side") === "hidden") {
+  document.querySelector("main").classList.add("side-hidden");
+}
+initCollapsible();
 
 async function api(method, path, body) {
   // GET/HEAD 绝不带 body（浏览器 fetch 会直接拒绝——曾致全页卡片静默挂死）
