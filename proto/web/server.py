@@ -25,7 +25,8 @@ INDEX_PATH = Path(__file__).with_name("index.html")
 READ_ONLY_GETS = {
     "/api/state", "/api/audit", "/api/proposals", "/api/rules",
     "/api/evolution", "/api/scratch", "/api/memory", "/api/inbox",
-    "/api/goaltree", "/api/world",
+    "/api/goaltree", "/api/world", "/api/taste", "/api/agents",
+    "/api/summary", "/api/blackboard", "/api/projects-root",
 }
 
 
