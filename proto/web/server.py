@@ -49,6 +49,7 @@ READ_ONLY_GETS = {
     "/api/evolution", "/api/scratch", "/api/memory", "/api/inbox",
     "/api/goaltree", "/api/world", "/api/taste", "/api/agents",
     "/api/summary", "/api/blackboard", "/api/projects-root", "/api/methods",
+    "/api/identity",
 }
 
 
@@ -331,6 +332,15 @@ class _Handler(BaseHTTPRequestHandler):
             from proto.runtime.summaries import bucket_events
             events = agent.audit_tail(500)
             return self._json(200, {"buckets": bucket_events(events)})
+        if path == "/api/identity" and method == "GET":
+            return self._json(200, {
+                "ocean": agent.identity.ocean,
+                "values": agent.identity.values,
+                "speech_style": agent.identity.speech_style,
+                "prompt_block": agent.identity.prompt_block(),
+                "tension": round(agent.tension(), 3),
+                "drive_modulators": agent.identity.drive_modulators(),
+            })
         if path == "/api/methods" and method == "GET":
             snap = agent.methods_lib.snapshot()
             snap["menu"] = [m.name for m in

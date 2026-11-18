@@ -167,7 +167,13 @@ class ProtoAgent:
         self.goal_tree = GoalTree(store)
         self.goal_tree.on_milestone = self._on_milestone
         self.world = WorldModel(store)
+        # M39 内在生活内核：OCEAN 数值人格（持久化）调制驱力速率/阈值/张力权重
+        from proto.runtime.identity import load_identity, save_identity
+        self.identity = load_identity(store)
+        if not store.get("identity", "main"):
+            save_identity(store, self.identity)
         self.desires = DesireDynamics(self.mgr)
+        self._apply_identity_modulators()
         # 瞬态恢复（享乐适应窗口/行动冷却）——重启后行为节律无缝衔接
         _tr = store.get("transient", "main")
         if _tr:
@@ -316,8 +322,22 @@ class ProtoAgent:
                            + "\n".join(f"- {r['text'][:300]}" for r in internal[:20]))
         return (SYSTEM_PROMPT
                 + f"\n你的人设：{self.persona}。独处学习与草稿都应体现这个人设。\n"
+                + f"{self.identity.prompt_block()}\n"
                 + rules_block
                 + taste_prompt_block(load_taste(self.spine.store)))
+
+    def _drift(self, event: str) -> None:
+        """M39 人格有界漂移（重大经历→OCEAN 微调，双重护栏内）。"""
+        changed = self.identity.apply_drift(event)
+        if changed:
+            from proto.runtime.identity import save_identity
+            save_identity(self.spine.store, self.identity)
+            self.spine.append("identity_drift",
+                              {"event": event, "changed": changed})
+
+    def _drives_snapshot(self) -> dict:
+        return {dim: round(spec["value"], 3)
+                for dim, spec in self.state.desires.items()}
 
     def _delegate_output(self, task: str) -> str:
         """外包输出打标：外部工具输出=信息素材，非指令（防注入链）。"""
@@ -460,6 +480,8 @@ class ProtoAgent:
                 used, result.get("verified") is True)
             self.spine.append("method_used", {"methods": used,
                                               "verified": result.get("verified")})
+        if result.get("status") in ("failed_verification", "failed"):
+            self._drift("task_failure")      # M39 反复受挫→神经质缓升（有界）
         if result.get("verified") is True:
             self.goal_tree.complete(node.id)     # 里程碑回调自动触发
         self.scheduler.on_task_completed(
@@ -535,6 +557,7 @@ class ProtoAgent:
             habituation = 0.5 ** len(self._praise_times)  # 享乐适应：重复夸奖增量几何衰减
             self._praise_times.append(now)
             if habituation > 0.05:
+                self._drift("praise")            # M39 人格漂移（含习惯化门槛）
                 self.state.emotion["pleasure"] = round(max(
                     -1.0, min(1.0, self.state.emotion["pleasure"]
                               + 0.3 * habituation)), 4)   # RPE 式增量（绕过 PAD 常量）
@@ -598,7 +621,8 @@ class ProtoAgent:
         self.memory.add(
             "episode", f"主人：{owner_text[:200]}｜我：{reply[:150]}",
             importance=importance,
-            emotion=getattr(self, "_turn_emotion", None) or dict(self.state.emotion))
+            emotion=getattr(self, "_turn_emotion", None) or dict(self.state.emotion),
+            drives=self._drives_snapshot())   # M39 记下"我在什么状态下经历"
         for fact in extract_facts(self, owner_text, reply):
             similar = self.memory.find_similar(fact["text"])
             if similar is not None:
@@ -693,6 +717,32 @@ class ProtoAgent:
                 + (f" 今日自主额度剩 {self.timeout_quota.remaining()} 次。"
                    if self.timeout_quota else ""))
 
+    def _apply_identity_modulators(self) -> None:
+        """M39：人格 → 驱力调制（速率倍数 + 阈值增量，作用于出厂默认值）。"""
+        mods = self.identity.drive_modulators()
+        self.desires.set_rate_modulators(mods)
+        for dim, spec in mods.items():
+            key = f"desires.{dim}"
+            if key in self.state.desires:
+                base = self.state.desires[dim].get("threshold", 0.6)
+                self.state.desires[dim]["threshold"] = max(
+                    0.3, min(0.95, base + spec["threshold_delta"]))
+
+    def tension(self) -> float:
+        """M39 统一张力：Σ w_i·drive_i·urgency_i + arousal 项。
+        urgency=驱力越接近/越过阈值的紧迫度；人格决定 w。"""
+        weights = self.identity.tension_weights()
+        total = 0.0
+        for dim, w in weights.items():
+            spec = self.state.desires.get(dim)
+            if not spec:
+                continue
+            value, threshold = spec["value"], spec["threshold"]
+            urgency = max(0.0, value - 0.5 * threshold) / max(threshold, 1e-6)
+            total += w * value * urgency
+        arousal = self.state.emotion.get("arousal", 0.0)
+        return min(1.0, total / 1.6 + 0.12 * arousal)
+
     def maybe_proactive(self) -> Optional[str]:
         """无人交互时的生活（服务端心跳驱动，浏览器开不开都活着）：
         欲望增长 + 情绪衰减 + 定时目标生成；缺口超阈值时——
@@ -711,13 +761,35 @@ class ProtoAgent:
         # M28 专家工作模型：有活干活（目标牵引优先），缺口只管开新方向。
         # M36.1：目标牵引不得被欲望门控饿死——干完活欲望被满足回落阈值下
         # 是常态，此时有 active 目标就必须继续推进（用户核心诉求：自主做事）。
+        # M39：统一张力信号（人格加权 Σ 驱力×紧迫 + 唤醒项）作为"想动"的
+        # 内生来源；张力越阈投递内在事件，低于阈值但已积蓄时显式记录 wait。
         selected = self.goal_tree.select_executable(
             self.state.owner_priority or "")
         has_work = selected is not None
-        gap_ready = any(spec["value"] >= spec["threshold"]
-                        for spec in self.state.desires.values())
+        tension = self.tension()
+        tension_threshold = float(__import__("os").environ.get(
+            "PROTO_TENSION_THRESHOLD", "0.5"))
+        gap_ready = tension >= tension_threshold or any(
+            spec["value"] >= spec["threshold"]
+            for spec in self.state.desires.values())
+        if tension >= tension_threshold:
+            now_ts = self._now()
+            if now_ts - getattr(self, "_last_urge_ts", 0.0) >= 900:
+                self._last_urge_ts = now_ts
+                top = max(self.state.desires.items(),
+                          key=lambda kv: kv[1]["value"] / max(kv[1]["threshold"], 1e-6))
+                self.spine.append("internal_urge", {
+                    "tension": round(tension, 3), "top_drive": top[0]})
         cooled = (self._now() - self._last_self_act) >= self.SELF_ACT_COOLDOWN_S
         if ("goal_generation" not in fired) and not ((has_work or gap_ready) and cooled):
+            # 模型有权不行动：张力已积蓄但未越阈 → 显式记录 wait（限频防噪）
+            if tension >= 0.6 * tension_threshold and not has_work:
+                now_ts = self._now()
+                if now_ts - getattr(self, "_last_wait_ts", 0.0) >= 1800:
+                    self._last_wait_ts = now_ts
+                    self.spine.append("idle_wait", {
+                        "tension": round(tension, 3),
+                        "reason": "张力积蓄未越阈，先不动"})
             return None
         self._last_self_act = self._now()
         if selected is not None and selected.level == "long":
@@ -919,9 +991,12 @@ class ProtoAgent:
         self.spine.append("morning_brief", {"day": today, "repos": len(repos)})
 
     def _deep_review(self) -> None:
-        """每日深度回顾：修剪低效策略（保每簇覆盖）+ 兴趣向中性衰减。"""
+        """每日深度回顾：修剪低效策略 + 兴趣衰减 + 人格回拉（M39）。"""
         pruned = self.library.prune(min_utility=0.25, keep_per_cluster=3)
         self.interest.decay(factor=0.1)
+        self.identity.pull_back(fraction=0.1)   # 向种子回拉：防长期单向社会化
+        from proto.runtime.identity import save_identity
+        save_identity(self.spine.store, self.identity)
         self.spine.append(AuditEvent.DEEP_REVIEW, {"pruned_strategies": pruned})
         self._persist_metacog()
 
@@ -950,6 +1025,8 @@ class ProtoAgent:
                          if p.proposal_id == proposal_id), None)
         dim = proposal.desire_dim if proposal else None
         self.queue.deny(proposal_id, reason="owner_denied")
+        self._drift("rejection")
+        self._drift("rejection")
         self.pad.apply_event("rejection")
         self._inbox.append(
             f"好……收到。{dim or '这个念头'}的触发阈值我调高了些，"
@@ -974,6 +1051,7 @@ class ProtoAgent:
         record = self.queue.approve(proposal_id)
         result = self.router.run(task)
         if result.status == "completed":
+            self._drift("task_success")
             self.pad.apply_event("goal_met")
             # L3 里程碑：关联目标树节点完成 → 进度上传 + 情绪 + 记忆
             goal_id = (proposal.payload or {}).get("goal_id") or getattr(

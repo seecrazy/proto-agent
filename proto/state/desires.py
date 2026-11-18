@@ -23,6 +23,12 @@ class DesireDynamics:
         self._social = social_per_hour
         self._grace = grace_hours
         self._last_evolve_ts = None    # 增量制：只按距上次 evolve 的流逝计费
+        self._rate_mult = {}           # M39 人格调制：{dim: 倍数}
+
+    def set_rate_modulators(self, modulators: dict) -> None:
+        """M39：人格调制累积速率（OCEAN 映射，见 runtime/identity.py）。"""
+        self._rate_mult = {f"desires.{k}": float(v.get("rate_mult", 1.0))
+                           for k, v in (modulators or {}).items()}
 
     def satisfy(self, desire_dim: str, amount: float) -> float:
         """满足事件消减缺口（内稳态环的反馈支，设计 §1.2）。过量满足夹在 0。"""
@@ -33,8 +39,9 @@ class DesireDynamics:
         return self._mgr.state.get(dim)
 
     def evolve(self, now_ts: float, last_owner_interaction_ts: float) -> None:
-        """增量制（M27）：按距上次 evolve 的新增闲置时长计费——
-        多次小步与一次大步结果一致，不重复计数。宽限按主人交互时间截断。"""
+        """增量制（M27）+ Logistic 累积（M39）：d += rate·h·(1-d)——
+        接近饱和涨速放缓，久置渐近而不爆表；多次小步与一次大步一致。
+        宽限按主人交互时间截断。"""
         state = self._mgr.state
         if self._last_evolve_ts is None:
             self._last_evolve_ts = now_ts
@@ -47,6 +54,8 @@ class DesireDynamics:
             return
         for dim, rate in (("desires.curiosity_gap", self._curiosity),
                           ("desires.social_connection_gap", self._social)):
-            grown = state.get(dim) + rate * billable
+            value = state.get(dim)
+            rate_mult = self._rate_mult.get(dim, 1.0)
+            grown = value + rate * billable * (1.0 - value) * rate_mult
             state.set_within_bounds(dim, grown)
         self._mgr.save()

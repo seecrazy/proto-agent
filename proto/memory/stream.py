@@ -44,6 +44,7 @@ class Memory:
     last_access: float = 0.0
     source: str = "chat"
     emotion: dict = None    # 编码时情绪快照（情景记忆的"闪光灯"标记）
+    drives: dict = None     # 编码时驱力快照（M39：记下"我在什么状态下经历"）
     reinforce_count: int = 0  # 提取练习次数（间隔效应：越多想起越难忘记）
 
     def to_dict(self) -> dict:
@@ -57,6 +58,7 @@ class Memory:
             last_access=float(raw.get("last_access", raw["ts"])),
             source=raw.get("source", "chat"),
             emotion=raw.get("emotion"),
+            drives=raw.get("drives"),
             reinforce_count=int(raw.get("reinforce_count", 0)),
         )
 
@@ -73,13 +75,15 @@ class MemoryStream:
         return len(self._memories)
 
     def add(self, kind: str, text: str, importance: float = 0.5,
-            ts: float = None, source: str = "chat", emotion: dict = None) -> Memory:
+            ts: float = None, source: str = "chat", emotion: dict = None,
+            drives: dict = None) -> Memory:
         if kind not in KINDS:
             raise ValueError(f"未知记忆类型: {kind}")
         now = ts if ts is not None else time.time()
         memory = Memory(id=uuid.uuid4().hex[:12], kind=kind, text=text[:400],
                         ts=now, importance=max(0.0, min(1.0, importance)),
-                        last_access=now, source=source, emotion=emotion)
+                        last_access=now, source=source, emotion=emotion,
+                        drives=drives)
         self._memories[memory.id] = memory
         self._store.put(self._collection, memory.id, memory.to_dict())
         return memory

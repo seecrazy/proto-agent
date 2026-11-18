@@ -363,3 +363,14 @@ P2（工程化）：
 - 修复连带：tick_all 静默吞异常改为 logging.exception（曾掩盖自主性停摆排查）。
 - E2E（真实服务端心跳，零点击）：注入 2 小时前的晋升提议→夜间节律心跳→自动裁决→批准→weekly.md 晋升 visible→审计三连（approval/promotion/owner_timeout_auto）。
 - 测试：tests/test_m38_timeout.py 10 项（低风险自批续跑/未超时不动/IRREVERSIBLE 不批且不重复提醒/owner_only 不批/未知工具保守/LLM 低批高不批/离线保守/配额耗尽等待/配额重启保持）。全套 524 绿。
+
+### M39 — 内在生活内核增强（对照"有灵魂 Agent"设计稿补齐数值化缺口）
+
+- 设计对照结论：情绪 PAD/三类记忆+心境检索/四层目标树/心跳数值段/防刷屏/预算/审计/可干预七成已有；本里程碑补齐五块数值化缺口。
+- **OCEAN 数值人格** `proto/runtime/identity.py`：五因子+价值观+说话风格，持久化（store.identity/main，种子固化不漂）；软约束文本注入系统提示词（"[我的性格底色]…这是自然倾向不是人设台词"）；**有界漂移双重护栏**（单因子 [0.05,0.95]、距种子总漂移 ≤0.15）：夸奖/拒绝/任务成败四类事件钩子驱动（identity_drift 审计 🌿）；每日深度回顾向种子回拉 10%（防长期单向社会化）。
+- **人格→驱力调制**：开放者好奇涨速×1.4、内向者社交阈值 +0.03 等映射（rate_mult/threshold_delta，只作用于出厂默认）。
+- **logistic 驱力累积**：d += rate·h·(1-d)——接近饱和涨速放缓（原线性；连带更新 round4 期望值）。
+- **统一张力信号**：tension = Σ w_i·drive_i·urgency_i + 0.12·arousal（人格定权重，PROTO_TENSION_THRESHOLD 默认 0.5）；越阈投递 internal_urge 内在事件（🔥，15 分钟冷却）并入行动门控；张力积蓄未越阈且无目标时显式记录 idle_wait（💤"评估后先不动"，30 分钟限频）——"模型有权不行动"落进审计。
+- **记忆驱力快照**：经历性记忆携带编码时四维驱力值（"我在什么状态下经历"），重启保持。
+- 可观测：/api/identity（OCEAN/张力/调制系数/prompt 块）。
+- 测试：tests/test_m39_identity.py 16 项（漂移双护栏/调制映射/权重人格化/logistic 高位减速/内在事件冷却/idle_wait/夸奖漂移审计/重建保持/回拉）。全套 540 绿。
