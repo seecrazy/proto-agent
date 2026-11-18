@@ -154,13 +154,17 @@ class GoalTree:
                 current = self._nodes.get(current.parent_id) if current.parent_id else None
             return best
 
-        best_node, best_score = None, -1.0
+        best_node, best_score = None, (-1.0, -1)
         for node in self.all_active():
             score = (0.4 * inherited_alignment(node)
                      + 0.4 * DEPTH_BONUS[node.level]
                      + 0.2 * node.progress)
-            if score > best_score:
-                best_node, best_score = node, score
+            # 平局裁决优先"有验收定义"的节点：可检验=可推进；曾出现三个
+            # 同深 mid 平局时任意选中"提交 App Store"这种环境不可达目标
+            tiebreak = 1 if (node.acceptance or "").strip() else 0
+            key = (score, tiebreak)
+            if key > best_score:
+                best_node, best_score = node, key
         return best_node
 
     def decompose(self, node: GoalNode, llm) -> List[GoalNode]:
