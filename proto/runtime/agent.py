@@ -418,10 +418,62 @@ class ProtoAgent:
 
     @staticmethod
     def _goal_slug(text: str) -> str:
-        """目标→目录名：保留中英文数字，标点转 -，截断 40 字符。"""
+        """目标→目录名：保留中英文数字，标点转 -，截断 18 字符
+        （M41：40 字符中文目录名不可读，工作区曾因此像垃圾场）。"""
         import re as _re
         slug = _re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "-", text.strip()).strip("-")
-        return slug[:40] or "untitled"
+        return slug[:18] or "untitled"
+
+    def _refresh_projects_index(self) -> None:
+        """M41：projects/README.md 自动索引——每个目录对应的目标/状态/
+        最后写入。'这是工作目录么'应当一眼可答；无对应活跃目标的目录标
+        '待归档'。"""
+        import time as _time
+        root = self.code_workspace.root / "projects"
+        if not root.exists():
+            return
+        active = {n.id: n for n in self.goal_tree.all_active()}
+        lines = ["# 项目工作区索引（自动维护）", ""]
+        for d in sorted(root.iterdir()):
+            if not d.is_dir() or d.name.startswith("_"):
+                continue
+            files = [f for f in d.rglob("*") if f.is_file()]
+            last = max((f.stat().st_mtime for f in files), default=0)
+            owner = next((n for n in active.values()
+                          if self._goal_slug(n.text).startswith(d.name[:8])
+                          or d.name.startswith(self._goal_slug(n.text)[:8])), None)
+            status = (f"目标[{owner.text[:20]}…] 进行中" if owner
+                      else "无活跃目标（待归档或已交付）")
+            lines.append(f"- **{d.name}/** — {len(files)} 文件，"
+                         f"最后写入 { _time.strftime('%m-%d %H:%M', _time.localtime(last)) if last else '无'}，{status}")
+        strays = [f for f in root.iterdir() if f.is_file()]
+        if strays:
+            lines.append("")
+            lines.append("⚠ 散落文件（应移入项目目录）：" +
+                         "、".join(f.name for f in strays))
+        (root / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def drop_goal(self, node_id: str) -> None:
+        """M41：drop 目标时级联归档其项目目录（谱系全灭才归档）。"""
+        node = self.goal_tree._nodes.get(node_id)
+        text = node.text if node else ""
+        self.goal_tree.drop(node_id)
+        if not text:
+            return
+        slug = self._goal_slug(text)
+        root = self.code_workspace.root / "projects"
+        for d in root.iterdir():
+            if d.is_dir() and (slug.startswith(d.name[:8])
+                               or d.name.startswith(slug[:8])):
+                still = any(self._goal_slug(n.text).startswith(d.name[:8])
+                            or d.name.startswith(self._goal_slug(n.text)[:8])
+                            for n in self.goal_tree.all_active())
+                if not still:
+                    import shutil as _sh
+                    dest = root / "_archived"
+                    dest.mkdir(exist_ok=True)
+                    _sh.move(str(d), str(dest / d.name))
+                    self.spine.append("goal_drop", {"archived": d.name})
 
     def _curate_methods(self, goal_text: str) -> str:
         """M37 方法策展：发明新做法（限频）→ 返回注入任务的菜单。
@@ -457,6 +509,8 @@ class ProtoAgent:
         project_dir = f"projects/{self._goal_slug(node.text)}"
         acceptance = node.acceptance or generate_acceptance(
             self.llm_fast, f"{node.text}（产出落在 {project_dir}）")
+        # M41：工作区治理——项目索引（每个目录对应哪个目标/什么状态）
+        self._refresh_projects_index()
         # M37：方法菜单注入（多元+自发明，主人限定才收窄）
         menu = self._curate_methods(node.text)
         # 项目目录约定注入任务描述
@@ -482,6 +536,13 @@ class ProtoAgent:
                                               "verified": result.get("verified")})
         if result.get("status") in ("failed_verification", "failed"):
             self._drift("task_failure")      # M39 反复受挫→神经质缓升（有界）
+        # M41 轮转记账：连续验证未过 +1（选择器将轮换到其他子目标，防整夜卡死）
+        if result.get("verified") is False:
+            node.fail_streak = getattr(node, "fail_streak", 0) + 1
+            self.goal_tree._store.put("goaltree", node.id, node.to_dict())
+        elif result.get("verified") is True and getattr(node, "fail_streak", 0):
+            node.fail_streak = 0
+            self.goal_tree._store.put("goaltree", node.id, node.to_dict())
         if result.get("verified") is True:
             self.goal_tree.complete(node.id)     # 里程碑回调自动触发
         self.scheduler.on_task_completed(

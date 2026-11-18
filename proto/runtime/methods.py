@@ -59,6 +59,7 @@ BUILTIN_METHODS = [
     ("delegate_heavy", "把大块体力活外包给外部编码 CLI（可用时）"),
     ("ask_owner_one_thing", "把唯一真正不确定的点浓缩成一句话问主人"),
     ("self_review_checklist", "产出后按自查清单逐项核验（能跑的跑起来验证）"),
+    ("local_build_check", "用 run_python 调编译器做编译级检查：Swift 用 `xcrun swiftc -typecheck 文件`，产出零编译错误才算实现完成"),
 ]
 
 _INVENT_PROMPT = (

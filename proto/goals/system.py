@@ -20,8 +20,12 @@ CHILD_LEVEL = {"long": "mid", "mid": "short", "short": "task"}
 DEPTH_BONUS = {"long": 0.2, "mid": 0.5, "short": 0.8, "task": 1.0}
 
 DECOMPOSE_PROMPT = (
-    "你是 PROTO 的目标分解器。把下面的父目标拆成 2-3 个更具体的子目标，"
-    "每个附带**最小可检验定义**（什么操作下观察到什么结果算完成）。"
+    "你是 PROTO 的目标分解器。把下面的父目标按**交付阶梯**拆成 3-4 个子目标，"
+    "顺序为：设计规格 → 功能实现 → 本地验证 → 就绪交付。"
+    "最后一个子目标固定为'就绪交付'：本地全部完成后整理交付清单"
+    "（已完成/待主人提供/一键继续指引）。"
+    "每个子目标附**最小可检验定义**（≤3 条关键证据，必须本机可验："
+    "能写出的文件、能跑通的脚本；需主人账号/设备/外部服务的事项只进交付清单）。"
     '只输出 JSON 数组：[{"text": "...", "acceptance": "..."}]。'
 )
 
@@ -50,6 +54,7 @@ class GoalNode:
     source: str = "owner"           # owner | self
     created_at: float = field(default_factory=time.time)
     acceptance: str = ""            # 最小可检验定义（想法出关门，M23）
+    fail_streak: int = 0            # 连续验证未过次数（M41：轮转防饿死）
 
     def to_dict(self) -> dict:
         return vars(self)
@@ -68,7 +73,8 @@ class GoalTree:
                 progress=float(r.get("progress", 0.0)),
                 source=r.get("source", "owner"),
                 created_at=float(r.get("created_at", 0.0)),
-                acceptance=r.get("acceptance", ""))
+                acceptance=r.get("acceptance", ""),
+                fail_streak=int(r.get("fail_streak", 0)))
             self._nodes[node.id] = node
 
     def add(self, text: str, level: str, parent_id: str = None,
@@ -142,9 +148,11 @@ class GoalTree:
         对齐度沿父链继承——子目标语义从属于父（词面重叠看不见），取整链最大值。"""
         priority = owner_priority.strip()
         if not priority:
-            # 无优先级时退化为深度偏好（越具体越可执行）
+            # 无优先级时退化为深度偏好 + 同一套平局裁决（验收优先/失败轮转）
             return max(self.all_active(),
-                       key=lambda n: DEPTH_BONUS[n.level], default=None)
+                       key=lambda n: (DEPTH_BONUS[n.level],
+                                      1 if (n.acceptance or "").strip() else 0,
+                                      -n.fail_streak), default=None)
 
         def inherited_alignment(node: GoalNode) -> float:
             best = 0.0
@@ -159,10 +167,10 @@ class GoalTree:
             score = (0.4 * inherited_alignment(node)
                      + 0.4 * DEPTH_BONUS[node.level]
                      + 0.2 * node.progress)
-            # 平局裁决优先"有验收定义"的节点：可检验=可推进；曾出现三个
-            # 同深 mid 平局时任意选中"提交 App Store"这种环境不可达目标
+            # 平局裁决：优先有验收定义（可检验=可推进）；再优先连续失败
+            # 次数少的（M41 轮转：曾整夜卡死在同一设计目标上反复重写文档）
             tiebreak = 1 if (node.acceptance or "").strip() else 0
-            key = (score, tiebreak)
+            key = (score, tiebreak, -node.fail_streak)
             if key > best_score:
                 best_node, best_score = node, key
         return best_node
