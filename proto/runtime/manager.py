@@ -98,6 +98,8 @@ class AgentManager:
                            persona=persona or None)
         if priority:
             agent.set_priority(priority)
+        if info.get("paused"):
+            agent.kernel.set_mute(True)   # 重启后恢复暂停态（registry 是权威）
         self._cache[agent_id] = agent
         return agent
 
