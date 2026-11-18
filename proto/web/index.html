@@ -41,6 +41,8 @@
   .msg { max-width: 78%; padding: 8px 12px; border-radius: 10px; white-space: pre-wrap; line-height: 1.55; }
   .msg.owner { align-self: flex-end; background: #24457a; }
   .msg.agent { align-self: flex-start; background: var(--panel2); }
+  .msg-time { font-size: 10px; color: var(--dim); margin-right: 8px;
+              user-select: all; }
   .msg.system { align-self: center; background: transparent; color: var(--warn); font-size: 12px; }
   #composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); }
   #composer input { flex: 1; }
@@ -258,7 +260,15 @@ function addMsg(text, who) {
   const box = document.getElementById("messages");
   const div = document.createElement("div");
   div.className = "msg " + who;
-  div.textContent = text;
+  // 每条消息带时间戳（小字灰色，hover 可复制完整内容）
+  const time = document.createElement("span");
+  time.className = "msg-time";
+  time.textContent = fmtTime(Date.now() / 1000);
+  div.appendChild(time);
+  const body = document.createElement("span");
+  body.textContent = text;
+  div.appendChild(body);
+  div.title = new Date().toLocaleString();
   box.appendChild(div);
   box.scrollTop = box.scrollHeight;
 }
