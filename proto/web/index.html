@@ -441,18 +441,48 @@ function toggleActivity(id) {
   const card = el.closest("[data-events]");
   let events = [];
   try { events = JSON.parse(card.dataset.events || "[]"); } catch (e) {}
+  const EVT = {web_fetch:"🔍 学习", morning_brief:"🌅 晨间简报", goal_pushed:"🎯 生成目标",
+    reflection_write:"💭 反思", prediction_error:"⚠️ 预测落空→调查", modulation:"📈 被反馈塑造",
+    internalize:"✅ 规矩内化", de_internalize:"↩️ 规矩降级", task_success:"🎉 任务成功",
+    approval:"👍 获批准", denial:"👎 被拒绝", force_act:"⚡ 主人指令行动",
+    evolution_merge:"🧬 自我进化", verification_failed:"🔍 验证未过", persona_defaults:"🎭 人设生效",
+    taste_refined:"🎨 审美校准", owner_override:"👑 主人操作", mute_on:"⏸ 暂停", mute_off:"▶ 恢复",
+    anchor_init:"🔧 初始化", memory_forget:"🗑️ 遗忘指令", rule_edit:"✏️ 规矩修改",
+    rule_delete:"🗑️ 规矩删除", goal_drop:"❌ 目标废止", blackboard:"💬 黑板协作",
+    llm_breaker_trip:"🔌 LLM熔断", budget_trip:"💰 预算熔断", rollback:"⏪ 回滚",
+    deep_review:"🌙 深度回顾", promote:"📤 晋升", taste_judge_failed:"❓ 评判失败"};
   el.innerHTML = events.length
-    ? events.slice().reverse().map(e => `· ${esc(e.event_type)}`).join("<br>")
+    ? events.slice().reverse().map(e => {
+        const label = EVT[e.event_type] || e.event_type;
+        return `<span style="color:var(--dim)">${esc(fmtTime(e.ts))}</span> ${label}`;
+      }).join("<br>")
     : "（暂无活动）";
 }
 async function forceAct(id, btn) {
   if (!btn) return;
   btn.disabled = true; btn.textContent = "行动中…";
+  addMsg("〔立即行动〕已启动——后台执行中（学习→目标→提案全链路，可能需要 1-3 分钟）", "system");
   try {
     const r = await api("POST", `/api/agents/${id}/act`, {});
-    addMsg(r.message || ("行动未成：" + (r.reason || "未知原因")), "system");
-    await refreshFleet(); await refreshScratch(); await refreshGoalTree();
-  } catch (e) { addMsg("立即行动失败：" + e.message, "system"); }
+    if (r.job) {
+      // 轮询 job 直到完成
+      const poll = setInterval(async () => {
+        try {
+          const job = await api("GET", `/api/jobs/${r.job}`);
+          if (job.status === "running") return;
+          clearInterval(poll);
+          const res = job.result || {};
+          addMsg(res.message || ("行动未成：" + (res.reason || "未知原因")), "system");
+          await refreshFleet(); await refreshScratch();
+          await refreshGoalTree(); await refreshBlackboard();
+        } catch (e) { clearInterval(poll); }
+      }, 3000);
+      // 安全兜底 5 分钟停轮
+      setTimeout(() => clearInterval(poll), 300000);
+    } else {
+      addMsg(r.message || ("行动未成：" + (r.reason || "")), "system");
+    }
+  } catch (e) { addMsg("立即行动提交失败：" + e.message, "system"); }
   btn.disabled = false; btn.textContent = "立即行动";
 }
 async function switchAgent(id) {

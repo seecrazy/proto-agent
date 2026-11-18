@@ -96,6 +96,9 @@ class _Handler(BaseHTTPRequestHandler):
         agent = server.manager.agent_for_request(
             self.headers.get("X-Proto-Agent"))
         path, query = parsed.path, parse_qs(parsed.query)
+        if method == "GET" and path.startswith("/api/jobs/"):
+            return self._safely(lambda: self._routes(method, path, query,
+                                                    agent, server))
         if method == "POST" and path == "/api/judge":
             return self._safely(lambda: self._routes(method, path, query,
                                                     agent, server))
@@ -118,12 +121,38 @@ class _Handler(BaseHTTPRequestHandler):
                                     "agents": server.manager.list()})
         m5 = re.match(r"^/api/agents/([A-Za-z0-9_-]+)/act$", path)
         if m5 and method == "POST":
+            # 异步 job：浏览器 fetch 会在约 100s 断开，完整自主链路可能跑几分钟
             target = server.manager.get(m5.group(1))
             if target is None:
                 return self._json(404, {"error": "no_such_agent"})
-            result = target.force_act()
-            target._inbox.append(result.get("message") or f"行动未成：{result.get('reason','')}")
-            return self._json(200, result)
+            import threading as _th
+            import uuid as _uuid
+            job_id = _uuid.uuid4().hex[:12]
+            server.jobs[job_id] = {"status": "running", "result": None,
+                                    "agent": m5.group(1)}
+
+            def _run():
+                try:
+                    with server.mut_lock:
+                        result = target.force_act()
+                    target._inbox.append(
+                        result.get("message")
+                        or f"行动未成：{result.get('reason', '')}")
+                    server.jobs[job_id]["result"] = result
+                    server.jobs[job_id]["status"] = "done"
+                except Exception as exc:
+                    server.jobs[job_id]["result"] = {"acted": False,
+                                                      "reason": str(exc)[:200]}
+                    server.jobs[job_id]["status"] = "error"
+
+            _th.Thread(target=_run, daemon=True).start()
+            return self._json(200, {"job": job_id, "status": "running"})
+        m7 = re.match(r"^/api/jobs/([0-9a-f]+)$", path)
+        if m7 and method == "GET":
+            job = server.jobs.get(m7.group(1))
+            if job is None:
+                return self._json(404, {"error": "no_such_job"})
+            return self._json(200, job)
         m4 = re.match(r"^/api/agents/([A-Za-z0-9_-]+)/(select|pause|archive)$", path)
         if m4 and method == "POST":
             aid, action = m4.group(1), m4.group(2)
@@ -387,6 +416,7 @@ class ProtoWebServer(ThreadingHTTPServer):
         self.keeper = keep_awake if keep_awake is not None else KeepAwake()
         self.lock = threading.Lock()      # 遗留别名（心跳）
         self.mut_lock = threading.Lock()  # 变更长锁：chat/task/evolve
+        self.jobs = {}                    # 异步任务（立即行动等长链路）
         self._hb_stop = threading.Event()
         super().__init__((host, port), _Handler)
         if heartbeat_s > 0:
