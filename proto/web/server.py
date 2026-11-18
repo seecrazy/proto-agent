@@ -145,8 +145,14 @@ class _Handler(BaseHTTPRequestHandler):
                                                     agent, server))
         if method == "GET" and path in READ_ONLY_GETS:
             return self._routes(method, path, query, agent, server)
-        with server.mut_lock:
+        # 变更操作有界等待：长心跳/聊天占锁时快速 409，而不是让浏览器挂几分钟
+        if not server.mut_lock.acquire(timeout=3.0):
+            return self._json(409, {"error": "agent_busy",
+                                    "hint": "自学习或长任务进行中，稍后重试"})
+        try:
             return self._routes(method, path, query, agent, server)
+        finally:
+            server.mut_lock.release()
 
     def _routes(self, method: str, path: str, query, agent: ProtoAgent,
                 server: ProtoWebServer):
@@ -474,10 +480,15 @@ class ProtoWebServer(ThreadingHTTPServer):
         while not self._hb_stop.wait(
                 self._effective_interval(interval, _time.localtime().tm_hour)):
             try:
-                with self.mut_lock:
+                # 主人优先：锁被交互占用就跳过本轮自主节律（欲望会累积，不丢）
+                if not self.mut_lock.acquire(timeout=0.2):
+                    continue
+                try:
                     self.manager.tick_all()      # M21：驱动整支舰队
+                finally:
+                    self.mut_lock.release()
             except Exception:
-                pass  # 心跳失败不致命——下个周期重试  # 心跳失败不致命——下个周期重试
+                pass  # 心跳失败不致命——下个周期重试
 
     def server_close(self) -> None:
         self._hb_stop.set()

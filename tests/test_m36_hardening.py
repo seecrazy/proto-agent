@@ -345,6 +345,85 @@ class TestWebHardening:
             assert risky not in text, f"未转义插值残留: {risky}"
 
 
+# ---------------------------------------------------------------- 令牌稳定
+class TestTokenStability:
+    def test_generated_token_persisted_and_stable(self, tmp_path, monkeypatch):
+        """无 proto.env 时首启生成并持久化；重启（重新 load env）令牌不变。"""
+        from proto.config import load_default_env
+        from proto.web.__main__ import resolve_token
+        monkeypatch.delenv("PROTO_WEB_TOKEN", raising=False)
+        first = resolve_token("", tmp_path)
+        assert (tmp_path / "proto.env").exists()
+        assert (os.stat(tmp_path / "proto.env").st_mode & 0o777) == 0o600
+        monkeypatch.delenv("PROTO_WEB_TOKEN", raising=False)
+        load_default_env(data_dir=tmp_path)              # 模拟重启加载
+        assert resolve_token("", tmp_path) == first      # 不再随机换令牌
+
+    def test_existing_env_token_wins_and_not_duplicated(self, tmp_path,
+                                                        monkeypatch):
+        from proto.config import load_default_env
+        from proto.web.__main__ import resolve_token
+        env = tmp_path / "proto.env"
+        env.write_text("export PROTO_WEB_TOKEN='stable-token-0123456789'\n",
+                       encoding="utf-8")
+        monkeypatch.delenv("PROTO_WEB_TOKEN", raising=False)
+        load_default_env(data_dir=tmp_path)
+        assert resolve_token("", tmp_path) == "stable-token-0123456789"
+        assert env.read_text(encoding="utf-8").count("PROTO_WEB_TOKEN") == 1
+
+    def test_weak_env_token_upgraded_in_place(self, tmp_path, monkeypatch):
+        """proto.env 里的弱令牌（<16 字符）按废除弱默认原则原位升级强令牌。"""
+        from proto.config import load_default_env
+        from proto.web.__main__ import resolve_token
+        env = tmp_path / "proto.env"
+        env.write_text("export PROTO_LLM_PROVIDER=zhipu-coding\n"
+                       "export PROTO_WEB_TOKEN='12345'\n", encoding="utf-8")
+        monkeypatch.delenv("PROTO_WEB_TOKEN", raising=False)
+        load_default_env(data_dir=tmp_path)
+        strong = resolve_token("", tmp_path)
+        assert len(strong) >= 16 and strong != "12345"
+        text = env.read_text(encoding="utf-8")
+        assert "12345" not in text and strong in text
+        assert "PROTO_LLM_PROVIDER=zhipu-coding" in text   # 其他配置原样保留
+        # 再次解析（模拟下次重启）：新强令牌稳定
+        monkeypatch.setenv("PROTO_WEB_TOKEN", strong)
+        assert resolve_token("", tmp_path) == strong
+
+    def test_explicit_arg_token_no_file_written(self, tmp_path, monkeypatch):
+        from proto.web.__main__ import resolve_token
+        monkeypatch.delenv("PROTO_WEB_TOKEN", raising=False)
+        assert resolve_token("cli-tok", tmp_path) == "cli-tok"
+        assert not (tmp_path / "proto.env").exists()
+
+
+# ---------------------------------------------------------------- 忙锁
+class TestBusyLock:
+    def test_mutation_returns_409_when_lock_held(self, tmp_path):
+        """长心跳占锁时，变更类请求 3s 内 409 agent_busy，不再无限挂起。"""
+        from proto.web.server import ProtoWebServer
+        server = ProtoWebServer(agent=make_agent(tmp_path), port=0,
+                                heartbeat_s=0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            server.mut_lock.acquire()          # 模拟长心跳持锁
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{server.port}/api/chat",
+                data=json.dumps({"text": "hi"}).encode(), method="POST")
+            req.add_header("X-Proto-Token", server.token)
+            req.add_header("Content-Type", "application/json")
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    status = resp.status
+            except urllib.error.HTTPError as exc:
+                status = exc.code
+                body = exc.read()
+            assert status == 409 and b"agent_busy" in body
+        finally:
+            server.mut_lock.release()
+            server.shutdown()
+            server.server_close()
+
+
 # ---------------------------------------------------------------- 单实例
 class TestInstanceLock:
     def test_second_instance_refused(self, tmp_path):

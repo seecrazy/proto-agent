@@ -22,6 +22,62 @@ from proto.runtime.agent import ProtoAgent
 from proto.web.server import ProtoWebServer
 
 
+def _persist_web_token(data_dir: Path, token: str) -> None:
+    """首次生成的令牌持久化到 proto.env（0600）——重启不再换令牌，
+    书签/已打开页面不因重启失效。持久化失败不阻断启动（仅本次随机）。"""
+    env_path = Path(data_dir) / "proto.env"
+    try:
+        if env_path.exists():
+            if "PROTO_WEB_TOKEN" in env_path.read_text(encoding="utf-8"):
+                return
+        Path(data_dir).mkdir(parents=True, exist_ok=True)
+        with open(env_path, "a", encoding="utf-8") as f:
+            f.write(f"\nexport PROTO_WEB_TOKEN='{token}'\n")
+        os.chmod(env_path, 0o600)
+    except OSError:
+        pass
+
+
+def _replace_web_token(env_path: Path, token: str) -> bool:
+    """proto.env 内已有 PROTO_WEB_TOKEN 时原位替换为强令牌（原子写，0600）。
+    返回是否写入成功；文件不存在返回 False。"""
+    try:
+        text = env_path.read_text(encoding="utf-8")
+        if "PROTO_WEB_TOKEN" not in text:
+            return False
+        lines = [(f"export PROTO_WEB_TOKEN='{token}'\n"
+                  if line.strip().startswith("export PROTO_WEB_TOKEN") else line)
+                 for line in text.splitlines(keepends=True)]
+        tmp = env_path.with_suffix(env_path.suffix + f".{os.getpid()}.tmp")
+        tmp.write_text("".join(lines), encoding="utf-8")
+        tmp.chmod(0o600)
+        os.replace(tmp, env_path)
+        return True
+    except OSError:
+        return False
+
+
+def resolve_token(arg_token: str, data_dir: Path) -> str:
+    """令牌解析顺序：命令行显式 > proto.env/环境 > 生成并持久化。
+    注意 proto.env 必须先 load_default_env 加载后再调用（--token 的
+    argparse 默认值捕获过早，拿不到 proto.env 里的令牌）。
+    proto.env 里的弱令牌（<16 字符）按 M23.1 废除弱默认原则就地升级，
+    启动日志提示主人用新 URL 重新打开。"""
+    import secrets as _secrets
+    token = (arg_token or "").strip() or os.environ.get("PROTO_WEB_TOKEN", "").strip()
+    if token and len(token) >= 16:
+        return token
+    strong = _secrets.token_urlsafe(16)
+    if token:   # 弱令牌：proto.env 原位升级；命令行显式弱令牌仅本次会话放行并提示
+        replaced = _replace_web_token(Path(data_dir) / "proto.env", strong)
+        if replaced:
+            print("  令牌   : 检测到弱令牌，已自动更换强随机令牌并写回 proto.env")
+            return strong
+        return token
+    _persist_web_token(data_dir, strong)
+    return strong
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="proto.web", description="PROTO Web 控制台")
     parser.add_argument("--port", type=int, default=8420)
@@ -63,7 +119,8 @@ def main() -> int:
     from proto.system.keepawake import KeepAwake
     keeper = KeepAwake()
     server = ProtoWebServer(manager=manager, host="127.0.0.1", port=args.port,
-                            token=args.token.strip() or None, keep_awake=keeper)
+                            token=resolve_token(args.token, data_root),
+                            keep_awake=keeper)
     if args.caffeinate:
         if keeper.start():
             print("  防休眠  : 已开启（主人显式授权；进程退出自动解除；合盖仍会睡眠）")

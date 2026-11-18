@@ -27,7 +27,7 @@ def server(tmp_path):
     from proto.runtime.agent import ProtoAgent
     agent = ProtoAgent(data_dir=tmp_path / "web", llm=ScriptedLLM(),
                        goal_interval_s=0)
-    srv = ProtoWebServer(agent, host="127.0.0.1", port=0)
+    srv = ProtoWebServer(agent, host="127.0.0.1", port=0, heartbeat_s=0)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield srv
     srv.shutdown()
