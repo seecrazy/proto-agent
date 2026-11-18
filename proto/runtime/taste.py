@@ -97,7 +97,9 @@ def judge(agent, subject: str) -> "list[dict] | None":
         cleaned = _re.sub(r"```(?:json)?", "", raw).strip()
         start, end = cleaned.find("{"), cleaned.rfind("}")
         data = _json.loads(cleaned[start:end + 1])
-    except Exception:
+    except Exception as exc:
+        agent.spine.append("taste_judge_failed",
+                           {"error": str(exc)[:100]})
         return None
     out = []
     for key, d in dims.items():

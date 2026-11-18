@@ -87,7 +87,7 @@ class AnthropicCompatClient(LLMClient):
     """
 
     def __init__(self, base_url: str, api_key: str, model: str = "glm-5.3",
-                 timeout_s: int = 120, max_tokens: int = 1024):
+                 timeout_s: int = 120, max_tokens: int = 4096):
         self._base = base_url.rstrip("/")
         self._key = api_key
         self._model = model
