@@ -60,12 +60,16 @@ class GoalTree:
         self._store = store
         self._collection = collection
         self.on_milestone = None   # 完成中期/长期目标时的回调（agent 注入情绪/记忆）
-        self._nodes: Dict[str, GoalNode] = {
-            n.id: n for n in (
-                GoalNode(**{k: r[k] for k in
-                            ("id", "text", "level", "parent_id", "status",
-                             "progress", "source", "created_at")})
-                for r in store.find(collection, lambda _d: True))}
+        self._nodes: Dict[str, GoalNode] = {}
+        for r in store.find(collection, lambda _d: True):
+            node = GoalNode(
+                id=r["id"], text=r["text"], level=r["level"],
+                parent_id=r.get("parent_id"), status=r.get("status", "active"),
+                progress=float(r.get("progress", 0.0)),
+                source=r.get("source", "owner"),
+                created_at=float(r.get("created_at", 0.0)),
+                acceptance=r.get("acceptance", ""))
+            self._nodes[node.id] = node
 
     def add(self, text: str, level: str, parent_id: str = None,
             source: str = "owner", acceptance: str = "") -> GoalNode:
@@ -108,6 +112,9 @@ class GoalTree:
         node = self._nodes.get(node_id)
         if node is None:
             return
+        for child in [n for n in self._nodes.values()
+                      if n.parent_id == node_id and n.status == "active"]:
+            self.drop(child.id)
         node.status = "dropped"
         self._store.put(self._collection, node.id, node.to_dict())
         self._repropagate(node.parent_id)
@@ -118,7 +125,8 @@ class GoalTree:
         parent = self._nodes.get(parent_id)
         if parent is None:
             return
-        kids = [n for n in self._nodes.values() if n.parent_id == parent_id]
+        kids = [n for n in self._nodes.values()
+                if n.parent_id == parent_id and n.status != "dropped"]
         if kids:
             parent.progress = round(
                 sum(k.progress for k in kids) / len(kids), 4)
@@ -194,6 +202,7 @@ class GoalTree:
         def node_view(n):
             return {"id": n.id, "text": n.text, "level": n.level,
                     "status": n.status, "progress": n.progress,
-                    "source": n.source, "created_at": n.created_at}
+                    "source": n.source, "created_at": n.created_at,
+                    "acceptance": n.acceptance}
         return {"nodes": [node_view(n) for n in
                           sorted(self._nodes.values(), key=lambda x: x.created_at)]}

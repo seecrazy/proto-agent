@@ -22,6 +22,28 @@ from proto.runtime.agent import ProtoAgent
 
 INDEX_PATH = Path(__file__).with_name("index.html")
 
+MAX_BODY_BYTES = 1_000_000   # 请求体上限；超过 → 413
+
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
+
+INDEX_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
+             "style-src 'self' 'unsafe-inline'; connect-src 'self'; "
+             "img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'")
+
+
+class _HTTPError(Exception):
+    """可映射为 HTTP 状态码的请求错误。"""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
 READ_ONLY_GETS = {
     "/api/state", "/api/audit", "/api/proposals", "/api/rules",
     "/api/evolution", "/api/scratch", "/api/memory", "/api/inbox",
@@ -31,7 +53,7 @@ READ_ONLY_GETS = {
 
 
 class _Handler(BaseHTTPRequestHandler):
-    server_version = "ProtoWeb/0.16.0"
+    server_version = "ProtoWeb/0.30.0"
 
     def log_message(self, fmt, *args):
         pass
@@ -41,6 +63,8 @@ class _Handler(BaseHTTPRequestHandler):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        for key, value in SECURITY_HEADERS.items():
+            self.send_header(key, value)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -50,17 +74,31 @@ class _Handler(BaseHTTPRequestHandler):
         return hmac.compare_digest(supplied, self.server.token)
 
     def _body(self) -> dict:
-        length = int(self.headers.get("Content-Length", 0))
+        length = int(self.headers.get("Content-Length", 0) or 0)
         if not length:
             return {}
+        if length > MAX_BODY_BYTES:
+            # 有界丢弃请求体：直接回 413 不读会 RST 客户端写管道
+            remaining = min(length, MAX_BODY_BYTES * 10)
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+            raise _HTTPError(413, "body_too_large")
         try:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
-        except ValueError:
-            return {}
+            parsed = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            raise _HTTPError(400, "invalid_json")
+        if not isinstance(parsed, dict):
+            raise _HTTPError(400, "invalid_json_body")
+        return parsed
 
     def _safely(self, fn):
         try:
             return fn()
+        except _HTTPError as exc:
+            return self._json(exc.status, {"error": exc.message})
         except Exception:
             logging.exception("API 路由异常")
             return self._json(500, {"error": "internal"})
@@ -72,6 +110,9 @@ class _Handler(BaseHTTPRequestHandler):
             data = INDEX_PATH.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Security-Policy", INDEX_CSP)
+            for key, value in SECURITY_HEADERS.items():
+                self.send_header(key, value)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)

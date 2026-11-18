@@ -20,6 +20,7 @@ class Variant:
     score: float
     status: str
     created_at: float
+    sandbox_result: Optional[dict] = None   # 真实沙盒通过记录（晋升凭证）
 
 
 class VariantArchive:
@@ -27,14 +28,17 @@ class VariantArchive:
         self._store = store
         self._collection = collection
 
-    def add(self, code: str, parent_id: Optional[str], score: float, status: str) -> Variant:
+    def add(self, code: str, parent_id: Optional[str], score: float, status: str,
+            sandbox_result: Optional[dict] = None) -> Variant:
         if status not in STATUSES:
             raise ValueError(f"非法状态: {status}")
         variant = Variant(id=uuid.uuid4().hex[:12], parent_id=parent_id, code=code,
-                          score=score, status=status, created_at=time.time())
+                          score=score, status=status, created_at=time.time(),
+                          sandbox_result=sandbox_result)
         self._store.put(self._collection, variant.id, {
             "id": variant.id, "parent_id": parent_id, "code": code,
             "score": score, "status": status, "created_at": variant.created_at,
+            "sandbox_result": sandbox_result,
         })
         return variant
 
@@ -43,7 +47,8 @@ class VariantArchive:
         if raw is None:
             return None
         return Variant(**{k: raw[k] for k in
-                          ("id", "parent_id", "code", "score", "status", "created_at")})
+                          ("id", "parent_id", "code", "score", "status", "created_at")},
+                       sandbox_result=raw.get("sandbox_result"))
 
     def all(self) -> List[Variant]:
         rows = self._store.find(self._collection, lambda _d: True)

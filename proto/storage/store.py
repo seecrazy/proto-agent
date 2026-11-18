@@ -33,12 +33,21 @@ class DocumentStore(ABC):
     def find(self, collection: str, predicate: Callable[[dict], bool]) -> List[dict]:
         """返回集合内满足谓词的全部文档，任意稳定顺序。"""
 
+    def revision(self, collection: str) -> Optional[object]:
+        """集合修订标识；用于上层缓存失效。None 表示不支持。"""
+        return None
+
 
 class FileSystemStore(DocumentStore):
     """基于目录 + JSON 文件的实现：<root>/<collection>/<doc_id>.json"""
 
     def __init__(self, root: Path):
         self._root = Path(root)
+        self._root.mkdir(parents=True, exist_ok=True)
+        try:
+            self._root.chmod(0o700)
+        except OSError:
+            pass
         self._lock = threading.Lock()
 
     def _path(self, collection: str, doc_id: str) -> Path:
@@ -51,14 +60,28 @@ class FileSystemStore(DocumentStore):
         path = self._path(collection, doc_id)
         with self._lock:
             path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(f".json.{os.getpid()}.tmp")  # 每进程独立tmp防竞争
-            tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
             try:
-                tmp.replace(path)
+                path.parent.chmod(0o700)
+            except OSError:
+                pass
+            tmp = path.with_suffix(f".json.{os.getpid()}.tmp")  # 每进程独立tmp防竞争
+            text = json.dumps(doc, ensure_ascii=False, indent=2)
+            tmp.write_text(text, encoding="utf-8")
+            try:
+                tmp.chmod(0o600)
+            except OSError:
+                pass
+            try:
+                os.replace(tmp, path)
             except FileNotFoundError:
                 # 多进程并发写同 doc：另一方已 replace——重试一次（内容幂等则成功）
-                tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
-                tmp.replace(path)
+                tmp.write_text(text, encoding="utf-8")
+                tmp.chmod(0o600)
+                os.replace(tmp, path)
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass
 
     def get(self, collection: str, doc_id: str) -> Optional[dict]:
         path = self._path(collection, doc_id)
@@ -84,3 +107,13 @@ class FileSystemStore(DocumentStore):
                 if predicate(doc):
                     docs.append(doc)
             return docs
+
+    def revision(self, collection: str) -> Optional[object]:
+        dir_path = self._root / collection
+        try:
+            names = sorted(p.name for p in dir_path.glob("*.json"))
+            latest = max((p.stat().st_mtime_ns for p in dir_path.glob("*.json")),
+                         default=0)
+            return (len(names), latest, names[-1] if names else "")
+        except OSError:
+            return (0, 0, "")

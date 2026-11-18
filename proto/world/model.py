@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 import uuid
+import hashlib
 from typing import Dict, List, Optional
 
 from proto.storage.store import DocumentStore
@@ -32,16 +33,33 @@ class WorldModel:
         self._store = store
         self._collection = collection
 
+    @staticmethod
+    def _topic_id(name: str) -> str:
+        return "t" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+
     def _topic(self, name: str) -> dict:
-        return self._store.get(self._collection, name) or {
-            "name": name, "facts": [], "predictions": []}
+        doc_id = self._topic_id(name)
+        doc = self._store.get(self._collection, doc_id)
+        if doc is not None:
+            return doc
+        # 兼容旧版本以原 topic 作为 doc_id 的存储。
+        try:
+            legacy = self._store.get(self._collection, name)
+        except ValueError:
+            legacy = None
+        return legacy or {"name": name, "facts": [], "predictions": []}
+
+    def _save_topic(self, name: str, doc: dict) -> None:
+        doc["name"] = name
+        doc["id"] = self._topic_id(name)
+        self._store.put(self._collection, doc["id"], doc)
 
     def add_fact(self, topic: str, text: str, source: str) -> None:
         doc = self._topic(topic)
         doc["facts"].append({"text": text[:300], "source": source,
                              "ts": time.time()})
         doc["facts"] = doc["facts"][-50:]
-        self._store.put(self._collection, topic, doc)
+        self._save_topic(topic, doc)
 
     def record_prediction(self, topic: str, statement: str,
                           deadline_ts: float, confidence: float = 0.5,
@@ -55,7 +73,7 @@ class WorldModel:
             "status": "open",
             "created_at": created_at if created_at is not None else time.time(),
             "checked_at": None, "evidence": ""})
-        self._store.put(self._collection, topic, doc)
+        self._save_topic(topic, doc)
         return pid
 
     def due_predictions(self, now: float = None,
@@ -76,7 +94,7 @@ class WorldModel:
                     p["status"] = verdict
                     p["checked_at"] = time.time()
                     p["evidence"] = evidence[:300]
-                    self._store.put(self._collection, doc["name"], doc)
+                    self._save_topic(doc["name"], doc)
                     return p
         return None
 
@@ -89,7 +107,7 @@ class WorldModel:
                     p["deadline_ts"] -= seconds
                     changed = True
             if changed:
-                self._store.put(self._collection, doc["name"], doc)
+                self._save_topic(doc["name"], doc)
 
     def snapshot(self) -> dict:
         topics = {}

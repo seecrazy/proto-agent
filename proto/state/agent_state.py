@@ -150,6 +150,32 @@ class AgentState:
                     _reject(f"{cat}.{name} 值类型非法: {value!r}")
                 if not (lo <= value <= hi):
                     _reject(f"{cat}.{name} 值 {value} 越界 [{lo}, {hi}]")
+                setpoint = spec["setpoint"]
+                if (not isinstance(setpoint, (int, float))
+                        or isinstance(setpoint, bool)
+                        or not (lo <= setpoint <= hi)):
+                    _reject(f"{cat}.{name} setpoint 非法: {setpoint!r}")
+                decay = spec.get("decay", authoritative.get("decay", 0.01))
+                if (not isinstance(decay, (int, float))
+                        or isinstance(decay, bool)
+                        or not (0.0 <= decay <= 1.0)):
+                    _reject(f"{cat}.{name} decay 非法: {decay!r}")
+                stability = spec.get("stability", 0.0)
+                if (not isinstance(stability, (int, float))
+                        or isinstance(stability, bool)
+                        or not (0.0 <= stability <= 1.0)):
+                    _reject(f"{cat}.{name} stability 非法: {stability!r}")
+                for flag in ("owner_locked", "dormant"):
+                    if flag in spec and not isinstance(spec[flag], bool):
+                        _reject(f"{cat}.{name} {flag} 必须是布尔值")
+                if "threshold" in spec:
+                    threshold = spec["threshold"]
+                    tb = spec.get("threshold_bounds", authoritative.get(
+                        "threshold_bounds", (lo, hi)))
+                    if (not isinstance(threshold, (int, float))
+                            or isinstance(threshold, bool)
+                            or not (tb[0] <= threshold <= tb[1])):
+                        _reject(f"{cat}.{name} threshold 非法: {threshold!r}")
         emotion = raw.get("emotion", {})
         if not isinstance(emotion, dict):
             _reject("emotion 不是对象")
@@ -158,10 +184,14 @@ class AgentState:
                 v = emotion[key]
                 if not isinstance(v, (int, float)) or isinstance(v, bool) or not (lo <= v <= hi):
                     _reject(f"emotion.{key} 值 {v!r} 越界 [{lo}, {hi}]")
+        unknown_emotion = set(emotion) - set(EMOTION_BOUNDS)
+        if unknown_emotion:
+            _reject(f"未知 emotion 字段: {sorted(unknown_emotion)}")
         state.instincts = copy.deepcopy(raw["instincts"])
         state.desires = copy.deepcopy(raw["desires"])
         state.personality = copy.deepcopy(raw["personality"])
-        state.emotion = dict(raw.get("emotion", EMOTION_SETPOINT))
+        state.emotion = dict(EMOTION_SETPOINT)
+        state.emotion.update(emotion)
         state.owner_priority = raw.get("owner_priority", "")
         state.modulation_log = list(raw.get("modulation_log", []))
         return state

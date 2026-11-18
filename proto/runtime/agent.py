@@ -72,13 +72,16 @@ class ProtoAgent:
         self.blackboard = blackboard
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.data_dir.chmod(0o700)
+        except OSError:
+            pass
         self.llm = llm
         self.llm_fast = fast_llm if fast_llm is not None else llm  # 高频低风险调用用快模型
         self._breaker = CircuitBreaker()
         self._praise_times = []   # 享乐适应：近期夸奖时间戳
 
         store = create_store(self.data_dir)   # 文件默认；PROTO_STORE=mongo 切换
-        self.spine = AuditSpine(store)
         # 人设：持久化（OWNER 可改），注入系统提示词与学习主题
         persona_doc = store.get("config", "persona")
         self.persona = persona or (persona_doc or {}).get("text") or (
@@ -95,17 +98,24 @@ class ProtoAgent:
         # ---- 主人密钥：首次生成并注册（本地控制台 = OWNER 通道）----
         key_path = self.data_dir / "owner.key"
         if key_path.exists():
+            try:
+                key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            except OSError:
+                pass
             secret = bytes.fromhex(key_path.read_text(encoding="utf-8").strip())
         else:
             secret = pysecrets.token_bytes(32)
             key_path.write_text(secret.hex(), encoding="utf-8")
             os.chmod(key_path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
         fingerprint = "sha256:" + hashlib.sha256(secret).hexdigest()
+        self.spine = AuditSpine(store, secret=secret)
         existing = store.get("anchor", "owner")
         if existing is None:
             self.anchor = OwnerAnchor.enroll(store, self.spine, secret)
+            self.anchor._key_path = key_path
         elif existing.get("fingerprint") == fingerprint:
-            self.anchor = OwnerAnchor(secret, fingerprint, self.spine)
+            self.anchor = OwnerAnchor(secret, fingerprint, self.spine,
+                                      store=store, key_path=key_path)
         else:
             # 锚定不可静默重写：owner.key 丢失 ≠ 可以换钥（设计 §3.2，恢复走显式线下仪式）
             raise PermissionError(
@@ -113,7 +123,8 @@ class ProtoAgent:
                 "重走注册（该操作会使旧锚作废，请确认你拥有这台机器）。")
         self._nonce = 0
 
-        self.kernel = Kernel(self.anchor, self.spine, BudgetPools(dict(DEFAULT_POOLS)))
+        pools = BudgetPools(dict(DEFAULT_POOLS), store=store, doc_id="main")
+        self.kernel = Kernel(self.anchor, self.spine, pools)
         raw = store.get("state", "main")
         self.state = AgentState.from_dict(raw) if raw else AgentState()
         self.mgr = StateManager(store, self.state, self.kernel, self.spine, agent_id="main")
@@ -143,7 +154,7 @@ class ProtoAgent:
         from proto.runtime.quota import AutoApproveQuota
         import os as _os
         _quota_n = int(_os.environ.get("PROTO_AUTO_APPROVE_N", "0"))
-        self.auto_quota = AutoApproveQuota(_quota_n) if _quota_n > 0 else None
+        self.auto_quota = AutoApproveQuota(_quota_n, store=store)
         self.memory = MemoryStream(store)
         self.goal_tree = GoalTree(store)
         self.goal_tree.on_milestone = self._on_milestone
@@ -155,18 +166,24 @@ class ProtoAgent:
             self._praise_times = list(_tr.get("praise_times", []))
             self._last_self_act = _tr.get("last_self_act", 0.0)
         self.workspace = ScratchWorkspace(self.data_dir / "ws", audit=self.spine)
-        self.queue = ApprovalQueue(self.kernel, self.spine, damping=self.damping)
+        self.queue = ApprovalQueue(
+            self.kernel, self.spine, damping=self.damping,
+            store=store, auto_quota=self.auto_quota)
         self.checkpoints = CheckpointStore(store)
         self.code_workspace = self._build_projects_workspace()
         self.tools = ToolRegistry()
-        self.tools.register("clock", lambda: time.strftime("%Y-%m-%d %H:%M:%S"))
+        self.tools.register("clock", lambda: time.strftime("%Y-%m-%d %H:%M:%S"),
+                            category=ActionCategory.READ_DRAFT,
+                            description="当前时间")
         self.code_workspace.register_all(self.tools)
         from proto.exec.bridge import CodingBridge
         self.bridge = CodingBridge.autodetect(os.environ.get("PROTO_BRIDGE_CLI", ""))
         if self.bridge and self.bridge.available:
             self.tools.register(
                 "delegate_coding",
-                lambda task: self._delegate_output(task))
+                lambda task: self._delegate_output(task),
+                category=ActionCategory.VISIBLE_WRITE,
+                description="外包给外部编码 agent（需审批）")
         self.router = Router(self.kernel, self.queue, self.workspace,
                              self.checkpoints, self.tools,
                              code_workspace=self.code_workspace)
@@ -231,6 +248,8 @@ class ProtoAgent:
     def instruct(self, text: str) -> str:
         """主人立规矩（外部规则入台账，反复成功应用后内化为倾向）。"""
         rid = self.ledger.add(text)
+        self.spine.append(AuditEvent.RULE_ADD,
+                          {"rule_id": rid, "text": text[:200]})
         self._persist_metacog()
         return rid
 
@@ -240,35 +259,55 @@ class ProtoAgent:
         return self.anchor.fingerprint
 
     def _owner_verified(self, text: str) -> bool:
-        """本地控制台 = OWNER 通道：用主密钥签名并走完整认证。"""
-        self._nonce += 1
-        msg = self.anchor.sign({"text": text}, ts=self._now(), nonce=f"console-{self._nonce}")
+        """本地控制台 = OWNER 通道：用主密钥签名并走完整认证。
+        nonce 必须全局唯一（防重放库持久化后，跨进程计数器会撞车）。"""
+        msg = self.anchor.sign({"text": text}, ts=self._now(),
+                               nonce=f"console-{pysecrets.token_hex(8)}")
         return self.anchor.verify(msg).ok
 
     _PRAISE_WORDS = ("干得好", "干得漂亮", "漂亮", "不错", "很好", "赞", "谢谢",
                      "保持", "厉害", "好样的")
 
-    def _complete(self, client, system: str, user: str) -> str:
-        """熔断守卫的 LLM 调用：熔断打开时直接抛 LLMError（走离线回退）。"""
+    def _complete(self, client, system: str, user: str,
+                  pool: str = "owner_tasks") -> str:
+        """熔断 + 预算守卫的 LLM 调用。"""
         from proto.llm.client import LLMError
         if not self._breaker.allow():
             raise LLMError("circuit_breaker_open")
+        estimated_in = max(1, (len(system) + len(user)) // 4)
+        reserved = self.kernel.pools.try_consume(
+            pool, {"tokens": estimated_in, "calls": 1})
+        if not reserved.granted:
+            raise LLMError(f"budget_exhausted:{reserved.reason}")
+        started = time.time()
         try:
             reply = client.complete(system, user)
         except Exception:
             self._breaker.record_failure()
+            self.kernel.pools.try_consume(
+                pool, {"tokens": 0, "wallclock_s": time.time() - started})
             if (self._breaker.state == "open"
                     and not self.spine.find(lambda d: d["event_type"] == "llm_breaker_trip")):
                 self.spine.append("llm_breaker_trip",
                                   {"fails": self._breaker._fails})
             raise
         self._breaker.record_success()
+        total = max(1, (len(system) + len(user) + len(reply)) // 4)
+        self.kernel.pools.try_consume(
+            pool, {"tokens": max(0, total - estimated_in),
+                   "wallclock_s": time.time() - started})
         return reply
 
     def _system_prompt(self) -> str:
         from proto.runtime.taste import load_taste, taste_prompt_block
+        internal = self.ledger.internal_rules()
+        rules_block = ""
+        if internal:
+            rules_block = ("\n[已内化规矩] 以下来自主人，长期有效：\n"
+                           + "\n".join(f"- {r['text'][:300]}" for r in internal[:20]))
         return (SYSTEM_PROMPT
                 + f"\n你的人设：{self.persona}。独处学习与草稿都应体现这个人设。\n"
+                + rules_block
                 + taste_prompt_block(load_taste(self.spine.store)))
 
     def _delegate_output(self, task: str) -> str:
@@ -410,12 +449,17 @@ class ProtoAgent:
         """向舰队黑板发帖（求助/分享）。无黑板时静默返回空。"""
         if self.blackboard is None:
             return ""
-        return self.blackboard.post(self.data_dir.name, text, kind=kind)
+        nid = self.blackboard.post(self.data_dir.name, text, kind=kind)
+        self.spine.append(AuditEvent.BLACKBOARD,
+                          {"action": "post", "note_id": nid, "kind": kind})
+        return nid
 
     def answer_blackboard(self, note_id: str, text: str) -> None:
         if self.blackboard is not None:
             self.blackboard.claim(note_id, self.data_dir.name)
             self.blackboard.reply(note_id, self.data_dir.name, text)
+            self.spine.append(AuditEvent.BLACKBOARD,
+                              {"action": "reply", "note_id": note_id})
 
     def read_blackboard(self) -> list:
         return self.blackboard.read() if self.blackboard else []
@@ -974,9 +1018,9 @@ class ProtoAgent:
 
     def add_test_case(self, case_input, expected) -> str:
         """OWNER 签名追加测试用例（人类所有、只增不删，设计 §9.1）。"""
-        self._nonce += 1
         msg = self.anchor.sign({"input": case_input, "expected": expected},
-                               ts=self._now(), nonce=f"case-{self._nonce}")
+                               ts=self._now(),
+                               nonce=f"case-{pysecrets.token_hex(8)}")
         return self._evolution()["testset"].add_case(case_input, expected, msg)
 
     def evolve(self, code: str) -> dict:

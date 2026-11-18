@@ -40,12 +40,13 @@ class Verdict:
     reason: str = ""
 
 
-def generate_acceptance(llm, task_text: str) -> str:
+def generate_acceptance(llm, task_text: str, complete=None) -> str:
     """想法出关门（定律一）：无验收定义不进入验证执行。失败/离线返回空。"""
     if llm is None:
         return ""
     try:
-        raw = llm.complete(ACCEPTANCE_PROMPT, task_text)
+        raw = (complete(llm, ACCEPTANCE_PROMPT, task_text)
+               if complete is not None else llm.complete(ACCEPTANCE_PROMPT, task_text))
         cleaned = re.sub(r"```(?:json)?", "", raw).strip()
         start, end = cleaned.find("{"), cleaned.rfind("}")
         data = json.loads(cleaned[start:end + 1])
@@ -55,7 +56,7 @@ def generate_acceptance(llm, task_text: str) -> str:
 
 
 def verify(task_text: str, acceptance: str, trace: List[dict],
-           artifacts: str, llm) -> Optional[Verdict]:
+           artifacts: str, llm, complete=None) -> Optional[Verdict]:
     """独立验证。返回 None=门不适用（无验收定义/离线，显式跳过）；
     返回 Verdict 则必为明确判定（解析失败 → 失败关闭）。"""
     if not acceptance.strip():
@@ -70,10 +71,11 @@ def verify(task_text: str, acceptance: str, trace: List[dict],
         task=task_text, acceptance=acceptance, trace=trace_lines or "（无）",
         artifacts=(artifacts or "（无）")[:3000])
     try:
-        raw = llm.complete(VERIFIER_PROMPT.split("你是")[0][:0] or
-                           "独立验收员" + prompt, prompt) if False else \
-            llm.complete("你是独立验收员（质量门）。" + prompt.split("你是独立验收员（质量门），")[1]
-                         if "你是独立验收员（质量门），" in prompt else prompt, prompt)
+        system = "你是独立验收员（质量门）。" + (
+            prompt.split("你是独立验收员（质量门），", 1)[1]
+            if "你是独立验收员（质量门），" in prompt else prompt)
+        raw = (complete(llm, system, prompt)
+               if complete is not None else llm.complete(system, prompt))
     except Exception as exc:
         return Verdict(False, ["验证器调用失败"], f"llm_error:{exc}")
     try:

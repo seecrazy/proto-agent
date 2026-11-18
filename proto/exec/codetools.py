@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Dict, List
 
 MAX_READ = 50000
+MAX_EDIT = 1_000_000
 MAX_GREP_HITS = 50
 
 
@@ -24,7 +26,9 @@ def _safe_rel(rel_path: str) -> Path:
     if rel_path == ".":
         return Path()                                  # 工作区根（LLM 常用 "."）
     parts = Path(rel_path).parts
-    if not parts or any(p in ("", "..") for p in parts) or Path(rel_path).is_absolute():
+    if ("\x00" in rel_path or not parts
+            or any(p in ("", "..") for p in parts)
+            or Path(rel_path).is_absolute()):
         raise ValueError(f"非法工作区相对路径: {rel_path!r}")
     return Path(*parts)
 
@@ -37,13 +41,26 @@ def _limit_resources():
         pass
 
 
+def json_quote(value: str) -> str:
+    """sandbox-exec profile 字符串参数的安全引号。"""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 class CodeTools:
     def __init__(self, workspace_root: Path):
         self.root = Path(workspace_root)
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _abs(self, rel_path: str) -> Path:
-        return self.root / _safe_rel(rel_path)
+        target = self.root / _safe_rel(rel_path)
+        root_real = self.root.resolve()
+        try:
+            target_real = target.resolve(strict=False)
+        except OSError as exc:
+            raise ValueError(f"无法解析工作区路径: {rel_path!r}") from exc
+        if os.path.commonpath([str(root_real), str(target_real)]) != str(root_real):
+            raise ValueError(f"路径逃逸工作区: {rel_path!r}")
+        return target
 
     # ---- 文件族 ----
     def write_file(self, path: str, content: str) -> str:
@@ -58,10 +75,16 @@ class CodeTools:
             return None
         return target.read_text(encoding="utf-8", errors="replace")[:MAX_READ]
 
-    def edit_file(self, path: str, old: str, new: str, replace_all: bool = False) -> int:
-        text = self.read_file(path)
-        if text is None:
+    def _read_full(self, path: str) -> str:
+        target = self._abs(path)
+        if not target.exists():
             raise FileNotFoundError(path)
+        if target.stat().st_size > MAX_EDIT:
+            raise ValueError(f"文件超过可编辑上限 {MAX_EDIT} 字节: {path}")
+        return target.read_text(encoding="utf-8", errors="replace")
+
+    def edit_file(self, path: str, old: str, new: str, replace_all: bool = False) -> int:
+        text = self._read_full(path)
         if old not in text:
             raise ValueError(f"未找到要替换的文本片段")
         count = text.count(old)
@@ -104,34 +127,101 @@ class CodeTools:
                 continue
         return hits
 
-    # ---- Python 执行（本地沙盒形态） ----
+    # ---- Python 执行（默认失败关闭） ----
+    @staticmethod
+    def execution_backend() -> str:
+        configured = os.environ.get("PROTO_EXEC_BACKEND", "auto").strip().lower()
+        if configured in ("none", "subprocess", "runsc", "sandbox-exec"):
+            return configured
+        if sys.platform.startswith("linux") and shutil.which("runsc"):
+            return "runsc"
+        if sys.platform == "darwin" and shutil.which("sandbox-exec"):
+            return "sandbox-exec"
+        return "none"
+
+    def _sandbox_exec_profile(self, tmp: str) -> str:
+        """写遏制 + 禁网：deny-default 会挡掉 dyld 等系统读导致 SIGABRT，
+        这里只锁"能写哪里"（tmp + 工作区）和"不能联网"，读不限制。"""
+        allow_write = [os.path.realpath(tmp), str(self.root.resolve())]
+        write_rules = "\n".join(
+            f"(allow file-write* (subpath {json_quote(p)}))" for p in allow_write)
+        return (
+            "(version 1)\n"
+            "(allow default)\n"
+            "(deny file-write*)\n"
+            f"{write_rules}\n"
+            "(deny network*)\n"
+        )
+
     def run_python(self, code: str, timeout_s: int = 60) -> Dict:
+        try:
+            timeout_s = max(1, min(120, int(timeout_s)))
+        except (TypeError, ValueError):
+            return {"exit": -1, "stdout": "", "timeout": False,
+                    "stderr": "invalid_timeout"}
+        backend = self.execution_backend()
+        if backend == "none":
+            return {"exit": -1, "stdout": "", "timeout": False,
+                    "stderr": ("execution_disabled: 无隔离执行后端；"
+                               "设置 PROTO_EXEC_BACKEND=runsc|sandbox-exec，"
+                               "或显式设置 subprocess 接受未隔离模式")}
         with tempfile.TemporaryDirectory(prefix="proto-run-") as tmp:
             script = os.path.join(tmp, "snippet.py")
             with open(script, "w", encoding="utf-8") as f:
                 f.write(code)
+            env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                   "HOME": tmp, "TMPDIR": tmp}
+            if backend == "runsc":
+                cmd = [shutil.which("runsc") or "runsc", "do",
+                       sys.executable, script]
+            elif backend == "sandbox-exec":
+                cmd = [shutil.which("sandbox-exec") or "sandbox-exec",
+                       "-p", self._sandbox_exec_profile(tmp),
+                       sys.executable, script]
+            else:
+                cmd = [sys.executable, script]
             try:
                 proc = subprocess.run(
-                    [sys.executable, script], cwd=tmp, timeout=timeout_s,
+                    cmd, cwd=tmp, timeout=timeout_s,
                     capture_output=True,
-                    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                         "HOME": tmp},
+                    env=env,
                     preexec_fn=_limit_resources)
                 return {"exit": proc.returncode,
                         "stdout": proc.stdout.decode("utf-8", "replace")[:20000],
                         "stderr": proc.stderr.decode("utf-8", "replace")[:4000],
-                        "timeout": False}
+                        "timeout": False, "backend": backend}
             except subprocess.TimeoutExpired:
                 return {"exit": -1, "stdout": "", "stderr": "timeout",
-                        "timeout": True}
+                        "timeout": True, "backend": backend}
+
 
     # ---- 注册到 Router ----
     def register_all(self, registry) -> None:
-        registry.register("read_file", lambda path: self.read_file(path))
-        registry.register("write_file", lambda path, content: self.write_file(path, content))
+        from proto.kernel.kernel import ActionCategory
+        registry.register("read_file", lambda path: self.read_file(path),
+                          category=ActionCategory.READ_DRAFT,
+                          description="读工作区文件")
+        registry.register("write_file",
+                          lambda path, content: self.write_file(path, content),
+                          category=ActionCategory.WORKSPACE_WRITE,
+                          description="写工作区文件")
         registry.register("edit_file", lambda path, old, new, replace_all=False:
-                          self.edit_file(path, old, new, replace_all))
-        registry.register("list_dir", lambda path="": self.list_dir(path))
-        registry.register("grep", lambda pattern, glob="*": self.grep(pattern, glob))
+                          self.edit_file(path, old, new, replace_all),
+                          category=ActionCategory.WORKSPACE_WRITE,
+                          description="精确替换工作区文件片段")
+        registry.register("list_dir", lambda path="": self.list_dir(path),
+                          category=ActionCategory.READ_DRAFT,
+                          description="列工作区目录")
+        registry.register("grep", lambda pattern, glob="*": self.grep(pattern, glob),
+                          category=ActionCategory.READ_DRAFT,
+                          description="搜索工作区文本")
+        # 沙盒后端（写遏制+禁网）下代码只能写 tmp/工作区 → 能力等同 WORKSPACE_WRITE；
+        # 未隔离 subprocess 后端必须人工审批；none 后端执行时直接拒绝。
+        backend = self.execution_backend()
+        run_python_category = (ActionCategory.WORKSPACE_WRITE
+                               if backend in ("runsc", "sandbox-exec")
+                               else ActionCategory.VISIBLE_WRITE)
         registry.register("run_python", lambda code, timeout_s=60:
-                          self.run_python(code, timeout_s))
+                          self.run_python(code, timeout_s),
+                          category=run_python_category,
+                          description="沙盒跑 Python（验证/测试）")

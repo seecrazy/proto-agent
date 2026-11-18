@@ -51,8 +51,14 @@ class Memory:
 
     @classmethod
     def from_dict(cls, raw: dict) -> "Memory":
-        return cls(**{k: raw[k] for k in
-                     ("id", "kind", "text", "ts", "importance", "last_access", "source")})
+        return cls(
+            id=raw["id"], kind=raw["kind"], text=raw["text"],
+            ts=float(raw["ts"]), importance=float(raw.get("importance", 0.5)),
+            last_access=float(raw.get("last_access", raw["ts"])),
+            source=raw.get("source", "chat"),
+            emotion=raw.get("emotion"),
+            reinforce_count=int(raw.get("reinforce_count", 0)),
+        )
 
 
 class MemoryStream:

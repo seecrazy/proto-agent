@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 """阶段 7：变体验证沙盒（设计 §9.1 代码轨）。
 
-可插拔后端：
-  subprocess（默认）——独立进程 + 临时目录 + 清洁环境 + CPU 限制 + 超时，
-      任何平台可用，本机开发形态；
-  runsc（gVisor）——Linux + 安装 runsc 后自动启用（`runsc do` 包裹执行），
-      生产形态。接入条件：Linux 内核 + gVisor 安装
-      （https://gvisor.dev/docs/install/）；macOS 无法运行 runsc，
-      auto 模式自动回退 subprocess。接口不变——run_variant(code, cases)。
+可插拔后端（与 proto.exec.codetools 同一词汇表，默认失败关闭）：
+  auto（默认）——Linux + runsc → runsc；macOS + sandbox-exec → sandbox-exec；
+      都没有则 none（拒绝执行）；
+  runsc（gVisor）——生产形态（Linux + 安装 runsc）；
+  sandbox-exec——macOS 隔离（写遏制 + 禁网）；
+  subprocess——未隔离子进程，仅显式指定（构造参数或
+      PROTO_EVOLUTION_BACKEND=subprocess）时启用；
+  none——不执行，全部用例判失败（execution_disabled）。
+接口不变——run_variant(code, cases)。
 """
 from __future__ import annotations
 
@@ -61,15 +63,40 @@ def _limit_resources():
         pass
 
 
+def _sandbox_exec_profile(tmp: str) -> str:
+    """写遏制 + 禁网（同 codetools：deny-default 会挡掉系统读导致进程被杀）。"""
+
+    def q(value: str) -> str:
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    real = os.path.realpath(tmp)
+    return (
+        "(version 1)\n"
+        "(allow default)\n"
+        "(deny file-write*)\n"
+        f"(allow file-write* (subpath {q(real)}))\n"
+        "(deny network*)\n"
+    )
+
+
 class Sandbox:
+    _BACKENDS = ("auto", "runsc", "sandbox-exec", "subprocess", "none")
+
     def __init__(self, timeout_s: int = 10, backend: str = "auto",
                  runsc_path: str = None):
         self.timeout_s = timeout_s
         self.runsc_path = runsc_path or shutil.which("runsc")
+        backend = backend or os.environ.get("PROTO_EVOLUTION_BACKEND", "auto")
+        if backend not in self._BACKENDS:
+            raise ValueError(f"未知沙盒后端: {backend}")
         if backend == "auto":
-            self.backend = ("runsc" if (self.runsc_path
-                                        and platform.system() == "Linux")
-                            else "subprocess")
+            if self.runsc_path and platform.system() == "Linux":
+                self.backend = "runsc"
+            elif (platform.system() == "Darwin"
+                  and shutil.which("sandbox-exec")):
+                self.backend = "sandbox-exec"
+            else:
+                self.backend = "none"
         else:
             self.backend = backend
             if backend == "runsc" and not self.runsc_path:
@@ -78,10 +105,18 @@ class Sandbox:
     def _command(self) -> List[str]:
         if self.backend == "runsc":
             return [self.runsc_path, "do", sys.executable, "runner.py"]
+        if self.backend == "sandbox-exec":
+            return ["sandbox-exec", "-p", self._profile, sys.executable,
+                    "runner.py"]
         return [sys.executable, "runner.py"]
 
     def run_variant(self, code: str, cases: List[dict]) -> SandboxResult:
+        if self.backend == "none":
+            return SandboxResult(
+                total=len(cases),
+                outcomes=[{"ok": False, "error": "execution_disabled"}] * len(cases))
         with tempfile.TemporaryDirectory(prefix="proto-sandbox-") as tmp:
+            self._profile = _sandbox_exec_profile(tmp)
             with open(os.path.join(tmp, "variant.py"), "w", encoding="utf-8") as f:
                 f.write(code)
             with open(os.path.join(tmp, "runner.py"), "w", encoding="utf-8") as f:

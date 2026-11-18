@@ -7,6 +7,8 @@ hash   = sha256(seq ‖ ts ‖ event_type ‖ canonical(payload) ‖ prev_hash)
 from __future__ import annotations
 
 import hashlib
+import hmac
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, List, Optional
@@ -41,6 +43,10 @@ class AuditEvent:
     DORMANT_FREEZE = "dormant_freeze"
     DORMANT_UNFREEZE = "dormant_unfreeze"
     DEEP_REVIEW = "deep_review"
+    PROPOSAL = "proposal"
+    TOOL_EXEC = "tool_exec"
+    RULE_ADD = "rule_add"
+    BLACKBOARD = "blackboard"
 
 
 def _canonical(payload: dict) -> str:
@@ -48,12 +54,16 @@ def _canonical(payload: dict) -> str:
 
 
 def json_dumps(obj) -> str:
-    import json
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _record_hash(seq: int, ts: str, event_type: str, payload: dict, prev_hash: str) -> str:
+def _record_hash(seq: int, ts: str, event_type: str, payload: dict, prev_hash: str,
+                 secret: bytes = None, algorithm: str = "sha256") -> str:
     raw = f"{seq}|{ts}|{event_type}|{_canonical(payload)}|{prev_hash}"
+    if algorithm == "hmac-sha256":
+        if secret is None:
+            raise ValueError("HMAC 审计记录需要 owner secret")
+        return hmac.new(secret, raw.encode("utf-8"), hashlib.sha256).hexdigest()
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -66,15 +76,20 @@ class AuditResult:
 class AuditSpine:
     """哈希链审计日志。seq 连续递增；任何改写/删除/插入都会破坏链。"""
 
-    def __init__(self, store: DocumentStore, collection: str = "audit"):
+    def __init__(self, store: DocumentStore, collection: str = "audit",
+                 secret: bytes = None):
         self._store = store
         self._collection = collection
+        self._secret = secret
+        # 兼容旧记录；新记录在有 owner secret 时使用 HMAC。
+        self._algorithm = "hmac-sha256" if secret is not None else "sha256"
         # append O(1)：仅构造时扫一次全表建缓存（修复 M2 的 O(n²)）
         rows = self._store.find(self._collection, lambda _d: True)
         last = max(rows, key=lambda r: r["seq"]) if rows else None
         self._last_seq = last["seq"] if last else 0
         self._last_hash = last["hash"] if last else GENESIS_HASH
         self._verified_ok = None  # 缓存：append 后失效
+        self._verified_revision = None
 
     @property
     def store(self) -> DocumentStore:
@@ -97,30 +112,53 @@ class AuditSpine:
             "event_type": event_type,
             "payload": payload,
             "prev_hash": prev_hash,
-            "hash": _record_hash(seq, ts, event_type, payload, prev_hash),
+            "algorithm": self._algorithm,
+            "hash": _record_hash(seq, ts, event_type, payload, prev_hash,
+                                 secret=self._secret, algorithm=self._algorithm),
         }
         self._store.put(self._collection, str(seq), record)
         self._last_seq = seq
         self._last_hash = record["hash"]
         self._verified_ok = None  # 新事件 → 验证缓存失效
+        self._verified_revision = None
         return seq
 
     def verify_chain(self) -> AuditResult:
-        if self._verified_ok is not None:   # 验证缓存（轮询高频，append 低频）
+        revision = self._store.revision(self._collection)
+        if (self._verified_ok is not None
+                and revision is not None
+                and revision == self._verified_revision):
             return self._verified_ok
         rows = sorted(self._store.find(self._collection, lambda _d: True), key=lambda r: r["seq"])
         prev_hash = GENESIS_HASH
         expected_seq = 1
         for row in rows:
             if row["seq"] != expected_seq or row["prev_hash"] != prev_hash:
-                return AuditResult(ok=False, broken_at=expected_seq)
-            recomputed = _record_hash(row["seq"], row["ts"], row["event_type"], row["payload"], row["prev_hash"])
+                result = AuditResult(ok=False, broken_at=expected_seq)
+                self._verified_ok = result
+                self._verified_revision = revision
+                return result
+            algorithm = row.get("algorithm", "sha256")
+            try:
+                recomputed = _record_hash(
+                    row["seq"], row["ts"], row["event_type"], row["payload"],
+                    row["prev_hash"], secret=self._secret, algorithm=algorithm)
+            except ValueError:
+                result = AuditResult(ok=False, broken_at=row["seq"])
+                self._verified_ok = result
+                self._verified_revision = revision
+                return result
             if recomputed != row["hash"]:
-                return AuditResult(ok=False, broken_at=row["seq"])
+                result = AuditResult(ok=False, broken_at=row["seq"])
+                self._verified_ok = result
+                self._verified_revision = revision
+                return result
             prev_hash = row["hash"]
             expected_seq += 1
-        self._verified_ok = AuditResult(ok=True, broken_at=None)
-        return self._verified_ok
+        result = AuditResult(ok=True, broken_at=None)
+        self._verified_ok = result
+        self._verified_revision = revision
+        return result
 
     def tail(self, n: int) -> List[dict]:
         rows = sorted(self._store.find(self._collection, lambda _d: True), key=lambda r: r["seq"])

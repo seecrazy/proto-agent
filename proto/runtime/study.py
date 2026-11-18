@@ -33,9 +33,10 @@ def study_topic(agent) -> str:
     if priority and agent.llm is not None:
         try:
             from proto.metacog.attribution import extract_json_array  # noqa: F401
-            words = agent.llm.complete(
+            words = agent._complete(
+                agent.llm,
                 TOPIC_PROMPT.format(persona=agent.persona, priority=priority),
-                priority).strip().strip('"`').split("\n")[0][:60]
+                priority, pool="self_initiated").strip().strip('"`').split("\n")[0][:60]
             if words:
                 return words
         except Exception:
@@ -71,9 +72,10 @@ def autonomous_study(agent, goal_text: str) -> dict:
         summary = None
         if agent.llm is not None:
             try:
-                summary = agent.llm.complete(
-                    STUDY_PROMPT.format(persona=agent.persona),
-                    f"来源：{source}\n主题：{topic}\n\n{material}")
+                summary = agent._complete(
+                    agent.llm, STUDY_PROMPT.format(persona=agent.persona),
+                    f"来源：{source}\n主题：{topic}\n\n{material}",
+                    pool="self_initiated")
             except Exception:
                 summary = None
         if summary is None and agent.llm is None:

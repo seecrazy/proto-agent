@@ -16,7 +16,8 @@ def score_importance(agent, text: str):
     if agent.llm_fast is None:
         return None
     try:
-        raw = agent.llm_fast.complete(IMPORTANCE_PROMPT, text[:400])
+        raw = agent._complete(agent.llm_fast, IMPORTANCE_PROMPT, text[:400],
+                              pool="owner_tasks")
         score = int(re.findall(r"\d+", raw)[0])
         return max(0.0, min(1.0, score / 10.0))
     except Exception:
@@ -49,8 +50,9 @@ def extract_facts(agent, owner_text: str, reply: str) -> list:
     if agent.llm_fast is None:
         return []
     try:
-        raw = agent.llm_fast.complete(EXTRACT_PROMPT,
-                                 f"主人：{owner_text}\nPROTO：{reply}")
+        raw = agent._complete(
+            agent.llm_fast, EXTRACT_PROMPT,
+            f"主人：{owner_text}\nPROTO：{reply}", pool="owner_tasks")
         rows = _extract_json_array(raw)
     except Exception:
         return []
@@ -72,8 +74,9 @@ def reflect(agent) -> "str | None":
         return None
     material = "\n".join(f"- [{m.kind}] {m.text}" for m in recent)
     try:
-        thought = agent.llm_fast.complete(
-            REFLECT_PROMPT.format(persona=agent.persona), material)
+        thought = agent._complete(
+            agent.llm_fast, REFLECT_PROMPT.format(persona=agent.persona),
+            material, pool="self_initiated")
     except Exception:
         return None
     thought = thought.strip()[:400]

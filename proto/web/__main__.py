@@ -40,6 +40,11 @@ def main() -> int:
     stack = create_llm_stack()
     llm = stack["main"] if stack else None
     data_root = Path(args.data_dir)
+    from proto.system.instance_lock import InstanceLock
+    instance_lock = InstanceLock(data_root)
+    if not instance_lock.acquire():
+        print(f"  数据目录 {data_root} 已有 proto.web 实例在运行；拒绝启动第二个。")
+        return 1
     if (data_root / "owner.key").exists():
         # 旧单 agent 布局：收编为舰队默认成员
         manager = AgentManager(root=data_root / ".fleet", llm=llm,
@@ -80,6 +85,7 @@ def main() -> int:
         print("\n控制台已停止。")
     finally:
         server.server_close()
+        instance_lock.release()
     return 0
 
 

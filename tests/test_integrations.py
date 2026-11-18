@@ -55,10 +55,10 @@ class TestLangGraphAdapter:
 class TestSandboxBackends:
     CODE = "def solve(items):\n    return '|'.join(items)\n"
 
-    def test_auto_on_darwin_is_subprocess(self):
+    def test_auto_on_darwin_is_sandbox_exec(self):
         if sys.platform != "darwin":
             pytest.skip("macOS 路径")
-        assert Sandbox(backend="auto").backend == "subprocess"
+        assert Sandbox(backend="auto").backend == "sandbox-exec"
 
     def test_runsc_backend_uses_runsc_command(self, tmp_path):
         """用假 runsc（记录 argv 并照常执行）验证命令构造，平台无关。"""

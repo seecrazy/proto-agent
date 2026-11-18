@@ -11,8 +11,11 @@ from __future__ import annotations
 import enum
 import hashlib
 import hmac
+import os
+import stat
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from proto.kernel.audit import AuditEvent, AuditSpine
@@ -58,11 +61,14 @@ def fingerprint_of(secret: bytes) -> str:
 class OwnerAnchor:
     """OWNER 通道的密钥锚定。指纹与通道绑定写入内核后不可被调制更改。"""
 
-    def __init__(self, secret: bytes, fingerprint: str, audit: AuditSpine):
+    def __init__(self, secret: bytes, fingerprint: str, audit: AuditSpine,
+                 store: DocumentStore = None, key_path=None):
         self._secret = secret
         self.fingerprint = fingerprint
         self._audit = audit
         self._recent_nonces: List[str] = []
+        self._store = store
+        self._key_path = key_path
 
     @classmethod
     def enroll(cls, store: DocumentStore, audit: AuditSpine, secret: bytes,
@@ -72,7 +78,7 @@ class OwnerAnchor:
         existing = store.get("anchor", "owner")
         if existing is not None and not recovery:
             raise PermissionError("锚定已存在；恢复需显式 recovery=True（线下仪式）")
-        anchor = cls(secret, fingerprint_of(secret), audit)
+        anchor = cls(secret, fingerprint_of(secret), audit, store=store)
         record = {
             "channel": Channel.OWNER.value,
             "fingerprint": anchor.fingerprint,
@@ -124,7 +130,21 @@ class OwnerAnchor:
             return VerifyResult(False, "bad_signature")
         if nonce in self._recent_nonces:
             return VerifyResult(False, "nonce_replay")
+        nonce_id = hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+        if self._store is not None:
+            old = self._store.get("anchor_nonce", nonce_id)
+            if old is not None:
+                return VerifyResult(False, "nonce_replay")
         self._recent_nonces.append(nonce)
+        if self._store is not None:
+            self._store.put("anchor_nonce", nonce_id,
+                            {"id": nonce_id, "ts": time.time()})
+            if len(self._recent_nonces) % 256 == 0:
+                cutoff = time.time() - FRESHNESS_WINDOW_S
+                for row in self._store.find(
+                        "anchor_nonce", lambda d: float(d.get("ts", 0)) < cutoff):
+                    if row.get("id"):
+                        self._store.delete("anchor_nonce", row["id"])
         if len(self._recent_nonces) > _NONCE_CACHE_LIMIT:
             self._recent_nonces = self._recent_nonces[-_NONCE_CACHE_LIMIT // 2:]
         return VerifyResult(True)
@@ -146,4 +166,19 @@ class OwnerAnchor:
         old_fingerprint = self.fingerprint
         self._secret = new_secret
         self.fingerprint = fingerprint_of(new_secret)
+        if self._store is not None:
+            record = self._store.get("anchor", "owner") or {}
+            record.update({
+                "channel": Channel.OWNER.value,
+                "fingerprint": self.fingerprint,
+                "replaced": old_fingerprint,
+                "rotated_at": time.time(),
+            })
+            self._store.put("anchor", "owner", record)
+        if self._key_path is not None:
+            key_path = Path(self._key_path)
+            tmp = key_path.with_suffix(key_path.suffix + f".{os.getpid()}.tmp")
+            tmp.write_text(new_secret.hex(), encoding="utf-8")
+            tmp.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            os.replace(tmp, key_path)
         self._audit.append(AuditEvent.KEY_ROTATE, {"from": old_fingerprint, "to": self.fingerprint})

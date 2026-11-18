@@ -526,7 +526,7 @@ async function refreshGoalTree() {
     d.style.cssText = "font-size:12px;margin-bottom:6px";
     const pct = Math.round((n.progress || 0) * 100);
     const src = n.source === "self" ? '<span class="badge hot">自生成</span>' : '<span class="badge">主人</span>';
-    d.innerHTML = `<span class="badge">${LEVEL_TAG[n.level] || n.level}</span>${src} ${esc(n.text)}` +
+    d.innerHTML = `<span class="badge">${esc(LEVEL_TAG[n.level] || n.level)}</span>${src} ${esc(n.text)}` +
       `<div style="color:var(--dim);font-size:10px;margin-top:2px">创建于 ${esc(fmtTime(n.created_at))} · 进度 ${pct}%</div>` +
       `<div class="bar" style="margin-top:3px"><div class="fill" style="width:${pct}%"></div></div>`;
     box.appendChild(d);
@@ -543,7 +543,7 @@ async function refreshWorld() {
   for (const p of preds.slice(-8).reverse()) {
     const d = document.createElement("div");
     d.style.cssText = "font-size:12px;margin-bottom:5px;line-height:1.5";
-    const [label, cls] = TAG[p.status] || [p.status, "badge"];
+    const [label, cls] = TAG[p.status] || [esc(p.status), "badge"];
     d.innerHTML = `<span class="${cls}">${label}</span> ${esc(p.statement)}` +
       `<div style="color:var(--dim);font-size:11px">提出 ${esc(fmtTime(p.created_at))}` +
       (p.deadline_ts ? ` · 复核期限 ${esc(fmtTime(p.deadline_ts))}` : "") +
@@ -682,7 +682,7 @@ async function refreshScratch() {
   for (const n of r.notes.slice().reverse()) {
     const d = document.createElement("div");
     d.style.cssText = "font-size:12px;margin-bottom:8px;line-height:1.5;border-left:2px solid var(--accent);padding-left:8px";
-    d.innerHTML = `<div style="color:var(--dim)">${n.path}</div>${esc(n.preview).slice(0, 140)}…`;
+    d.innerHTML = `<div style="color:var(--dim)">${esc(n.path || "")}</div>${esc(n.preview || "").slice(0, 140)}…`;
     box.appendChild(d);
   }
 }

@@ -51,9 +51,10 @@ def _parse_decision(raw: str) -> dict:
 
 
 class AgenticLoop:
-    def __init__(self, agent, max_steps: int = 12):
+    def __init__(self, agent, max_steps: int = 12, pool: str = "owner_tasks"):
         self._agent = agent
         self.max_steps = max_steps
+        self._pool = pool
 
     def _tool_catalog(self) -> str:
         names = sorted(self._agent.tools.names())
@@ -88,8 +89,9 @@ class AgenticLoop:
         plan_block = ""
         if self._agent.llm_fast is not None:
             try:
-                plan = self._agent.llm_fast.complete(
-                    PLAN_PROMPT, task_text).strip()[:80]
+                plan = self._agent._complete(
+                    self._agent.llm_fast, PLAN_PROMPT, task_text,
+                    pool=self._pool).strip()[:80]
                 if plan:
                     plan_block = f"\n执行计划：{plan}\n"
             except Exception:
@@ -110,7 +112,8 @@ class AgenticLoop:
                     + ("\n".join(f"{i+1}. {o}" for i, o in enumerate(observations[-12:]))
                        or "（无）"))
             try:
-                raw = self._agent.llm.complete(LOOP_SYSTEM, user)
+                raw = self._agent._complete(
+                    self._agent.llm, LOOP_SYSTEM, user, pool=self._pool)
             except Exception as exc:
                 return {"status": "failed", "reason": f"llm_error:{exc}",
                         "observations": observations}
@@ -151,7 +154,6 @@ class AgenticLoop:
                     "episode", f"任务未完成（等待批准）：{task_text}",
                     importance=0.55 + 0.1,  # 基线 + 未完成加成
                     emotion=dict(self._agent.state.emotion))
-                self._agent.scheduler.on_task_completed(result)
                 return {"status": "paused", "task_id": step_task_id,
                         "proposal_id": result.proposal_id,
                         "observations": observations, "trace": trace,
@@ -166,7 +168,5 @@ class AgenticLoop:
                           "args": decision.get("args", {}),
                           "category": decision.get("category", ""),
                           "result": str(observation)[:600]})
-        self._agent.scheduler.on_task_completed(
-            type("R", (), {"status": "completed", "retries": 0, "reason": ""})())
         return {"status": "max_steps", "observations": observations,
                 "trace": trace, "acceptance": acceptance}

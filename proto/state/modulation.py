@@ -60,7 +60,7 @@ class AttributionAccumulator:
 
     def ready(self) -> List[PendingModulation]:
         pending = []
-        for key in sorted(self._pools):
+        for key in sorted(self._pools, key=lambda k: (k[0], k[1].value)):
             param, channel = key
             if channel is Channel.CONTENT:
                 continue  # 数学上不可达阈值，双保险

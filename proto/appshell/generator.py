@@ -17,7 +17,9 @@ import WebKit
 
 let port = ProcessInfo.processInfo.environment["PROTO_PORT"] ?? "PORT_PLACEHOLDER"
 let dataDir = "DATA_DIR_PLACEHOLDER"
-let token = ProcessInfo.processInfo.environment["PROTO_WEB_TOKEN"] ?? "proto-console"
+let configuredToken = Bundle.main.object(forInfoDictionaryKey: "ProtoToken") as? String
+let token = ProcessInfo.processInfo.environment["PROTO_WEB_TOKEN"] ?? configuredToken
+    ?? UUID().uuidString.replacingOccurrences(of: "-", with: "")
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
@@ -94,11 +96,15 @@ def build_app(app_dir: Path, data_dir: str, token: str, port: int = 8420,
     res_dir.mkdir(parents=True, exist_ok=True)
 
     import json
-    (app_dir / "Contents" / "Info.plist").write_text(json.dumps({
+    info = {
         "CFBundleName": "PROTO", "CFBundleIdentifier": "com.proto.console",
         "CFBundleExecutable": "PROTO", "CFBundlePackageType": "APPL",
         "LSMinimumSystemVersion": "11.0",
-    }, indent=2), encoding="utf-8")
+    }
+    if token:
+        info["ProtoToken"] = token
+    (app_dir / "Contents" / "Info.plist").write_text(
+        json.dumps(info, indent=2), encoding="utf-8")
 
     source = (SWIFT_SOURCE
               .replace("PORT_PLACEHOLDER", str(port))

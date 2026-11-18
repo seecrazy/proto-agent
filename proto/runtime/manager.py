@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import threading
 import time
@@ -16,18 +17,26 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from proto.runtime.agent import ProtoAgent
+from proto.storage.mongo_store import create_store
+from proto.runtime.collab import Blackboard
 
 REGISTRY = "registry.json"
 
 
 class AgentManager:
-    def __init__(self, root: Path, llm=None, fast_llm=None, webtools=None):
+    def __init__(self, root: Path, llm=None, fast_llm=None, webtools=None,
+                 blackboard=None):
         self.root = Path(root)
+        try:
+            self.root.chmod(0o700)
+        except OSError:
+            pass
         (self.root / "agents").mkdir(parents=True, exist_ok=True)
         (self.root / "archive").mkdir(parents=True, exist_ok=True)
         self._llm = llm
         self._fast = fast_llm if fast_llm is not None else llm
         self._webtools = webtools
+        self.blackboard = blackboard or Blackboard(create_store(self.root))
         self._cache: Dict[str, ProtoAgent] = {}
         self._lock = threading.Lock()
         self._registry_path = self.root / REGISTRY
@@ -55,8 +64,14 @@ class AgentManager:
         return reg
 
     def _save_registry(self, reg: dict) -> None:
-        self._registry_path.write_text(
-            json.dumps(reg, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp = self._registry_path.with_suffix(f".json.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(reg, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.chmod(0o600)
+        os.replace(tmp, self._registry_path)
+        try:
+            self._registry_path.chmod(0o600)
+        except OSError:
+            pass
 
     # ---- 生命周期 ----
     def create(self, name: str, persona: str = "", priority: str = "") -> dict:
@@ -95,7 +110,8 @@ class AgentManager:
         info = self.info(agent_id)
         agent = ProtoAgent(data_dir=self._dir_for(info), llm=self._llm,
                            fast_llm=self._fast, webtools=self._webtools,
-                           persona=persona or None)
+                           persona=persona or None,
+                           blackboard=self.blackboard)
         if priority:
             agent.set_priority(priority)
         if info.get("paused"):
@@ -108,12 +124,13 @@ class AgentManager:
         return next((a for a in reg["agents"] if a["id"] == agent_id), None)
 
     def get(self, agent_id: str) -> Optional[ProtoAgent]:
-        if agent_id in self._cache:
-            return self._cache[agent_id]
-        info = self.info(agent_id)
-        if info is None:
-            return None
-        return self._build(agent_id, "", "")
+        with self._lock:
+            if agent_id in self._cache:
+                return self._cache[agent_id]
+            info = self.info(agent_id)
+            if info is None:
+                return None
+            return self._build(agent_id, "", "")
 
     def current_id(self) -> Optional[str]:
         return self._load_registry()["current"]

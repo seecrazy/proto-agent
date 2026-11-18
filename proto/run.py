@@ -43,7 +43,12 @@ def main(argv=None) -> int:
     parser.add_argument("--model", default=os.environ.get("PROTO_LLM_MODEL", "gpt-4o-mini"),
                         help="模型名（默认取 PROTO_LLM_MODEL）")
     args = parser.parse_args(argv)
-    load_default_env()  # 部署配置（proto.env）自动生效
+    load_default_env(data_dir=args.data_dir)  # 部署配置（proto.env）自动生效
+    from proto.system.instance_lock import InstanceLock
+    instance_lock = InstanceLock(Path(args.data_dir))
+    if not instance_lock.acquire():
+        print(f"数据目录 {args.data_dir} 已有 PROTO 实例在运行，拒绝启动第二个。")
+        return 1
 
     llm = None
     if args.base_url.strip():
@@ -69,11 +74,13 @@ def main(argv=None) -> int:
             line = input("主人> ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\n再见。")
+            instance_lock.release()
             return 0
         if not line:
             continue
         if line == "/quit":
             print("再见。")
+            instance_lock.release()
             return 0
         if line == "/state":
             print(agent.status(), "\n")

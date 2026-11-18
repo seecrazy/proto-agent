@@ -12,7 +12,8 @@ def main(argv=None) -> int:
     load_default_env()
     parser = argparse.ArgumentParser(prog="proto.app", description="生成 PROTO 原生 Mac App")
     parser.add_argument("--data-dir", default="./proto_data")
-    parser.add_argument("--token", default=None, help="固定令牌（默认取 PROTO_WEB_TOKEN）")
+    parser.add_argument("--token", default=None,
+                        help="固定令牌（默认运行时随机；也可用 PROTO_WEB_TOKEN）")
     parser.add_argument("--port", type=int, default=8420)
     parser.add_argument("--output", default="./PROTO.app")
     args = parser.parse_args(argv)
@@ -20,7 +21,7 @@ def main(argv=None) -> int:
     import os
     from proto.appshell.generator import build_app
     result = build_app(app_dir=Path(args.output), data_dir=str(Path(args.data_dir).resolve()),
-                       token=args.token or os.environ.get("PROTO_WEB_TOKEN", "proto-console"),
+                       token=args.token or os.environ.get("PROTO_WEB_TOKEN", ""),
                        port=args.port)
     print(ui.ok(f"App 生成：{result['path']}"))
     if result["compiled"]:

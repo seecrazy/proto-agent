@@ -64,7 +64,10 @@ def extract_json_array(text: str) -> list:
     end = cleaned.rfind("]")
     if start == -1 or end == -1 or end <= start:
         raise ValueError("输出中没有 JSON 数组")
-    return json.loads(cleaned[start:end + 1])
+    rows = json.loads(cleaned[start:end + 1])
+    if not isinstance(rows, list):
+        raise ValueError("JSON 不是数组")
+    return rows
 
 
 class LLMAttributor(Attributor):
@@ -99,11 +102,19 @@ class LLMAttributor(Attributor):
             return self._fallback.attribute(text, channel)
         signals = []
         for row in rows:
+            if not isinstance(row, dict):
+                continue
             param = row.get("param")
             if param not in self.PARAM_WHITELIST:
                 continue
-            direction = 1 if float(row.get("direction", 0)) >= 0 else -1
-            strength = max(0.0, min(1.0, float(row.get("strength", 0.5))))
+            try:
+                raw_direction = float(row.get("direction", 0))
+                strength = max(0.0, min(1.0, float(row.get("strength", 0.5))))
+            except (TypeError, ValueError):
+                continue
+            if raw_direction == 0:
+                continue
+            direction = 1 if raw_direction > 0 else -1
             signals.append(AttributionSignal(
                 param=param, direction=direction, strength=strength, channel=channel))
         return signals

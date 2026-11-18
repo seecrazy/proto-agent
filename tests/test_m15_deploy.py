@@ -47,9 +47,10 @@ class TestLaunchd:
         args = plist["ProgramArguments"]
         assert args[0] == "/opt/venv/bin/python"
         assert args[1:3] == ["-m", "proto.web"]
-        assert "--token" in args and "tok-1" in args
+        # 加固：token 不进命令行（ps 可见）也不进 plist，服务端从 proto.env 读取
+        assert "--token" not in args and "tok-1" not in args
+        assert plist["EnvironmentVariables"] == {}
         assert plist["RunAtLoad"] is True and plist["KeepAlive"] is True
-        assert plist["EnvironmentVariables"]["PROTO_LLM_PROVIDER"] or True
         # 可落盘为合法 plist
         import io
         buf = io.BytesIO()

@@ -267,8 +267,11 @@ def ensure_env_file(data_dir: Path, provider=None, base_url=None, api_key=None,
         "PROTO_WEB_TOKEN": token,
     }
     if not token:
+        token = os.environ.get("PROTO_WEB_TOKEN", "").strip()
+    if not token:
         import secrets as _secrets
         token = _secrets.token_urlsafe(12)   # 兜底：绝不落弱默认
+    values["PROTO_WEB_TOKEN"] = token
     lines = ["# PROTO 部署配置（由 proto.setup 生成；含密钥，权限 0600）"]
     for key in ENV_KEYS:
         value = values.get(key)
@@ -286,21 +289,20 @@ def plist_path_for() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / "com.proto.agent.plist"
 
 
-def build_plist(data_dir: Path, token: str, python_bin: str = None,
+def build_plist(data_dir: Path, token: str = "", python_bin: str = None,
                 env_values: dict = None) -> dict:
     data_dir = Path(data_dir).resolve()
     python_bin = python_bin or sys.executable
-    if env_values is None:
-        env_values = {k: os.environ[k] for k in ENV_KEYS if os.environ.get(k)}
     return {
         "Label": "com.proto.agent",
         "ProgramArguments": [python_bin, "-m", "proto.web",
                              "--data-dir", str(data_dir),
-                             "--token", token, "--no-open"],
+                             "--no-open"],
         "RunAtLoad": True,
         "KeepAlive": True,
         "WorkingDirectory": str(Path.cwd()),
-        "EnvironmentVariables": env_values or {},
+        # 不把 API key/token 写进 plist 或命令行；proto.web 从 data_dir/proto.env 加载。
+        "EnvironmentVariables": {},
         "StandardOutPath": str(data_dir / "proto-web-service.log"),
         "StandardErrorPath": str(data_dir / "proto-web-service.log"),
     }
@@ -311,6 +313,7 @@ def install_launchd(data_dir: Path, token: str, env_values: dict = None) -> Path
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
         plistlib.dump(build_plist(data_dir, token, env_values=env_values), f)
+    path.chmod(0o600)
     subprocess.run(["launchctl", "unload", str(path)], capture_output=True)
     subprocess.run(["launchctl", "load", str(path)], check=True,
                    capture_output=True)
@@ -420,8 +423,7 @@ def main() -> int:
         print(ui.warn("离线模式（无 LLM 配置）——功能受限，建议稍后配置"))
     if args.install_service:
         if sys.platform == "darwin":
-            env_values = {k: os.environ[k] for k in ENV_KEYS if os.environ.get(k)}
-            plist = install_launchd(Path(args.data_dir), result["token"], env_values)
+            plist = install_launchd(Path(args.data_dir), result["token"])
             print(ui.ok(f"开机自启已安装：{plist}"))
             print(ui.dim(f"    停止：launchctl unload {plist}"))
         else:

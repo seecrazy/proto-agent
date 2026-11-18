@@ -2,6 +2,7 @@
 """M21: 多自主 Agent——创建/管理/观测/隔离。"""
 import json
 import threading
+import time
 import urllib.request
 
 import pytest
@@ -117,7 +118,12 @@ class TestServerMulti:
             # 头部作用域：对 B 说话，记忆落在 B
             self._call(server, "POST", "/api/chat", {"text": "你好"},
                        agent_id=other["id"])
+            # chat 先回包后固化（零等待设计）：有界轮询等后置记忆落库
             gb = manager.get(other["id"])
+            for _ in range(50):
+                if gb.memory.snapshot()["episodes"] == 1:
+                    break
+                time.sleep(0.02)
             assert gb.memory.snapshot()["episodes"] == 1   # 记忆落在 B（服务端已后置固化）
             ga = manager.get(created["created"]["id"])
             assert ga.memory.snapshot()["episodes"] == 0   # A 不受影响（隔离）
