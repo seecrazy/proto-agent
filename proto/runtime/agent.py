@@ -608,23 +608,18 @@ class ProtoAgent:
         self.maybe_reflect()
         self._review_predictions()          # L3：预测误差闭环
         self._morning_brief()               # 专家习惯：每日晨间领域扫描
-        # M28 专家工作模型：有活干活（目标牵引优先），缺口只管开新方向
-        has_work = self.goal_tree.select_executable(
-            self.state.owner_priority or "") is not None
+        # M28 专家工作模型：有活干活（目标牵引优先），缺口只管开新方向。
+        # M36.1：目标牵引不得被欲望门控饿死——干完活欲望被满足回落阈值下
+        # 是常态，此时有 active 目标就必须继续推进（用户核心诉求：自主做事）。
+        selected = self.goal_tree.select_executable(
+            self.state.owner_priority or "")
+        has_work = selected is not None
         gap_ready = any(spec["value"] >= spec["threshold"]
                         for spec in self.state.desires.values())
         cooled = (self._now() - self._last_self_act) >= self.SELF_ACT_COOLDOWN_S
         if ("goal_generation" not in fired) and not ((has_work or gap_ready) and cooled):
             return None
         self._last_self_act = self._now()
-        over = [dim for dim, spec in self.state.desires.items()
-                if spec["value"] >= spec["threshold"]]
-        if not over:
-            return None
-        dim = over[0]
-        # L3：优先从目标树选真实目标（自主/主人播种），无树才退模板
-        selected = self.goal_tree.select_executable(
-            self.state.owner_priority or "")
         if selected is not None and selected.level == "long":
             # 长期目标没有可执行子目标时先分解一层（专家：把愿景变成活儿）
             children = self.goal_tree.children_of_level(selected.id, "mid")
@@ -635,6 +630,12 @@ class ProtoAgent:
                 selected = children[0]
         if selected is not None and selected.level in ("short", "mid", "task"):
             return self.work_on_goal(selected)      # M30：可执行目标→项目工位开发
+        # 没有可执行目标时，欲望缺口才驱动开新方向
+        over = [dim for dim, spec in self.state.desires.items()
+                if spec["value"] >= spec["threshold"]]
+        if not over:
+            return None
+        dim = over[0]
         if selected is not None:
             goal_text = selected.text
             selected_id = selected.id
