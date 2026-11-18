@@ -95,6 +95,9 @@ class _Handler(BaseHTTPRequestHandler):
         agent = server.manager.agent_for_request(
             self.headers.get("X-Proto-Agent"))
         path, query = parsed.path, parse_qs(parsed.query)
+        if method == "POST" and path == "/api/judge":
+            return self._safely(lambda: self._routes(method, path, query,
+                                                    agent, server))
         if method == "GET" and path in READ_ONLY_GETS:
             return self._routes(method, path, query, agent, server)
         with server.mut_lock:
@@ -197,6 +200,27 @@ class _Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self._json(400, {"error": str(exc)})
             return self._json(200, {"root": root})
+        if path == "/api/taste" and method == "GET":
+            from proto.runtime.taste import load_taste
+            return self._json(200, {"taste": load_taste(agent.spine.store)})
+        if path == "/api/taste" and method == "POST":
+            from proto.runtime.taste import refine_from_feedback
+            merged = refine_from_feedback(agent,
+                                          self._body().get("feedback", ""))
+            if merged is None:
+                return self._json(200, {"taste":
+                                        __import__("proto.runtime.taste",
+                                                   fromlist=["load_taste"])
+                                        .load_taste(agent.spine.store),
+                                        "refined": False})
+            return self._json(200, {"taste": merged, "refined": True})
+        # /api/judge 在读端处理（不占变更锁，避免被长任务卡住）
+            from proto.runtime.taste import judge, weighted_score
+            verdicts = judge(agent, self._body().get("subject", ""))
+            if verdicts is None:
+                return self._json(200, {"verdicts": [], "score": None})
+            return self._json(200, {"verdicts": verdicts,
+                                    "score": weighted_score(verdicts)})
         if path == "/api/persona" and method == "POST":
             agent.set_persona(self._body().get("text", ""))
             return self._json(200, {"persona": agent.persona})
