@@ -310,3 +310,9 @@ P2（工程化）：
 - [x] ④24h 自主白名单：AutoApproveQuota（窗口内 N 次免审批），控制台可配（0=关，默认关）。
 - [x] ⑤Agent 协作：Blackboard 共享黑板（发帖求助/认领/回复）+ 控制台黑板卡（可观测、可代发帖）；agent.post/answer/read API。
 - 验证：463 项测试全绿。
+
+### M33 — 想法质量设计文档 + 默认 agent 修复（fix/m33）
+
+- [x] 修复①②：agent id 路由正则 `[0-9a-f]+` 不匹配"默认" agent 的 id（目录名 `proto_data` 含非 hex 字符）→ 切换/暂停/行动全部 404。放宽为 `[A-Za-z0-9_-]+`，实测默认 agent 可切换、可暂停、可恢复。
+- [x] 新增 `docs/specs/idea-quality.md`：五层淘汰流水线完整设计（外部信号捡想法/廉价筛选/验收前置/执行轨迹/独立验证门），含 Mermaid 流程图、研究对齐表、端到端示例。README 增对应章节。
+- 验证：463 项测试全绿。
