@@ -84,7 +84,7 @@ class AgenticLoop:
         if lessons:
             lesson_block = ("\n过往教训（曾失败过的做法，避免重蹈）：\n"
                             + "\n".join(f"- {s_.text}" for s_ in lessons[:2]))
-        # 计划先行（plan-then-act）：先想后做
+        # 计划先行（plan-then-act）+ 工作区现状（避免盲目探索）
         plan_block = ""
         if self._agent.llm_fast is not None:
             try:
@@ -94,6 +94,12 @@ class AgenticLoop:
                     plan_block = f"\n执行计划：{plan}\n"
             except Exception:
                 pass
+        try:
+            listing = self._agent.code_workspace.list_dir("")
+            if listing:
+                plan_block += f"\n工作区当前内容（直接用，别再重复列目录）：\n{listing[:400]}\n"
+        except Exception:
+            pass
         for step in range(self.max_steps):
             feedback_block = (f"\n上一轮独立验证未通过，缺少：{feedback}\n"
                               "本轮必须补齐这些证据。" if feedback else "")
