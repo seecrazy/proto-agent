@@ -48,7 +48,7 @@ READ_ONLY_GETS = {
     "/api/state", "/api/audit", "/api/proposals", "/api/rules",
     "/api/evolution", "/api/scratch", "/api/memory", "/api/inbox",
     "/api/goaltree", "/api/world", "/api/taste", "/api/agents",
-    "/api/summary", "/api/blackboard", "/api/projects-root",
+    "/api/summary", "/api/blackboard", "/api/projects-root", "/api/methods",
 }
 
 
@@ -331,6 +331,12 @@ class _Handler(BaseHTTPRequestHandler):
             from proto.runtime.summaries import bucket_events
             events = agent.audit_tail(500)
             return self._json(200, {"buckets": bucket_events(events)})
+        if path == "/api/methods" and method == "GET":
+            snap = agent.methods_lib.snapshot()
+            snap["menu"] = [m.name for m in
+                            agent.methods_lib.menu(agent.persona,
+                                                    agent.state.owner_priority or "")]
+            return self._json(200, snap)
         if path == "/api/blackboard" and method == "GET":
             return self._json(200, {"notes": agent.read_blackboard()})
         if path == "/api/blackboard" and method == "POST":

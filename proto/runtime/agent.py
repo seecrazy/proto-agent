@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import secrets as pysecrets
 import stat
@@ -155,6 +156,8 @@ class ProtoAgent:
         import os as _os
         _quota_n = int(_os.environ.get("PROTO_AUTO_APPROVE_N", "0"))
         self.auto_quota = AutoApproveQuota(_quota_n, store=store)
+        from proto.runtime.methods import MethodLibrary
+        self.methods_lib = MethodLibrary(store)   # M37：方法策展（多元+自发明）
         self.memory = MemoryStream(store)
         self.goal_tree = GoalTree(store)
         self.goal_tree.on_milestone = self._on_milestone
@@ -394,6 +397,33 @@ class ProtoAgent:
         slug = _re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "-", text.strip()).strip("-")
         return slug[:40] or "untitled"
 
+    def _curate_methods(self, goal_text: str) -> str:
+        """M37 方法策展：发明新做法（限频）→ 返回注入任务的菜单。
+        人设+目标为核；主人提示是素材不是上限；主人显式限定才受限。"""
+        try:
+            if (self._now() - self.methods_lib.last_invent_ts) > 900 \
+                    and self.llm_fast is not None:
+                added = self.methods_lib.invent(
+                    self.llm_fast, self._complete, self.persona, goal_text,
+                    context=self.state.owner_priority or "")
+                if added:
+                    self.spine.append("method_invent", {
+                        "goal": goal_text[:80],
+                        "methods": [f"{m.source}:{m.name}" for m in added]})
+        except Exception:
+            pass
+        return self.methods_lib.menu_block(self.persona, goal_text)
+
+    @staticmethod
+    def _attribute_methods(methods_lib, result: dict) -> List[str]:
+        """从执行轨迹归因用到的方法（名字出现在 trace/摘要/产物里）。"""
+        blob = " ".join(
+            [str(result.get("summary", ""))]
+            + [str(s.get("tool", "")) for s in (result.get("trace") or [])]
+            + [json.dumps(s.get("args", {}), ensure_ascii=False)
+               for s in (result.get("trace") or [])])
+        return [m.name for m in methods_lib.methods if m.name in blob]
+
     def work_on_goal(self, node) -> dict:
         """目标牵引执行：在 projects/<目标slug>/ 下自主开发，验收走质量门。"""
         from proto.exec.agentic import AgenticLoop
@@ -401,9 +431,12 @@ class ProtoAgent:
         project_dir = f"projects/{self._goal_slug(node.text)}"
         acceptance = node.acceptance or generate_acceptance(
             self.llm_fast, f"{node.text}（产出落在 {project_dir}）")
+        # M37：方法菜单注入（多元+自发明，主人限定才收窄）
+        menu = self._curate_methods(node.text)
         # 项目目录约定注入任务描述
         task = (f"{node.text}。产出必须写入项目目录 {project_dir}/ "
-                f"（write_file 的 path 以 {project_dir}/ 开头）。")
+                f"（write_file 的 path 以 {project_dir}/ 开头）。"
+                + (f"\n{menu}" if menu else ""))
         result = AgenticLoop(self, max_steps=10).run(task, acceptance=acceptance)
         if result.get("status") == "awaiting_retry":
             retry = AgenticLoop(self, max_steps=6).run(
@@ -413,6 +446,14 @@ class ProtoAgent:
                 result = retry
                 if result.get("verified") is False:
                     result["status"] = "failed_verification"
+        # 方法战果记账（好用的浮上来，久折的沉下去）
+        used = self._attribute_methods(self.methods_lib, result)
+        if used:
+            self.methods_lib.mark_used(used)
+            self.methods_lib.mark_outcome(
+                used, result.get("verified") is True)
+            self.spine.append("method_used", {"methods": used,
+                                              "verified": result.get("verified")})
         if result.get("verified") is True:
             self.goal_tree.complete(node.id)     # 里程碑回调自动触发
         self.scheduler.on_task_completed(
@@ -996,8 +1037,16 @@ class ProtoAgent:
         self.state.owner_priority = text
         self.arbiter.owner_priority = text
         self.mgr.save()
+        from proto.runtime.methods import detect_restriction
+        restriction = detect_restriction(text)   # 限定跟随当前优先级文本：无限定即解除
+        if restriction != self.methods_lib.restriction:
+            self.methods_lib.set_restriction(restriction)
+            if restriction:
+                self.spine.append(AuditEvent.OWNER_OVERRIDE,
+                                  {"action": "method_restriction", "text": restriction})
         self.goal_tree.seed_from_priority(text, self.llm_fast)  # L3:播种长期目标
-        return {"owner_priority": text}
+        return {"owner_priority": text,
+                "method_restriction": self.methods_lib.restriction}
 
     # ------------------ L5 进化（OWNER 通道驱动） ------------------
     def _evolution(self):

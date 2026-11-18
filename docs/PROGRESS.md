@@ -345,3 +345,13 @@ P2（工程化）：
 - [x] README/版本（0.30.0）/测试计数（497）一致性清理。
 - 事故复盘：前一会话中途被打断留下两处"模块级语句插进类/函数中间"的隐性坏档（audit.py 缩进错、codetools.py 类被 json_quote 截断致 register_all 变死代码）——py_compile 不报但行为静默缺失；教训：往代码块中间插内容后必须 grep 验证结构完整 + 全量测试。
 - 测试：`tests/test_m36_hardening.py` 25 项锁死验收清单；全套 497 绿 + 2 跳过。
+
+### M37 — 方法策展：多元做事方法 + 自主发明（用户核心诉求机制化）
+
+- 需求原文："以人设和目标为核心，方法可以采用主人的提示，但要有自己的创新，要自己想法设法，除非主人明确规定只能用某种方法。"
+- `proto/runtime/methods.py`：MethodLibrary（持久化 store.methods/main）——内置 10 种起步方法刻意多元（读代码/读文档/写原型/先测试/跑基准/重构/微型规格/外包/问主人/自查，破"只会逛 GitHub"）；owner_hint（主人提示，素材非上限）；self_invented（LLM 发明，新颖性去重）。
+- **保证机制**：无限定时每次 work_on_goal 菜单必含自发明方法（探索项保底）；策展排序=相关性0.4+胜率0.3+新颖0.3；战果归因记账（trace/摘要/产物里匹配方法名）→ 好用的浮上来久折的沉下去。
+- **主人限定**：仅显式排他措辞（只能/只用/仅限/不要用其他…）触发 method_restriction（跟随优先级文本，新文本无限定即解除；限定无匹配不死锁）；普通建议永不构成上限。审计 method_invent/method_used（活动流 💡/🧰）。
+- 接入：work_on_goal（发明→菜单注入任务→LOOP_SYSTEM 声明"素材非边界"→归因记账）；set_priority（限定检测）；/api/methods 只读接口。
+- E2E 真实 glm：为"iPhone 待办 widget"目标自发明 repo_pattern_mine（挖高星开源仓库+run_python 遍历）与 widget_matrix_scrape（抓 WidgetKit 文档矩阵），随后自主选择 delegate_heavy 外包路径并正确停在审批门。
+- 测试：tests/test_m37_methods.py 12 项（播种持久化/发明去重/菜单保底/限定解析与解除/不死锁/战果排序/work_on_goal 注入与归因/set_priority 限定流）。全套 514 绿。
