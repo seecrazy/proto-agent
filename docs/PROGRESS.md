@@ -323,3 +323,11 @@ P2（工程化）：
 - [x] ②审美系统 proto/runtime/taste.py：5 感官维度（好玩/有趣/有用/美/优雅）各带 agent 自己的正负锚点+权重；judge() 按锚点打分给理由；refine_from_feedback() 主人校准锚点；审美宣言注入对话提示；控制台「它的审美」卡（定义+校准+考考它）。真实 E2E：judge 综合分+分维度星级+理由（引用自己的锚点）。
 - [x] 修复链：glm anthropic 端点 thinking 块吃满 1024 max_tokens（提到 4096）；轻量 GET 无锁化；judge 路由缩进；熔断期 judge 失败审计带原因。
 - 验证：472 项测试全绿。
+
+### M35 — 立即行动异步化 + 活动可读性（fix/m35，用户报错"Failed to fetch"）
+
+- 根因：force_act 同步 HTTP 响应需 1-3 分钟（完整学习→目标→执行链），浏览器 fetch 约 100s 超时断开 → "Failed to fetch"。
+- [x] act 改异步 job 模式：POST 立即返回 job_id，后台线程执行，前端每 3s 轮询 /api/jobs/<id>（5 分钟安全兜底）；对话流即时反馈"已启动"。
+- [x] 活动流可读性：29 种审计事件类型翻译为人话+图标+时间（🔍 学习 / 🌅 晨间简报 / 🎯 生成目标 / 💭 反思 / ⚡ 主人指令行动…），不再显示原始英文事件名。
+- [x] 工具调用防御性参数过滤（LLM 带多余 kwargs 曾炸 lambda——"<lambda>() got unexpected keyword"）；Agentic 循环首步注入工作区现状摘要（终结盲目反复列目录的退化循环）。
+- E2E：异步 job 提交→运行→done/acted=True 全链验证。
