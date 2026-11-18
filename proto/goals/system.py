@@ -194,6 +194,6 @@ class GoalTree:
         def node_view(n):
             return {"id": n.id, "text": n.text, "level": n.level,
                     "status": n.status, "progress": n.progress,
-                    "source": n.source}
+                    "source": n.source, "created_at": n.created_at}
         return {"nodes": [node_view(n) for n in
                           sorted(self._nodes.values(), key=lambda x: x.created_at)]}

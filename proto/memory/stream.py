@@ -156,5 +156,7 @@ class MemoryStream:
         return {"total": len(self._memories),
                 "episodes": sum(1 for m in self._memories.values()
                                 if m.kind == "episode"),
-                "facts": [m.text for m in self.facts()],
-                "reflections": [m.text for m in self.reflections()]}
+                "facts": [{"id": m.id, "text": m.text, "ts": m.ts}
+                          for m in self.facts()],
+                "reflections": [{"id": m.id, "text": m.text, "ts": m.ts}
+                                for m in self.reflections()]}

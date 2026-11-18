@@ -100,3 +100,60 @@ class TestConsoleE2E:
         finally:
             server.shutdown()
             server.server_close()
+
+
+def test_all_observability_payloads_carry_time():
+    """所有观测面 API 的数据都带时间字段（用户要求：看出什么时候产生的）。"""
+    import json as _json
+    import threading
+    import urllib.request as _ur
+    import tempfile
+    from proto.llm.client import LLMClient
+    from proto.runtime.manager import AgentManager
+    from proto.web.server import ProtoWebServer
+    from proto.exec.webtools import WebToolkit
+
+    class Null(LLMClient):
+        def complete(self, s, u): return "[]" if "归因" in s else "好的。"
+
+    mgr = AgentManager(root=tempfile.mkdtemp(), llm=Null(),
+                       webtools=WebToolkit(fetch=lambda u, a="t":
+                                           (_ for _ in ()).throw(OSError("禁网"))))
+    srv = ProtoWebServer(manager=mgr, port=0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.port}"
+
+    def call(path):
+        req = _ur.Request(base + path)
+        req.add_header("X-Proto-Token", srv.token)
+        with _ur.urlopen(req, timeout=10) as r:
+            return _json.loads(r.read().decode())
+
+    try:
+        info = mgr.create(name="T", priority="研究 X")
+        g = mgr.get(info["id"])
+        g.memory.add("fact", "事实T", ts=1700000000)
+        g.world.record_prediction("t", "预测T", deadline_ts=1999999999,
+                                  created_at=1700000000)
+        aid = info["id"]
+
+        def acall(path):
+            req = _ur.Request(base + path)
+            req.add_header("X-Proto-Token", srv.token)
+            req.add_header("X-Proto-Agent", aid)
+            with _ur.urlopen(req, timeout=10) as r:
+                return _json.loads(r.read().decode())
+
+        mem = acall("/api/memory")
+        assert mem["facts"][0]["ts"] == 1700000000
+        world = acall("/api/world")
+        assert world["topics"]["t"]["predictions"][0]["created_at"] == 1700000000
+        assert world["topics"]["t"]["predictions"][0]["deadline_ts"] == 1999999999
+        tree = acall("/api/goaltree")
+        assert tree["nodes"][-1]["created_at"] > 0
+        agents = call("/api/agents")
+        row = next(a for a in agents["agents"] if a["id"] == aid)
+        assert "at" in row.get("activity", {})
+    finally:
+        srv.shutdown()
+        srv.server_close()

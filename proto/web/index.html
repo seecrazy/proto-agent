@@ -396,7 +396,8 @@ async function refreshFleet() {
       `<div style="margin-bottom:4px"><b>${esc(a.name)}</b>` +
       (a.paused ? ' <span class="badge lock">已暂停</span>' : "") +
       ` <span class="badge">${esc((a.persona || "").slice(0, 12))}</span>` +
-      ` <span class="badge hot">${esc(act.status || "?")}</span></div>` +
+      ` <span class="badge hot">${esc(act.status || "?")}</span>` +
+      (act.at ? ` <span style="color:var(--dim);font-size:10px">@${esc(fmtTime(act.at))}</span>` : "") + `</div>` +
       `<div id="act-${a.id}" style="font-size:11px;color:var(--dim);margin:4px 0"></div>` +
       `<div style="font-size:11px;color:var(--dim)">${des} · P${(e.pleasure ?? 0).toFixed(1)} A${(e.arousal ?? 0).toFixed(1)} · 记忆${a.memory_total ?? 0} · 待批${a.pending_proposals ?? 0} · 目标${a.goals_active ?? 0}(${Math.round((a.goals_progress ?? 0) * 100)}%)</div>` +
       `<div class="btns" style="margin-top:6px">` +
@@ -472,6 +473,7 @@ async function refreshGoalTree() {
     const pct = Math.round((n.progress || 0) * 100);
     const src = n.source === "self" ? '<span class="badge hot">自生成</span>' : '<span class="badge">主人</span>';
     d.innerHTML = `<span class="badge">${LEVEL_TAG[n.level] || n.level}</span>${src} ${esc(n.text)}` +
+      `<div style="color:var(--dim);font-size:10px;margin-top:2px">创建于 ${esc(fmtTime(n.created_at))} · 进度 ${pct}%</div>` +
       `<div class="bar" style="margin-top:3px"><div class="fill" style="width:${pct}%"></div></div>`;
     box.appendChild(d);
   }
@@ -489,6 +491,9 @@ async function refreshWorld() {
     d.style.cssText = "font-size:12px;margin-bottom:5px;line-height:1.5";
     const [label, cls] = TAG[p.status] || [p.status, "badge"];
     d.innerHTML = `<span class="${cls}">${label}</span> ${esc(p.statement)}` +
+      `<div style="color:var(--dim);font-size:11px">提出 ${esc(fmtTime(p.created_at))}` +
+      (p.deadline_ts ? ` · 复核期限 ${esc(fmtTime(p.deadline_ts))}` : "") +
+      (p.checked_at ? ` · 已复核 ${esc(fmtTime(p.checked_at))}` : "") + `</div>` +
       (p.evidence ? `<div style="color:var(--dim);font-size:11px">依据：${esc(p.evidence)}</div>` : "");
     box.appendChild(d);
   }
@@ -514,7 +519,7 @@ async function refreshBlackboard() {
     for (const n of r.notes.slice(0, 6)) {
       const d = document.createElement("div");
       d.style.cssText = "font-size:12px;margin-bottom:6px;border-left:2px solid var(--accent);padding-left:8px";
-      d.innerHTML = `<b>${esc(n.from)}</b>: ${esc(n.text)}<br>` +
+      d.innerHTML = `<span style="color:var(--dim);font-size:10px">${esc(fmtTime(n.ts))}</span> <b>${esc(n.from)}</b>: ${esc(n.text)}<br>` +
         (n.claimed_by ? `<span class="badge">已认领:${esc(n.claimed_by)}</span>` : '<span class="badge hot">待认领</span>') +
         (n.replies||[]).map(r=>`<div style="color:var(--dim);font-size:11px">↳ <b>${esc(r.from)}</b>: ${esc(r.text)}</div>`).join("");
       box.appendChild(d);
