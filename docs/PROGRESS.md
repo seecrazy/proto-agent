@@ -331,3 +331,17 @@ P2（工程化）：
 - [x] 活动流可读性：29 种审计事件类型翻译为人话+图标+时间（🔍 学习 / 🌅 晨间简报 / 🎯 生成目标 / 💭 反思 / ⚡ 主人指令行动…），不再显示原始英文事件名。
 - [x] 工具调用防御性参数过滤（LLM 带多余 kwargs 曾炸 lambda——"<lambda>() got unexpected keyword"）；Agentic 循环首步注入工作区现状摘要（终结盲目反复列目录的退化循环）。
 - E2E：异步 job 提交→运行→done/acted=True 全链验证。
+
+### M36 — 安全/持久化/运行时一致性加固（完成，v0.30.0）
+
+- 设计：`docs/specs/2026-11-18-hardening.md`（验收清单 13/13 勾选）；架构决策：`docs/adr/0001-capability-policy-and-durable-runtime.md`。
+- [x] 工具能力策略：注册表声明最低级别，模型只能加严不能降级；非 write_file 副作用工具同走审批管线（含 `pending_step` 持久化恢复）；工具执行全量 TOOL_EXEC 审计。
+- [x] 代码执行失败关闭：`PROTO_EXEC_BACKEND` 词汇表统一（auto=runsc/sandbox-exec/none；subprocess 显式）。macOS sandbox-exec 采用"写遏制+禁网"profile（deny-default 会 SIGABRT），实测区外写与联网均被拒；沙盒后端下 run_python 能力=workspace_write，未隔离后端=visible_write 审批。进化沙盒同一套。
+- [x] 工作区 symlink 逃逸拒绝（CodeTools/ScratchWorkspace 均解析真实路径圈界）。
+- [x] 审批/预算/自动白名单持久化（DocumentStore，0600 原子写）；重启恢复待审批提议与暂停任务；nonce 防重放持久化（console/case nonce 改随机，跨进程不撞车）。
+- [x] 审计 keyed MAC（HMAC-SHA256，owner secret）+ 修订号验证缓存；外部篡改必败。
+- [x] Web：CSP/nosniff/DENY/no-referrer 安全头；请求体 1MB→413（先排水防 RST）；非法 JSON→400；index.html 路径/等级/状态插值全部 esc()（源级测试锁死）。
+- [x] 目标/任务记账（max_steps 不奖励不内化）、提案晋升须持真实沙盒通过记录（空测试集永不 canary）、超限 edit_file 拒绝、WorldModel 哈希 ID、launchd plist 不落 token、单实例锁。
+- [x] README/版本（0.30.0）/测试计数（497）一致性清理。
+- 事故复盘：前一会话中途被打断留下两处"模块级语句插进类/函数中间"的隐性坏档（audit.py 缩进错、codetools.py 类被 json_quote 截断致 register_all 变死代码）——py_compile 不报但行为静默缺失；教训：往代码块中间插内容后必须 grep 验证结构完整 + 全量测试。
+- 测试：`tests/test_m36_hardening.py` 25 项锁死验收清单；全套 497 绿 + 2 跳过。
