@@ -355,3 +355,11 @@ P2（工程化）：
 - 接入：work_on_goal（发明→菜单注入任务→LOOP_SYSTEM 声明"素材非边界"→归因记账）；set_priority（限定检测）；/api/methods 只读接口。
 - E2E 真实 glm：为"iPhone 待办 widget"目标自发明 repo_pattern_mine（挖高星开源仓库+run_python 遍历）与 widget_matrix_scrape（抓 WidgetKit 文档矩阵），随后自主选择 delegate_heavy 外包路径并正确停在审批门。
 - 测试：tests/test_m37_methods.py 12 项（播种持久化/发明去重/菜单保底/限定解析与解除/不死锁/战果排序/work_on_goal 注入与归因/set_priority 限定流）。全套 514 绿。
+
+### M38 — 主人超时自主裁决（用户需求："问主人，一段时间不回复，应该可以自主决定并采取行动，除非高危或需要较高权限"）
+
+- `proto/runtime/timeout_policy.py`：裁决瀑布——①IRREVERSIBLE 高危永远只等主人；②工具声明 owner_only=True（外部执行 delegate_coding/未隔离 run_python）=较高权限永远只等主人；③工作区文件写=构造性低风险（write_file 直接放行，不耗 LLM）；④其余 visible_write 走 LLM 风险评估，仅 low 放行（medium/high/离线/评估失败一律等）；⑤放行前必须过当日独立配额（PROTO_TIMEOUT_AUTO_N 默认 3 次/天，与"提交即批"白名单分开记账，重启不重置）。
+- 接入：maybe_proactive 心跳扫描（等批>PROTO_OWNER_TIMEOUT_S 默认 30 分钟）；每提议只裁一次不刷屏；断点续跑恢复暂停的执行链（检查点 waiting_for 判别），主动提议走批准语义；批与不批全审计（owner_timeout_auto 🟢/owner_timeout_keep ⏳）+收件箱告知主人。
+- 修复连带：tick_all 静默吞异常改为 logging.exception（曾掩盖自主性停摆排查）。
+- E2E（真实服务端心跳，零点击）：注入 2 小时前的晋升提议→夜间节律心跳→自动裁决→批准→weekly.md 晋升 visible→审计三连（approval/promotion/owner_timeout_auto）。
+- 测试：tests/test_m38_timeout.py 10 项（低风险自批续跑/未超时不动/IRREVERSIBLE 不批且不重复提醒/owner_only 不批/未知工具保守/LLM 低批高不批/离线保守/配额耗尽等待/配额重启保持）。全套 524 绿。

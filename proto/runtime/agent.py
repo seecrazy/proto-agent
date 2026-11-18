@@ -156,6 +156,11 @@ class ProtoAgent:
         import os as _os
         _quota_n = int(_os.environ.get("PROTO_AUTO_APPROVE_N", "0"))
         self.auto_quota = AutoApproveQuota(_quota_n, store=store)
+        # M38 超时自主裁决的独立配额（与"提交即批"白名单分开记账）
+        self.timeout_quota = AutoApproveQuota(
+            int(_os.environ.get("PROTO_TIMEOUT_AUTO_N", "3")),
+            store=store, doc_id="timeout")
+        self.owner_timeout_s = float(_os.environ.get("PROTO_OWNER_TIMEOUT_S", "1800"))
         from proto.runtime.methods import MethodLibrary
         self.methods_lib = MethodLibrary(store)   # M37：方法策展（多元+自发明）
         self.memory = MemoryStream(store)
@@ -186,7 +191,8 @@ class ProtoAgent:
                 "delegate_coding",
                 lambda task: self._delegate_output(task),
                 category=ActionCategory.VISIBLE_WRITE,
-                description="外包给外部编码 agent（需审批）")
+                description="外包给外部编码 agent（需审批）",
+                owner_only=True)   # 外部执行=较高权限：主人超时也不代批
         self.router = Router(self.kernel, self.queue, self.workspace,
                              self.checkpoints, self.tools,
                              code_workspace=self.code_workspace)
@@ -635,6 +641,58 @@ class ProtoAgent:
         "草稿只落在你的私人 scratch 区，不会打扰任何人。只输出草稿正文。"
     )
 
+    def _maybe_timeout_decide(self) -> None:
+        """M38 主人超时自主裁决：等批超过 owner_timeout_s 的提议按
+        timeout_policy 裁决——低风险+当日配额内自行批准并续跑；
+        高危（IRREVERSIBLE）/高权限（owner_only 工具）永远只等主人。
+        每提议只裁一次（不刷屏）；批与不批都审计+收件箱告知。"""
+        pending = self.queue.pending_with_ts()
+        if not pending:
+            return
+        if not hasattr(self, "_timeout_kept"):
+            self._timeout_kept = set()
+        from proto.runtime.timeout_policy import decide as timeout_decide
+        now = self._now()
+        for proposal, submitted_at in pending:
+            pid = proposal.proposal_id
+            if now - submitted_at < self.owner_timeout_s or pid in self._timeout_kept:
+                continue
+            minutes = max(1, int((now - submitted_at) // 60))
+            decision = timeout_decide(proposal, self.tools, self.llm_fast,
+                                      self._complete, minutes)
+            if decision.action != "auto_approve":
+                self._timeout_kept.add(pid)
+                self.spine.append("owner_timeout_keep", {
+                    "proposal_id": pid,
+                    "description": proposal.description[:100],
+                    "reason": decision.reason})
+                self._inbox.append(
+                    f"〔等你决定〕{proposal.description[:60]} 已等 {minutes} 分钟——"
+                    f"因 {decision.reason}，这个我不敢自作主张，等你回来。")
+                continue
+            if self.timeout_quota is None or not self.timeout_quota.try_consume():
+                self._timeout_kept.add(pid)
+                self.spine.append("owner_timeout_keep",
+                                  {"proposal_id": pid, "reason": "quota_exhausted"})
+                continue
+            # 判别恢复路径：检查点挂着该提议 → 断点续跑原任务；
+            # 否则（主动提议）按主人批准语义执行草稿任务
+            record = self.checkpoints.resume(proposal.task_id)
+            if record is not None and record["state"].get("waiting_for") == pid:
+                status = self.resume_task(proposal.task_id,
+                                          approved=True).get("status", "?")
+            else:
+                status = self.accept_proposal(pid).get("status", "?")
+            self.spine.append("owner_timeout_auto", {
+                "proposal_id": pid, "description": proposal.description[:100],
+                "reason": decision.reason, "resumed_status": status})
+            self._inbox.append(
+                f"〔自主裁决〕主人 {minutes} 分钟未回应。我评估"
+                f"{proposal.description[:50]} 为低风险（{decision.reason}），"
+                f"已自行批准继续（{status}）。"
+                + (f" 今日自主额度剩 {self.timeout_quota.remaining()} 次。"
+                   if self.timeout_quota else ""))
+
     def maybe_proactive(self) -> Optional[str]:
         """无人交互时的生活（服务端心跳驱动，浏览器开不开都活着）：
         欲望增长 + 情绪衰减 + 定时目标生成；缺口超阈值时——
@@ -649,6 +707,7 @@ class ProtoAgent:
         self.maybe_reflect()
         self._review_predictions()          # L3：预测误差闭环
         self._morning_brief()               # 专家习惯：每日晨间领域扫描
+        self._maybe_timeout_decide()        # M38：主人超时自主裁决（高危/高权限除外）
         # M28 专家工作模型：有活干活（目标牵引优先），缺口只管开新方向。
         # M36.1：目标牵引不得被欲望门控饿死——干完活欲望被满足回落阈值下
         # 是常态，此时有 active 目标就必须继续推进（用户核心诉求：自主做事）。

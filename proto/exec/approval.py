@@ -202,6 +202,11 @@ class ApprovalQueue:
     def pending(self) -> List[ActionProposal]:
         return [p.proposal for p in sorted(self._pending.values(), key=lambda x: x.submitted_at)]
 
+    def pending_with_ts(self) -> List[tuple]:
+        """[(proposal, submitted_at)]——主人超时自主裁决用。"""
+        return [(p.proposal, p.submitted_at)
+                for p in sorted(self._pending.values(), key=lambda x: x.submitted_at)]
+
     def _notify_damping(self, proposal: ActionProposal, accepted: bool) -> None:
         if (self._damping is not None and proposal.self_initiated
                 and proposal.desire_dim):

@@ -27,9 +27,11 @@ _CATEGORY_RANK = {
 
 @dataclass(frozen=True)
 class ToolPolicy:
-    """工具能力声明。安全级别由工具决定，模型只能加严不能降级。"""
+    """工具能力声明。安全级别由工具决定，模型只能加严不能降级。
+    owner_only=True 的工具属"较高权限"：主人超时也绝不自主代批。"""
     category: ActionCategory = ActionCategory.READ_DRAFT
     description: str = ""
+    owner_only: bool = False
 
 
 class ToolRegistry:
@@ -37,10 +39,11 @@ class ToolRegistry:
         self._tools: Dict[str, tuple] = {}
 
     def register(self, name: str, fn: Callable, policy: ToolPolicy = None,
-                 category: ActionCategory = None, description: str = "") -> None:
+                 category: ActionCategory = None, description: str = "",
+                 owner_only: bool = False) -> None:
         if policy is None:
             policy = ToolPolicy(category=category or ActionCategory.READ_DRAFT,
-                                description=description)
+                                description=description, owner_only=owner_only)
         self._tools[name] = (fn, policy)
 
     def get(self, name: str) -> Callable:

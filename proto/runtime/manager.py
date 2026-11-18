@@ -246,4 +246,6 @@ class AgentManager:
                 if agent is not None:
                     agent.maybe_proactive()
             except Exception:
-                continue   # 单个 agent 心跳失败不影响舰队
+                # 失败不致命但必须留痕——静默吞异常曾掩盖整段自主性停摆
+                import logging
+                logging.exception("heartbeat tick 失败 agent=%s", info.get("id"))

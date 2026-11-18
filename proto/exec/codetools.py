@@ -221,7 +221,9 @@ class CodeTools:
         run_python_category = (ActionCategory.WORKSPACE_WRITE
                                if backend in ("runsc", "sandbox-exec")
                                else ActionCategory.VISIBLE_WRITE)
+        # 未隔离执行=较高权限：主人超时也绝不自主代批
         registry.register("run_python", lambda code, timeout_s=60:
                           self.run_python(code, timeout_s),
                           category=run_python_category,
-                          description="沙盒跑 Python（验证/测试）")
+                          description="沙盒跑 Python（验证/测试）",
+                          owner_only=backend not in ("runsc", "sandbox-exec"))
