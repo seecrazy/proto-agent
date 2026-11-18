@@ -214,7 +214,7 @@ class _Handler(BaseHTTPRequestHandler):
                                         .load_taste(agent.spine.store),
                                         "refined": False})
             return self._json(200, {"taste": merged, "refined": True})
-        # /api/judge 在读端处理（不占变更锁，避免被长任务卡住）
+        if path == "/api/judge" and method == "POST":
             from proto.runtime.taste import judge, weighted_score
             verdicts = judge(agent, self._body().get("subject", ""))
             if verdicts is None:
