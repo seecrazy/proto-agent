@@ -195,8 +195,12 @@ class AgentManager:
     def snapshot_of(agent: ProtoAgent) -> dict:
         goals = agent.goal_tree.all_active()
         progress = (sum(g.progress for g in goals) / len(goals)) if goals else 0.0
+        activity = AgentManager.activity_of(agent.audit_tail(3))
+        if agent.kernel.muted and activity["status"] not in ("已暂停",):
+            activity = dict(activity, status="已暂停",
+                            detail="暂停中（心跳停止，记忆/目标保留）")
         return {
-            "activity": AgentManager.activity_of(agent.audit_tail(3)),
+            "activity": activity,
             "last_events": [{"event_type": e["event_type"], "ts": e.get("ts")}
                             for e in agent.audit_tail(6)],
             "persona": agent.persona,
