@@ -254,6 +254,12 @@ class _Handler(BaseHTTPRequestHandler):
                 "chain_ok": agent.spine.verify_chain().ok,
             })
 
+        if path == "/api/budget/refill" and method == "POST":
+            agent.kernel.pools.refill()
+            remaining = agent.kernel.pools.remaining_all()
+            agent.spine.append(AuditEvent.OWNER_OVERRIDE,
+                               {"action": "budget_refill"})
+            return self._json(200, {"refilled": True, "remaining": remaining})
         if path == "/api/mute" and method == "POST":
             on = bool(self._body().get("on"))
             agent.kernel.set_mute(on)

@@ -534,7 +534,9 @@ class ProtoAgent:
                 used, result.get("verified") is True)
             self.spine.append("method_used", {"methods": used,
                                               "verified": result.get("verified")})
-        if result.get("status") in ("failed_verification", "failed"):
+        reason = str(result.get("reason", ""))
+        if (result.get("status") in ("failed_verification", "failed")
+                and "budget" not in reason):   # 预算耗尽是资源问题，不是它的挫败
             self._drift("task_failure")      # M39 反复受挫→神经质缓升（有界）
         # M41 轮转记账：连续验证未过 +1（选择器将轮换到其他子目标，防整夜卡死）
         if result.get("verified") is False:

@@ -57,6 +57,14 @@ class BudgetPools:
                 "breaker_tripped": self.breaker_tripped,
             })
 
+    def remaining_all(self) -> dict:
+        return {name: dict(units) for name, units in self._remaining.items()}
+
+    def refill(self) -> None:
+        """主人显式充值：今日各池恢复到配置上限（审计由调用方记）。"""
+        self._remaining = {name: dict(units) for name, units in self._config.items()}
+        self._save()
+
     def ensure_cycle(self) -> None:
         today = date.today().isoformat()
         if today != self._cycle_date:
