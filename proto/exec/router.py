@@ -145,7 +145,24 @@ class Router:
             except KeyError as exc:
                 return TaskResult(task.id, "failed", step_results,
                                   reason=str(exc), next_step=i)
-            step_results.append(fn(**step.get("args", {})))
+            # LLM 常带多余键：只传工具声明的参数（防御性过滤）
+            import inspect as _insp
+            try:
+                sig_params = set(_insp.signature(fn).parameters)
+            except (ValueError, TypeError):
+                sig_params = None
+            call_args = step.get("args", {}) or {}
+            if sig_params is not None:
+                extra = set(call_args) - sig_params
+                if extra:
+                    step_results.append(
+                        f"忽略未知参数: {sorted(extra)}")
+                    call_args = {k: v for k, v in call_args.items()
+                                 if k in sig_params}
+            try:
+                step_results.append(fn(**call_args))
+            except TypeError as exc:
+                step_results.append(f"工具调用失败（参数不匹配）: {exc}")
         self._cps.put(task.id, {"step": len(task.steps), "results": step_results},
                       variant_id=VARIANT_ID)
         return TaskResult(task.id, "completed", step_results)
