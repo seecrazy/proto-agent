@@ -190,6 +190,9 @@ class AgentManager:
             agent = self._cache.get(info["id"])
             if agent is not None:
                 row.update(self.snapshot_of(agent))
+            elif info.get("paused"):
+                row["activity"] = {"status": "已暂停",
+                                   "detail": "暂停中（心跳停止，记忆/目标保留）"}
             rows.append(row)
         return rows
 
