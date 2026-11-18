@@ -335,6 +335,7 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/identity" and method == "GET":
             return self._json(200, {
                 "ocean": agent.identity.ocean,
+                "seed": agent.identity.seed,
                 "values": agent.identity.values,
                 "speech_style": agent.identity.speech_style,
                 "prompt_block": agent.identity.prompt_block(),
