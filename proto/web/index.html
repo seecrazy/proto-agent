@@ -404,12 +404,24 @@
 const TOKEN = (location.hash.match(/token=([^&]+)/) || [])[1] || "";
 if (!TOKEN) document.body.innerHTML = "<p style='padding:30px'>缺少访问令牌：请使用终端打印的完整 URL（含 #token=…）打开。</p>";
 
-/* ---- M55：双侧栏——左右各显示一个类别，同屏并看 ---- */
-const CATS = [["ov", "📋概览"], ["inner", "💛内在"], ["work", "🛠工作"], ["tech", "🔧工程"]];
+/* ---- M55b：双侧栏——类别静态分区，互不重复互不影响 ----
+ * 左栏=观察（概览/内在）右栏=干预（工作/工程）：每个页签全屏只出现
+ * 一次，点任何一侧绝不牵动另一侧（M55 的"同类让位"联动是败笔）。 */
+const SIDE_CATS = {
+  left: [["ov", "📋概览"], ["inner", "💛内在"]],
+  right: [["work", "🛠工作"], ["tech", "🔧工程"]],
+};
 const PANEL = {
   left: { cat: localStorage.getItem("proto-panel-left") || "ov" },
   right: { cat: localStorage.getItem("proto-panel-right") || "work" },
 };
+function _sanitize(side) {   // 旧存值/伙伴视角归位到本栏合法类别
+  const valid = SIDE_CATS[side].map(c => c[0]);
+  const pal = document.body.classList.contains("pal");
+  if (!valid.includes(PANEL[side].cat)
+      || (pal && PANEL[side].cat === "tech"))
+    PANEL[side].cat = pal && side === "right" ? "work" : valid[0];
+}
 function cardsOf(cat) {
   // 卡片可能已在任一面板中（池只是定义处）——全文档找
   return [...document.querySelectorAll(`.card[data-cat="${cat}"]`)];
@@ -418,7 +430,7 @@ function renderTabs() {
   for (const side of ["left", "right"]) {
     const box = document.getElementById("tabs-" + side);
     box.innerHTML = "";
-    for (const [id, label] of CATS) {
+    for (const [id, label] of SIDE_CATS[side]) {
       if (id === "tech" && document.body.classList.contains("pal")) continue;
       const b = document.createElement("button");
       b.textContent = label;
@@ -429,12 +441,8 @@ function renderTabs() {
   }
 }
 function setPanelCat(side, cat) {
-  const other = side === "left" ? "right" : "left";
-  if (cat === "tech" && document.body.classList.contains("pal")) cat = "ov";
-  if (PANEL[other].cat === cat) {          // 两栏不允许同类：对面让位
-    PANEL[other].cat = CATS.map(c => c[0])
-      .find(c => c !== cat && !(c === "tech" && document.body.classList.contains("pal"))) || "ov";
-  }
+  if (!SIDE_CATS[side].some(c => c[0] === cat)) return;   // 只管本栏类别
+  if (cat === "tech" && document.body.classList.contains("pal")) return;
   PANEL[side].cat = cat;
   localStorage.setItem(`proto-panel-${side}`, cat);
   distribute();
@@ -471,17 +479,12 @@ function showCat(cat) {                     // 徽标等直达：右栏切类并
   const el = document.getElementById("proposals");
   if (el) el.scrollIntoView({ behavior: "smooth" });
 }
-function catFallbackAfterViewSwitch() {     // 伙伴视角：工程类让位
-  for (const side of ["left", "right"]) {
-    if (PANEL[side].cat === "tech" && document.body.classList.contains("pal")) {
-      PANEL[side].cat = "ov";
-      localStorage.setItem(`proto-panel-${side}`, "ov");
-    }
-  }
+function catFallbackAfterViewSwitch() {     // 伙伴视角：工程类归位到工作
+  _sanitize("left"); _sanitize("right");
   distribute();
 }
 (function bootPanels() {
-  if (document.body.classList.contains("pal")) catFallbackAfterViewSwitch();
+  _sanitize("left"); _sanitize("right");
   const main = document.querySelector("main");
   if (localStorage.getItem("proto-panel-left-hidden") === "1") main.classList.add("hide-left");
   if (localStorage.getItem("proto-panel-right-hidden") === "1") main.classList.add("hide-right");
