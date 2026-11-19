@@ -449,3 +449,8 @@ P2（工程化）：
 - **审计脊柱线程锁**（M49 补 M43 残口）：M43 revision 防的是跨进程覆写；进程内两线程共享同一 spine 实例仍有 append 读-改-写竞态（此前靠 mut_lock 隐式串行）。append/reseal 全程 RLock；4 线程×25 并发 append 实测 seq 连续无丢失、链验证通过。
 - 普通变更操作（priority/drop/pause/task…）仍走锁——状态一致性优先，409+稍后重试语义不变。
 - 测试：tests/test_m49_control_routes.py 4 项（占锁时 awake/mute 可用、priority 仍 409、并发 append 安全）。全套 593 绿。
+
+### M49b — 结构债账本 + swiftc 沙盒放行（用户质询"知道为什么不解决"）
+
+- **docs/DEBT.md**：已知未修债必须登记（触发条件/风险/修法/建议时机），未登记的拖延视为流程违规。当前在账：D1 mut_lock 整段持锁（单写者队列重构，专门会话做）/ D2 force_act 文案 / D3 method 重复发明 / D5 Linux runsc 未验证。
+- **D4 当天偿还**（登记即修的示范）：实测沙盒确实挡 xcrun（DARWIN 用户级临时/缓存目录 /var/folders/… 不受 TMPDIR 环境变量控制，写被拒）——这正是专家"本地验证"即将撞的墙。profile 按 confstr 动态放行本用户 TEMP/CACHE 两目录，`xcrun swiftc -typecheck` 沙盒内实测 exit 0，593 测试全绿（遏制未放松）。

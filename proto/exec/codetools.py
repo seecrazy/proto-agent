@@ -214,8 +214,24 @@ class CodeTools:
 
     def _sandbox_exec_profile(self, tmp: str) -> str:
         """写遏制 + 禁网：deny-default 会挡掉 dyld 等系统读导致 SIGABRT，
-        这里只锁"能写哪里"（tmp + 工作区）和"不能联网"，读不限制。"""
+        这里只锁"能写哪里"（tmp + 工作区）和"不能联网"，读不限制。
+        M49b：xcrun/swiftpm 需要 Darwin 用户级临时与缓存目录
+        （confstr DARWIN_USER_TEMP_DIR/CACHE_DIR，即 /var/folders/…，
+        不受 TMPDIR 环境变量控制）——放行本用户这两处，否则编译链
+        一律 Operation not permitted（本地验证墙）。"""
         allow_write = [os.path.realpath(tmp), str(self.root.resolve())]
+        darwin_user_dirs = set()
+        for fn in (os.confstr_names.get("CS_DARWIN_USER_TEMP_DIR"),
+                   os.confstr_names.get("CS_DARWIN_USER_CACHE_DIR")):
+            if fn is None:
+                continue
+            try:
+                d = os.confstr(fn)
+                if d and os.path.isdir(d):
+                    darwin_user_dirs.add(os.path.realpath(d))
+            except (ValueError, OSError):
+                pass
+        allow_write.extend(sorted(darwin_user_dirs))
         write_rules = "\n".join(
             f"(allow file-write* (subpath {json_quote(p)}))" for p in allow_write)
         return (
