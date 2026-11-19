@@ -64,14 +64,15 @@ class TestControlRoutesLockFree:
             server.mut_lock.release()
 
     def test_state_change_still_guarded(self, server):
-        """普通变更操作仍走锁（防并发写坏状态）——占用时 409。"""
-        server.mut_lock.acquire()
+        """普通变更操作仍走锁（防并发写坏状态）——占用时 409。
+        M50 起 priority 文本已是快通道，此处用 persona（LLM 派生，需 agent 锁）。"""
+        server.manager.ops_lock(server.manager.current_id()).acquire()
         try:
             with pytest.raises(Exception) as ei:
-                call(server, "POST", "/api/priority", {"text": "x"})
+                call(server, "POST", "/api/persona", {"text": "x"})
             assert "agent_busy" in str(ei.value) or "HTTP" in str(ei.value)
         finally:
-            server.mut_lock.release()
+            server.manager.ops_lock(server.manager.current_id()).release()
 
 
 class TestSpineThreadSafety:

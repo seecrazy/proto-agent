@@ -53,42 +53,51 @@ def call(srv, method, path, body=None, agent_header=None):
 
 class TestPerAgentIsolation:
     def test_other_agent_not_blocked_by_chain(self, server):
-        """A 的链占着 A 的锁，B 的操作照常（原来全局锁挡全舰队）。"""
+        """A 的链占着 A 的锁，B 的操作照常（原来全局锁挡全舰队）。
+        加固：同时占住全局 mut_lock 与 A 的锁——旧实现（全局锁）必 409，
+        新实现（per-agent）B 照常。"""
         info = server.manager.create("B", persona="", priority="")
         a_id = server.manager.current_id()
         lock_a = server.manager.ops_lock(a_id)
         lock_a.acquire()
+        server.mut_lock.acquire()
         try:
             r = call(server, "POST", "/api/persona", {"text": "测试人设"},
                      agent_header=info["id"])
             assert r.get("persona") == "测试人设"
         finally:
+            server.mut_lock.release()
             lock_a.release()
 
     def test_refill_fast_path_while_busy(self, server):
         aid = server.manager.current_id()
         server.manager.ops_lock(aid).acquire()
+        server.mut_lock.acquire()
         try:
             r = call(server, "POST", "/api/budget/refill", {})
             assert r.get("refilled") is True
         finally:
+            server.mut_lock.release()
             server.manager.ops_lock(aid).release()
 
     def test_drop_goal_fast_path_while_busy(self, server):
         agent = server.manager.get(server.manager.current_id())
         node = agent.goal_tree.add("待删目标", "mid")
         server.manager.ops_lock(server.manager.current_id()).acquire()
+        server.mut_lock.acquire()
         try:
             r = call(server, "POST", f"/api/goals/{node.id}/drop", {})
             assert any(n["id"] == node.id for n in r.get("nodes", [])
                        if n.get("status") != "dropped") is False
         finally:
+            server.mut_lock.release()
             server.manager.ops_lock(server.manager.current_id()).release()
 
     def test_priority_fast_path_defers_seeding(self, server):
         """链运行时设优先级：文本立即生效，目标播种延到空闲（不抢锁）。"""
         agent = server.manager.get(server.manager.current_id())
         server.manager.ops_lock(server.manager.current_id()).acquire()
+        server.mut_lock.acquire()
         try:
             r = call(server, "POST", "/api/priority",
                      {"text": "补齐支付模块单测"})
@@ -97,6 +106,7 @@ class TestPerAgentIsolation:
             assert getattr(agent, "_priority_seed_dirty", False) is True
             assert not agent.goal_tree.all_active()   # 播种还没发生
         finally:
+            server.mut_lock.release()
             server.manager.ops_lock(server.manager.current_id()).release()
         # 空闲后补播种（心跳会做；这里直接调）
         agent.seed_priority_goals()

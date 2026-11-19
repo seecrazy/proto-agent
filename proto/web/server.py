@@ -44,8 +44,15 @@ class _HTTPError(Exception):
         self.status = status
         self.message = message
 
-# 主人控制类 POST：免 mut_lock（M49——长链占锁时紧急控制必须可用）
-CONTROL_POSTS = {"/api/mute", "/api/awake"}
+# 主人快通道 POST：免 agent 锁（M49 紧急控制 + M50 单资源写操作）。
+# 安全性来源：kernel 旗标步边界生效；预算/目标树/审批队列各持 RLock；
+# priority 只写文本（单资源），目标播种推迟到空闲心跳补做。
+CONTROL_POSTS = {"/api/mute", "/api/awake", "/api/budget/refill",
+                 "/api/priority"}
+_CONTROL_POST_RE = [
+    re.compile(r"^/api/goals/[0-9a-f]+/drop$"),
+    re.compile(r"^/api/agents/[A-Za-z0-9_-]+/(pause|select)$"),
+]
 
 READ_ONLY_GETS = {
     "/api/state", "/api/audit", "/api/proposals", "/api/rules",
@@ -147,21 +154,33 @@ class _Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/judge":
             return self._safely(lambda: self._routes(method, path, query,
                                                     agent, server))
-        # M49 主人控制免锁直通：静音/防休眠是长链运行中最需要的紧急控制，
-        # 与自主链抢 mut_lock 等于紧急按钮失灵。安全性由审计脊柱线程锁
-        # （M49）与 kernel 旗标的步边界语义保证，不破坏链的其余状态。
-        if method == "POST" and path in CONTROL_POSTS:
+        # M49/M50 主人快通道：免锁直通（安全性见 CONTROL_POSTS 注释）
+        if method == "POST" and (path in CONTROL_POSTS
+                                 or any(rx.match(path)
+                                        for rx in _CONTROL_POST_RE)):
             return self._routes(method, path, query, agent, server)
         if method == "GET" and path in READ_ONLY_GETS:
             return self._routes(method, path, query, agent, server)
-        # 变更操作有界等待：长心跳/聊天占锁时快速 409，而不是让浏览器挂几分钟
-        if not server.mut_lock.acquire(timeout=3.0):
+        if method == "POST" and path == "/api/agents":
+            # 舰队注册表操作：保留全局锁（registry 是共享单资源）
+            if not server.mut_lock.acquire(timeout=3.0):
+                return self._json(409, {"error": "agent_busy",
+                                        "hint": "注册表操作冲突，稍后重试"})
+            try:
+                return self._routes(method, path, query, agent, server)
+            finally:
+                server.mut_lock.release()
+        # M50：per-agent 单写者锁——A 的长链只挡 A 的操作，不再挡全舰队
+        lock = (server.manager.ops_lock(agent.data_dir.name)
+                if agent is not None else server.mut_lock)
+        if not lock.acquire(timeout=3.0):
             return self._json(409, {"error": "agent_busy",
-                                    "hint": "自学习或长任务进行中，稍后重试"})
+                                    "hint": "该 agent 自学习或长任务进行中，"
+                                            "稍后重试（不影响其他 agent）"})
         try:
             return self._routes(method, path, query, agent, server)
         finally:
-            server.mut_lock.release()
+            lock.release()
 
     def _routes(self, method: str, path: str, query, agent: ProtoAgent,
                 server: ProtoWebServer):

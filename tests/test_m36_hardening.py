@@ -405,7 +405,9 @@ class TestBusyLock:
                                 heartbeat_s=0)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            server.mut_lock.acquire()          # 模拟长心跳持锁
+            # M50 起锁为 per-agent：占住该 agent 的锁（等效模拟长心跳持锁）
+            server.manager.ops_lock(
+                server.manager.current_id()).acquire()
             req = urllib.request.Request(
                 f"http://127.0.0.1:{server.port}/api/chat",
                 data=json.dumps({"text": "hi"}).encode(), method="POST")
@@ -419,7 +421,8 @@ class TestBusyLock:
                 body = exc.read()
             assert status == 409 and b"agent_busy" in body
         finally:
-            server.mut_lock.release()
+            server.manager.ops_lock(
+                server.manager.current_id()).release()
             server.shutdown()
             server.server_close()
 
