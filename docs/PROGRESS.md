@@ -390,3 +390,11 @@ P2（工程化）：
 - **reseal()**：owner 授权的断链重封——先逐条校验每条记录**自哈希**（payload 真被篡改则拒绝重封），从断点起重串 prev_hash 并重新哈希（ts/payload/seq 一律不动），最后追加 `chain_repair` 审计事件把事故原因写进链本身。生产三条链已重封，`chain_ok: True`。
 - 教训：O(1) 缓存优化必须配套失效机制；"只追加"日志的正确性隐含唯一写者假设，任何多进程共享 data 目录（诊断脚本+控制台并存）都会破坏它。
 - 测试：tests/test_m43_audit_concurrency.py 7 项（双向覆写防护/交替写/空链外部写/重封保事件/健康链 noop/篡改拒绝/手工复刻事故形态）。全套 555 绿。
+
+### M44 — 额度控制（控制台可看可充 + 上限可配置）
+
+- **额度面板**：点顶栏额度文字打开——三分池（全局/主人任务/自主行动）余量/上限 + 占比条（<15% 变红），全局附调用次数；「充值（恢复今日上限）」按钮接 POST /api/budget/refill（agent_busy 占锁时等 4s 自动重试一次，沿用 decide() 模式）；点面板外自动关闭；充值记 owner_override 审计。
+- **顶栏紧凑化**：额度文字改 k 单位单行（自8.0k/主160k/全200k），防窄屏折行（目检抓到 1280px 下折成三行）。
+- **上限可配置**：proto.env 支持 PROTO_BUDGET_GLOBAL_TOKENS / PROTO_BUDGET_OWNER_TOKENS / PROTO_BUDGET_SELF_TOKENS / PROTO_BUDGET_CALLS（agent.pools_config()，非法值回退默认；下周期兑现为余量）。_budget_view 携带 cap_* 供前端画占比。
+- 刷新口径说明：每日 0 点 ensure_cycle 自动重置全部池到上限并解除熔断；充值=当日立即恢复。
+- 测试：tests/test_m44_budget_control.py 6 项（env 覆盖/非法回退/构造生效不污染默认/cap 下发/面板接线）。全套 561 绿。浏览器实测：面板开合/充值成功/审计落账/折行修复。

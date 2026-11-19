@@ -428,9 +428,15 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def _budget_view(agent: ProtoAgent) -> dict:
+    """余量 + 上限（M44：cap_* 前缀，前端画占比条）。"""
     try:
-        return {name: dict(units) for name, units in
-                agent.kernel.pools._remaining.items()}
+        view = {}
+        for name, units in agent.kernel.pools._remaining.items():
+            row = dict(units)
+            for unit, cap in agent.kernel.pools._config.get(name, {}).items():
+                row[f"cap_{unit}"] = cap
+            view[name] = row
+        return view
     except AttributeError:
         return {}
 

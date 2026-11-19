@@ -123,6 +123,24 @@
   }
   input:focus { border-color: var(--accent); }
   .empty { color: var(--dim); font-size: 12px; padding: 6px 0; }
+
+  /* 额度面板（M44）：点顶栏额度打开 */
+  #budget-view { cursor: pointer; user-select: none; white-space: nowrap; }
+  #budget-view:hover { color: var(--accent); }
+  #budget-panel { position: fixed; top: 46px; right: 12px; z-index: 60; width: 300px;
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px; box-shadow: 0 8px 30px rgba(0,0,0,.45); display: none; }
+  #budget-panel.open { display: block; }
+  #budget-panel h4 { margin: 0 0 10px; font-size: 13px; }
+  .bp-row { margin-bottom: 10px; }
+  .bp-row .lbl { display: flex; justify-content: space-between; font-size: 11px;
+    color: var(--dim); margin-bottom: 3px; }
+  .bp-row .lbl b { color: var(--text); font-weight: normal; }
+  .bp-row .bar { margin-top: 2px; }
+  .bp-row .fill.low { background: var(--bad); }
+  .bp-note { color: var(--dim); font-size: 10px; line-height: 1.6; margin-top: 10px;
+    border-top: 1px solid var(--border); padding-top: 8px; }
+  #budget-panel .btns { display: flex; gap: 8px; margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -130,7 +148,9 @@
   <div class="logo">PROTO<span>·</span>console</div>
   <div class="meta" id="model">…</div>
   <div class="meta">审计链 <span class="dot ok" id="chain-dot"></span></div>
-  <div class="meta" id="budget-view" title="预算三分池余量（自主/主人任务/全局）"></div>
+  <div class="meta" id="budget-view" title="预算三分池余量（点击管理：查看/充值）"
+       role="button" tabindex="0" onclick="toggleBudget()"
+       onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleBudget()}"></div>
   <div class="meta" id="tension-view" title="内在张力（人格加权驱力×紧迫+唤醒）">张力…</div>
   <div class="fleetdots" id="fleet-dots" title="舰队运行态（绿=运行 黄=暂停）"></div>
   <span class="topbadge" id="pending-badge" title="待审批的主动提议" role="button"
@@ -143,6 +163,18 @@
   <button id="awake-btn" onclick="toggleAwake()">☕防休眠</button>
   <button id="mute-btn" onclick="toggleMute()">静音</button>
 </header>
+
+<div id="budget-panel" role="dialog" aria-label="额度管理">
+  <h4>额度管理（三分池）</h4>
+  <div id="bp-rows"></div>
+  <div class="btns">
+    <button class="primary" id="bp-refill-btn" onclick="refillBudget()">充值（恢复今日上限）</button>
+    <button onclick="toggleBudget()">关闭</button>
+  </div>
+  <div class="bp-note">每日 0 点自动重置到上限；充值=立即恢复今日全部上限并记审计。
+    上限可在 proto.env 配置 PROTO_BUDGET_GLOBAL_TOKENS / PROTO_BUDGET_OWNER_TOKENS /
+    PROTO_BUDGET_SELF_TOKENS（重启生效，下周期兑现）。</div>
+</div>
 
 <main>
   <section id="chat">
@@ -350,6 +382,12 @@ if (localStorage.getItem("proto-side") === "hidden") {
   document.querySelector("main").classList.add("side-hidden");
 }
 initCollapsible();
+document.addEventListener("click", e => {
+  const panel = document.getElementById("budget-panel");
+  if (panel && panel.classList.contains("open")
+      && !panel.contains(e.target) && !document.getElementById("budget-view").contains(e.target))
+    panel.classList.remove("open");
+});
 
 async function api(method, path, body) {
   // GET/HEAD 绝不带 body（浏览器 fetch 会直接拒绝——曾致全页卡片静默挂死）
@@ -449,6 +487,49 @@ function renderDesireHuman(s) {
   box.innerHTML = lines.join("") + `<div class="human-line">😌 <b>情绪</b>：${mood}</div>`;
 }
 
+function toggleBudget() {
+  const p = document.getElementById("budget-panel");
+  p.classList.toggle("open");
+}
+async function refillBudget() {
+  const btn = document.getElementById("bp-refill-btn");
+  const attempt = () => api("POST", "/api/budget/refill", {});
+  btn.disabled = true; btn.textContent = "充值中…";
+  try {
+    try {
+      await attempt();
+    } catch (e) {
+      const msg = String(e && e.message ? e.message : e);
+      if (!msg.includes("agent_busy")) throw e;   // 心跳/长任务占锁：稍候自动重试一次
+      btn.textContent = "它正忙着（占锁），稍候重试…";
+      await new Promise(res => setTimeout(res, 4000));
+      await attempt();
+    }
+    await refreshState();
+    btn.textContent = "已充值 ✓";
+    setTimeout(() => { btn.textContent = "充值（恢复今日上限）"; }, 2000);
+  } catch (e) {
+    btn.textContent = "失败，稍后再试";
+  }
+  btn.disabled = false;
+}
+function renderBudgetPanel(b) {
+  const box = document.getElementById("bp-rows");
+  if (!box) return;
+  const NAMES = {global: "全局（总闸）", owner_tasks: "主人任务", self_initiated: "自主行动"};
+  let html = "";
+  for (const [key, label] of Object.entries(NAMES)) {
+    const p = b[key]; if (!p) continue;
+    const cap = p.cap_tokens || 0, cur = p.tokens || 0;
+    const pct = cap > 0 ? Math.max(0, Math.min(100, cur / cap * 100)) : 0;
+    const low = pct < 15 ? " low" : "";
+    const calls = key === "global" && p.cap_calls
+      ? `<div class="lbl"><span>调用次数</span><span><b>${Math.round(p.calls || 0)}</b> / ${Math.round(p.cap_calls)}</span></div>` : "";
+    html += `<div class="bp-row"><div class="lbl"><span>${label}</span><span><b>${Math.round(cur)}</b> / ${Math.round(cap)}</span></div>` +
+      `<div class="bar"><div class="fill${low}" style="width:${pct}%"></div></div>${calls}</div>`;
+  }
+  box.innerHTML = html;
+}
 async function refreshState() {
   const s = await api("GET", "/api/state");
   document.getElementById("model").textContent = s.model;
@@ -456,9 +537,14 @@ async function refreshState() {
   document.getElementById("mute-btn").textContent = s.muted ? "解除静音" : "静音";
   document.getElementById("awake-btn").textContent = s.awake ? "☕防休眠中" : "☕防休眠";
   const b = s.budgets || {};
-  const fmt = (p) => b[p] && b[p].tokens != null ? Math.round(b[p].tokens) : "?";
+  const kfmt = (p) => {   // 顶栏紧凑展示（k 单位防折行）；面板里仍是精确值
+    const v = b[p] && b[p].tokens != null ? b[p].tokens : null;
+    if (v == null) return "?";
+    return v >= 1000 ? (v / 1000).toFixed(v >= 100000 ? 0 : 1) + "k" : Math.round(v);
+  };
   document.getElementById("budget-view").textContent =
-    `额度 自主${fmt("self_initiated")} / 主人${fmt("owner_tasks")} / 全局${fmt("global")}`;
+    `额度 自${kfmt("self_initiated")}/主${kfmt("owner_tasks")}/全${kfmt("global")}`;
+  renderBudgetPanel(b);
   document.getElementById("emo").textContent =
     `P${s.emotion.pleasure} A${s.emotion.arousal} D${s.emotion.dominance}`;
   if (document.activeElement !== document.getElementById("priority-input"))

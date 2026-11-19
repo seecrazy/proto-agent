@@ -64,6 +64,33 @@ DEFAULT_POOLS = {
 }
 
 
+def pools_config() -> dict:
+    """预算上限：DEFAULT_POOLS 为基础，proto.env 环境变量可覆盖（M44）。
+
+    PROTO_BUDGET_GLOBAL_TOKENS / PROTO_BUDGET_OWNER_TOKENS /
+    PROTO_BUDGET_SELF_TOKENS / PROTO_BUDGET_CALLS
+    上限变更在下一周期（次日 0 点自动重置或主人充值）才兑现为余量。
+    """
+    import copy
+    import os
+    cfg = copy.deepcopy(DEFAULT_POOLS)
+
+    def _f(name, default):
+        try:
+            return float(os.environ[name])
+        except (KeyError, ValueError):
+            return default
+
+    cfg["global"]["tokens"] = _f("PROTO_BUDGET_GLOBAL_TOKENS",
+                                 cfg["global"]["tokens"])
+    cfg["owner_tasks"]["tokens"] = _f("PROTO_BUDGET_OWNER_TOKENS",
+                                      cfg["owner_tasks"]["tokens"])
+    cfg["self_initiated"]["tokens"] = _f("PROTO_BUDGET_SELF_TOKENS",
+                                         cfg["self_initiated"]["tokens"])
+    cfg["global"]["calls"] = _f("PROTO_BUDGET_CALLS", cfg["global"]["calls"])
+    return cfg
+
+
 class ProtoAgent:
     def __init__(self, data_dir: Path, llm=None, now=time.time,
                  goal_interval_s: float = 4 * 3600,
@@ -124,7 +151,7 @@ class ProtoAgent:
                 "重走注册（该操作会使旧锚作废，请确认你拥有这台机器）。")
         self._nonce = 0
 
-        pools = BudgetPools(dict(DEFAULT_POOLS), store=store, doc_id="main")
+        pools = BudgetPools(pools_config(), store=store, doc_id="main")
         self.kernel = Kernel(self.anchor, self.spine, pools)
         raw = store.get("state", "main")
         self.state = AgentState.from_dict(raw) if raw else AgentState()
