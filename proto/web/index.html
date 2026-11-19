@@ -33,24 +33,30 @@
   button:hover { border-color: var(--accent); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.danger:hover { border-color: var(--bad); color: var(--bad); }
-  main { flex: 1; display: grid; grid-template-columns: 128px 380px 1fr;
+  main { flex: 1; display: grid; grid-template-columns: 340px 1fr 380px;
           min-height: 0; position: relative; }
-  /* M54：左导航栏（卡片分类） */
-  #cat-rail { grid-row: 1; grid-column: 1;
-              border-right: 1px solid var(--border); background: var(--panel);
-              padding: 10px 8px; display: flex; flex-direction: column; gap: 6px;
-              overflow-y: auto; }
-  #cat-rail button { text-align: left; font-size: 12px; padding: 8px 10px;
-                     border-radius: 8px; background: transparent; border: none;
-                     color: var(--dim); display: block; }
-  #cat-rail button:hover { color: var(--text); background: var(--panel2); }
-  #cat-rail button.active { color: var(--text); background: var(--panel2);
-                            border-left: 2px solid var(--accent); }
-  #cat-rail .cnt { float: right; font-size: 10px; color: var(--dim); }
-  body.pal #cat-rail button[data-cat="tech"] { display: none; }
+  /* M55：双侧栏——左右各显示一个类别，同屏并看（用户本意） */
+  .side-panel { overflow-y: auto; padding: 10px 12px; display: flex;
+                flex-direction: column; gap: 12px; min-height: 0; }
+  #side-left { grid-row: 1; grid-column: 1; border-right: 1px solid var(--border); }
+  #side-right { grid-row: 1; grid-column: 3; border-left: 1px solid var(--border); }
+  .panel-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 2px;
+                position: sticky; top: -10px; background: var(--bg);
+                padding: 4px 0 6px; z-index: 5; }
+  .panel-tabs button { font-size: 11px; padding: 3px 8px; border-radius: 6px;
+                       background: transparent; border: 1px solid transparent;
+                       color: var(--dim); }
+  .panel-tabs button:hover { color: var(--text); }
+  .panel-tabs button.active { color: var(--text); background: var(--panel2);
+                              border-color: var(--accent); }
+  main.hide-left { grid-template-columns: 0 1fr 380px; }
+  main.hide-left #side-left { display: none; }
+  main.hide-right { grid-template-columns: 340px 1fr 0; }
+  main.hide-right #side-right { display: none; }
+  main.hide-left.hide-right { grid-template-columns: 0 1fr 0; }
 
   /* ---- 左：对话 ---- */
-  #chat { grid-row: 1; grid-column: 3; display: flex; flex-direction: column;
+  #chat { grid-row: 1; grid-column: 2; display: flex; flex-direction: column;
           min-height: 0; }
   #side { border-right: 1px solid var(--border); }
   #messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
@@ -64,8 +70,7 @@
   #composer input { flex: 1; }
 
   /* ---- 右：仪表 ---- */
-  #side { grid-row: 1; grid-column: 2; overflow-y: auto; padding: 14px;
-          display: flex; flex-direction: column; gap: 14px; }
+  #side { display: none; }   /* M55: 卡片池（HTML 定义处），不参与布局 */
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
   .card h3 { font-size: 12px; color: var(--dim); font-weight: 600; margin-bottom: 8px; letter-spacing: .5px;
              display: flex; align-items: center; cursor: pointer; user-select: none;
@@ -82,18 +87,21 @@
   #emo { margin-left: auto; margin-right: 6px; }
   .card h3 > span[style*="float:right"] { margin-left: auto; margin-right: 6px; }
   .card h3 .chev.follow { margin-left: 6px; }   /* 标题已有右侧徽标时贴在其后 */
-  /* 侧栏收放把手（惯例：贴在侧栏自身边缘，而非顶栏按钮） */
-  #side-toggle { position: absolute; top: 50%; transform: translateY(-50%);
-                 right: 380px; width: 18px; height: 46px; padding: 0;
+  /* 侧栏收放把手 ×2（M55）：各贴其面板与对话区的分隔线，收起后贴屏幕边 */
+  .side-toggle { position: absolute; top: 50%; transform: translateY(-50%);
+                 width: 18px; height: 46px; padding: 0;
                  font-size: 12px; line-height: 1; color: var(--dim);
                  background: var(--panel); border: 1px solid var(--border);
-                 border-left-color: transparent; border-radius: 8px 0 0 8px;
                  z-index: 30; }
-  #side-toggle:hover { color: var(--accent); border-color: var(--accent); }
-  main.side-hidden { grid-template-columns: 128px 0 1fr; }
-  main.side-hidden #side { display: none; }
-  main.side-hidden #side-toggle { right: 0; border-radius: 0 8px 8px 0;
-                                  border-left-color: var(--border); border-right-color: transparent; }
+  .side-toggle:hover { color: var(--accent); border-color: var(--accent); }
+  #side-toggle-left { left: 340px; border-left-color: transparent;
+                      border-radius: 0 8px 8px 0; }
+  #side-toggle-right { right: 380px; border-right-color: transparent;
+                       border-radius: 8px 0 0 8px; }
+  main.hide-left #side-toggle-left { left: 0; border-radius: 0 8px 8px 0;
+                                     border-left-color: var(--border); }
+  main.hide-right #side-toggle-right { right: 0; border-radius: 8px 0 0 8px;
+                                       border-right-color: var(--border); }
   .param { margin-bottom: 8px; }
   .param .row { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px; }
   .param .name { color: var(--text); } .param .val { color: var(--dim); font-variant-numeric: tabular-nums; }
@@ -189,7 +197,7 @@
   <div class="meta" id="tension-view" title="内在张力（人格加权驱力×紧迫+唤醒）">张力…</div>
   <div class="fleetdots" id="fleet-dots" title="舰队运行态（绿=运行 黄=暂停）"></div>
   <span class="topbadge" id="pending-badge" title="待审批的主动提议" role="button"
-        aria-label="待审批提议" onclick="applyCat('work');document.getElementById('proposals').scrollIntoView({behavior:'smooth'})" style="display:none">待批 0</span>
+        aria-label="待审批提议" onclick="showCat('work')" style="display:none">待批 0</span>
   <select id="agent-select" onchange="switchAgent(this.value)" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px"></select>
   <button onclick="showCreateAgent()" style="font-size:12px">＋Agent</button>
   <div class="spacer"></div>
@@ -211,9 +219,11 @@
 </div>
 
 <main>
-  <nav id="cat-rail" aria-label="卡片分类导航"></nav>
-  <button id="side-toggle" onclick="toggleSide()" aria-label="收起侧栏"
-          title="收起/展开右侧卡片栏">‹</button>
+  <aside class="side-panel" id="side-left" aria-label="左侧卡片栏">
+    <div class="panel-tabs" id="tabs-left"></div>
+    <div id="cards-left" style="display:flex;flex-direction:column;gap:12px"></div>
+  </aside>
+  <button class="side-toggle" id="side-toggle-left" onclick="togglePanel('left')" aria-label="收起左侧栏">‹</button>
   <section id="chat">
     <div id="messages"></div>
     <div id="composer">
@@ -222,7 +232,14 @@
     </div>
   </section>
 
-  <aside id="side">
+  <button class="side-toggle" id="side-toggle-right" onclick="togglePanel('right')" aria-label="收起右侧栏">›</button>
+  <aside class="side-panel" id="side-right" aria-label="右侧卡片栏">
+    <div class="panel-tabs" id="tabs-right"></div>
+    <div id="cards-right" style="display:flex;flex-direction:column;gap:12px"></div>
+  </aside>
+
+  <!-- 卡片池：所有卡片定义处，boot 时按类别分发到左右栏 -->
+  <aside id="side" style="display:none">
     <div data-cat="ov" class="card" id="activity-card">
       <h3>它现在在干嘛 <span class="badge" id="act-state">…</span></h3>
       <div id="activity-now" class="empty">（加载中…）</div>
@@ -387,52 +404,95 @@
 const TOKEN = (location.hash.match(/token=([^&]+)/) || [])[1] || "";
 if (!TOKEN) document.body.innerHTML = "<p style='padding:30px'>缺少访问令牌：请使用终端打印的完整 URL（含 #token=…）打开。</p>";
 
-/* ---- M54：左导航栏（卡片分类） ---- */
-const CATS = [["ov", "📋 概览"], ["inner", "💛 内在"], ["work", "🛠 工作"], ["tech", "🔧 工程"]];
-function applyCat(cat) {
-  document.querySelectorAll("#side .card[data-cat]").forEach(c => {
-    c.style.display = (c.dataset.cat === cat) ? "" : "none";
-  });
-  document.querySelectorAll("#cat-rail button").forEach(b =>
-    b.classList.toggle("active", b.dataset.cat === cat));
-  localStorage.setItem("proto-cat", cat);
+/* ---- M55：双侧栏——左右各显示一个类别，同屏并看 ---- */
+const CATS = [["ov", "📋概览"], ["inner", "💛内在"], ["work", "🛠工作"], ["tech", "🔧工程"]];
+const PANEL = {
+  left: { cat: localStorage.getItem("proto-panel-left") || "ov" },
+  right: { cat: localStorage.getItem("proto-panel-right") || "work" },
+};
+function cardsOf(cat) {
+  // 卡片可能已在任一面板中（池只是定义处）——全文档找
+  return [...document.querySelectorAll(`.card[data-cat="${cat}"]`)];
 }
-function catFallbackAfterViewSwitch() {
-  const cur = localStorage.getItem("proto-cat");
-  const visible = document.querySelectorAll(
-    `#side .card[data-cat="${cur}"]:not(.tech)`).length
-    || cur !== "tech";
-  if (cur === "tech" && document.body.classList.contains("pal")) applyCat("ov");
-}
-function buildCatRail() {
-  const rail = document.getElementById("cat-rail");
-  rail.innerHTML = "";
-  const cards = document.querySelectorAll("#side .card[data-cat]");
-  for (const [id, label] of CATS) {
-    const n = [...cards].filter(c => c.dataset.cat === id).length;
-    if (!n) continue;
-    const b = document.createElement("button");
-    b.dataset.cat = id;
-    b.innerHTML = `${label} <span class="cnt">${n}</span>`;
-    b.title = `显示该类别的 ${n} 张卡片`;
-    b.onclick = () => {
-      const main = document.querySelector("main");
-      if (main.classList.contains("side-hidden")) toggleSide();  // 收起时点分类自动展开
-      applyCat(id);
-    };
-    rail.appendChild(b);
+function renderTabs() {
+  for (const side of ["left", "right"]) {
+    const box = document.getElementById("tabs-" + side);
+    box.innerHTML = "";
+    for (const [id, label] of CATS) {
+      if (id === "tech" && document.body.classList.contains("pal")) continue;
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.className = PANEL[side].cat === id ? "active" : "";
+      b.onclick = () => setPanelCat(side, id);
+      box.appendChild(b);
+    }
   }
-  let saved = localStorage.getItem("proto-cat");
-  if (saved === "tech" && document.body.classList.contains("pal")) saved = null;
-  applyCat(saved || (document.querySelector("#cat-rail button") || {}).dataset?.cat
-           || "ov");
 }
-buildCatRail();
+function setPanelCat(side, cat) {
+  const other = side === "left" ? "right" : "left";
+  if (cat === "tech" && document.body.classList.contains("pal")) cat = "ov";
+  if (PANEL[other].cat === cat) {          // 两栏不允许同类：对面让位
+    PANEL[other].cat = CATS.map(c => c[0])
+      .find(c => c !== cat && !(c === "tech" && document.body.classList.contains("pal"))) || "ov";
+  }
+  PANEL[side].cat = cat;
+  localStorage.setItem(`proto-panel-${side}`, cat);
+  distribute();
+  const main = document.querySelector("main");
+  main.classList.remove("hide-" + side);   // 收起时点分类自动展开
+  syncHandles();
+}
+function distribute() {
+  const pool = document.getElementById("side");
+  for (const side of ["left", "right"]) {
+    const box = document.getElementById("cards-" + side);
+    // 先归还池再分发：innerHTML="" 会销毁节点（同类别重分发时卡片永久丢失）
+    while (box.firstChild) pool.appendChild(box.firstChild);
+    cardsOf(PANEL[side].cat).forEach(c => box.appendChild(c));
+  }
+  renderTabs();
+}
+function togglePanel(side) {
+  const main = document.querySelector("main");
+  main.classList.toggle("hide-" + side);
+  localStorage.setItem("proto-panel-" + side + "-hidden",
+                       main.classList.contains("hide-" + side) ? "1" : "");
+  syncHandles();
+}
+function syncHandles() {
+  const main = document.querySelector("main");
+  const L = document.getElementById("side-toggle-left");
+  const R = document.getElementById("side-toggle-right");
+  L.textContent = main.classList.contains("hide-left") ? "›" : "‹";
+  R.textContent = main.classList.contains("hide-right") ? "‹" : "›";
+}
+function showCat(cat) {                     // 徽标等直达：右栏切类并滚动
+  setPanelCat("right", cat);
+  const el = document.getElementById("proposals");
+  if (el) el.scrollIntoView({ behavior: "smooth" });
+}
+function catFallbackAfterViewSwitch() {     // 伙伴视角：工程类让位
+  for (const side of ["left", "right"]) {
+    if (PANEL[side].cat === "tech" && document.body.classList.contains("pal")) {
+      PANEL[side].cat = "ov";
+      localStorage.setItem(`proto-panel-${side}`, "ov");
+    }
+  }
+  distribute();
+}
+(function bootPanels() {
+  if (document.body.classList.contains("pal")) catFallbackAfterViewSwitch();
+  const main = document.querySelector("main");
+  if (localStorage.getItem("proto-panel-left-hidden") === "1") main.classList.add("hide-left");
+  if (localStorage.getItem("proto-panel-right-hidden") === "1") main.classList.add("hide-right");
+  distribute();
+  syncHandles();
+})();
 
 /* ---- M42/M46：卡片折叠（明确折叠按钮+标题可点，localStorage 记忆）+ 侧栏边缘把手 ---- */
 function initCollapsible() {
   const saved = new Set(JSON.parse(localStorage.getItem("proto-collapsed") || "[]"));
-  document.querySelectorAll("#side .card").forEach(card => {
+  document.querySelectorAll(".side-panel .card").forEach(card => {
     if (card.querySelector(".card-body")) return;
     const h3 = card.querySelector("h3");
     if (!h3) return;
@@ -466,21 +526,7 @@ function initCollapsible() {
     });
   });
 }
-function toggleSide() {
-  const hidden = document.querySelector("main").classList.toggle("side-hidden");
-  localStorage.setItem("proto-side", hidden ? "hidden" : "");
-  const h = document.getElementById("side-toggle");
-  h.textContent = hidden ? "›" : "‹";
-  h.setAttribute("aria-label", hidden ? "展开侧栏" : "收起侧栏");
-}
-(function initSideToggle() {
-  const h = document.getElementById("side-toggle");
-  if (localStorage.getItem("proto-side") === "hidden") {
-    document.querySelector("main").classList.add("side-hidden");
-    h.textContent = "›";
-    h.setAttribute("aria-label", "展开侧栏");
-  }
-})();
+
 initCollapsible();
 document.addEventListener("click", e => {
   const panel = document.getElementById("budget-panel");
