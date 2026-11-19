@@ -653,6 +653,11 @@ class ProtoAgent:
         journal = GoalJournal(
             Path(self.data_dir) / "work" / node.id / "JOURNAL.md")
         escalation = _escalation_prefix(journal.consecutive_no_output())
+        if getattr(self, "_force_approach_change", None) == node.id:
+            self._force_approach_change = None
+            escalation += ("【换打法】此前同一思路已连续失败——禁止再用相同"
+                           "路径。先重新规划：换一种根本不同的实现/验证方法"
+                           "（或先做最小可验证切片），再动手。\n")
         # M37：方法菜单注入（多元+自发明，主人限定才收窄）
         menu = self._curate_methods(node.text)
         # 项目目录约定注入任务描述
@@ -979,20 +984,45 @@ class ProtoAgent:
         mids = [n for n in self.goal_tree.all_active()
                 if n.level in ("mid", "short", "task")]
         if mids and all(getattr(n, "fail_streak", 0) >= 3 for n in mids):
+            # M59b：全败≠死停。先自主换打法（重置失败计数+强制根本不同
+            # 思路重试）；同一目标换过 2 轮打法仍全败，才是真 hold 问主人。
+            store = create_store(self.data_dir)
+            resets = {n.id: (store.get("approach_resets", n.id) or {})
+                      .get("resets", 0) for n in mids}
+            pivotable = [n for n in mids if resets[n.id] < 2]
+            if pivotable:
+                target = min(pivotable,
+                             key=lambda n: (resets[n.id], -n.progress))
+                store.put("approach_resets", target.id,
+                          {"resets": resets[target.id] + 1,
+                           "text": target.text[:80],
+                           "at": self._now()})
+                target.fail_streak = 0
+                self.goal_tree._store.put("goaltree", target.id,
+                                          target.to_dict())
+                self._force_approach_change = target.id
+                self.spine.append("approach_reset", {
+                    "goal": target.text[:60],
+                    "attempt": resets[target.id] + 1})
+                self._inbox.append(
+                    f"〔换打法〕「{target.text[:36]}…」连续验证失败，"
+                    "我将用根本不同的思路重试（第 "
+                    f"{resets[target.id] + 1} 次自主换法）。")
+                return True
             now_ts = self._now()
             if now_ts - getattr(self, "_last_hold_ts", 0.0) >= 3600:
                 self._last_hold_ts = now_ts
                 self.spine.append("work_hold", {
-                    "reason": "所有目标连续验证失败≥3——硬撞无意义，"
-                              "需换思路或主人输入", "goals": len(mids)})
+                    "reason": "所有目标换过 2 轮打法仍连续失败——自主思路"
+                              "已尽，需主人输入", "goals": len(mids)})
                 self._inbox.append(
-                    "〔工作暂停〕所有目标连续验证失败。我在黑板发了求助帖/"
-                    "需要你的新指示或新思路（看目标树的失败原因）。")
+                    "〔工作暂停〕所有目标各换过 2 轮打法仍失败。我在黑板"
+                    "发了求助帖/需要你的新指示（看目标树失败原因）。")
                 try:
                     if self.blackboard is not None:
                         self.post_to_blackboard(
-                            "所有目标连续验证失败≥3，请求思路指点或主人指示",
-                            kind="help")
+                            "各目标换过 2 轮打法仍连续失败，请求思路指点"
+                            "或主人指示", kind="help")
                 except Exception:
                     pass
             return False
