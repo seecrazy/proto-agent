@@ -398,3 +398,16 @@ P2（工程化）：
 - **上限可配置**：proto.env 支持 PROTO_BUDGET_GLOBAL_TOKENS / PROTO_BUDGET_OWNER_TOKENS / PROTO_BUDGET_SELF_TOKENS / PROTO_BUDGET_CALLS（agent.pools_config()，非法值回退默认；下周期兑现为余量）。_budget_view 携带 cap_* 供前端画占比。
 - 刷新口径说明：每日 0 点 ensure_cycle 自动重置全部池到上限并解除熔断；充值=当日立即恢复。
 - 测试：tests/test_m44_budget_control.py 6 项（env 覆盖/非法回退/构造生效不污染默认/cap 下发/面板接线）。全套 561 绿。浏览器实测：面板开合/充值成功/审计落账/折行修复。
+
+### M45 — 推进力根治（接力工作记忆 + 步数经济学，对标 ZCode/Codex）
+
+用户灵魂拷问："为什么自主 agent 做事不如 ZCode/Codex 靠谱——他们一旦行动不会陷入无意义循环"。两晚生产证据（84 步重写文档 / 6×10 步 list_dir 游荡零写入）对比出三条结构性缺陷，全部机制化修复：
+
+1. **尝试间失忆（最致命）**：每 30 分钟新开一条 10 步链从零探索，60 步里 ~50 步重复。ZCode 的推进力本质=单一会话上下文只增不减。→ **GoalJournal（proto/work/journal.py）**：每轮结束把 发现/产出/下一步 写进 `data_dir/work/<goal-id>/JOURNAL.md`（LLM 小结失败自动降级机械摘要：从 trace 提取 write_file/edit_file 路径）；下一轮开局注入最近两轮小结+「探索已完成，接着做，不要重新列目录」。探索只做一次，产出逐轮累积。
+2. **步数经济学失衡**：max_steps 10/6 对"实现一个 App"探索都不够。→ **24/12**；且**探索配额**：连续 4 步只读（list_dir/read_file/grep/clock）→ 注入观察「禁止再探索，下一步必须 write_file/edit_file/run_python 或 done」，写入工具重置计数。
+3. **零产出无核算**：零写入与写三文件在机制上等价。→ journal 记录连续零产出轮数，≥2 轮 → 任务文本前置【产出纪律】"本轮第 1 步必须 write_file"。
+4. **探索降本**：list_dir 跳过 _archived/.work/点目录、上限 40 条+grep 收窄提示、**项目内文件直达**（原实现 depth≥2 直接剪掉，文件永远列不出，逼模型二次调用）。
+5. **预算地板**：owner 池 <2000 tokens 不起必死链（以前烧掉最后的钱死在半路）——记 budget_floor_wait 审计+收件箱留言，零 LLM 消耗。
+6. LOOP_SYSTEM 增「推进纪律」条款：探索是手段不是产出，每轮必须有文件落盘或验证跑通。
+
+测试：tests/test_m45_momentum.py 13 项（日志往返/零产出计数/机械摘要/注入断言/探索配额/计数重置/降本/预算地板/步数源级锁定/升级前缀）。全套 574 绿。坑：llm_fast 默认=主 llm，桩测试的第一个 decision 会被 plan 调用吃掉；内部机制文件勿放工作区（会污染 projects/ 纯度断言）。

@@ -94,20 +94,34 @@ class CodeTools:
         return 1 if not replace_all else count
 
     def list_dir(self, path: str = "") -> str:
+        """列工作区目录（目录 2 层 + 项目内文件 1 层）。降本（M45）：
+        跳过归档/内部目录、条目上限 40，超出提示用 grep 收窄——
+        大目录全量列出只会吃上下文；文件直达免去二次 list_dir。"""
         base = self._abs(path) if path else self.root
+        skip_dirs = {"_archived", ".work", "__pycache__"}
         entries = []
+        truncated = False
         for current, dirs, files in os.walk(base):
-            depth = len(Path(current).relative_to(self.root).parts)
+            rel = Path(current).relative_to(self.root)
+            depth = len(rel.parts)
             if depth >= 2:
-                dirs[:] = []
-                continue
-            for name in sorted(dirs):
-                entries.append(str(Path(current).relative_to(self.root) / name) + "/")
+                dirs[:] = []          # 项目目录内不再下钻，但文件要列出
+            else:
+                dirs[:] = sorted(d for d in dirs if d not in skip_dirs
+                                 and not d.startswith("."))
+            for name in dirs:
+                entries.append(str(rel / name) + "/")
             for name in sorted(files):
-                entries.append(str(Path(current).relative_to(self.root) / name))
-            if len(entries) >= 200:
+                if name.startswith("."):
+                    continue
+                entries.append(str(rel / name))
+            if len(entries) >= 40:
+                truncated = True
                 break
-        return "\n".join(entries[:200])
+        listing = "\n".join(entries[:40])
+        if truncated:
+            listing += "\n…（条目过多已截断；用 grep 按文件名/内容精确收窄）"
+        return listing
 
     def grep(self, pattern: str, glob: str = "*") -> List[Dict]:
         rx = re.compile(pattern)

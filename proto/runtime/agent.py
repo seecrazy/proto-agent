@@ -91,6 +91,19 @@ def pools_config() -> dict:
     return cfg
 
 
+def _escalation_prefix(consecutive_no_output: int) -> str:
+    """M45 产出纪律升级：连续多轮零产出的目标，任务文本前置强约束。
+
+    ZCode 类工具一旦行动就持续产出；PROTO 若探索完不落盘会整夜空转。
+    连续 ≥2 轮零产出 → 本轮第 1 步就必须写文件（探索已由接力日志提供）。
+    """
+    if consecutive_no_output < 2:
+        return ""
+    return (f"【产出纪律】此前 {consecutive_no_output} 轮尝试全部零产出"
+            "（只探索没写文件）。本轮第 1 步必须 write_file 创建或修改"
+            "目标文件——所需信息已在[上一轮进展]里，不许再探索。\n")
+
+
 class ProtoAgent:
     def __init__(self, data_dir: Path, llm=None, now=time.time,
                  goal_interval_s: float = 4 * 3600,
@@ -533,21 +546,43 @@ class ProtoAgent:
         """目标牵引执行：在 projects/<目标slug>/ 下自主开发，验收走质量门。"""
         from proto.exec.agentic import AgenticLoop
         from proto.quality.gate import generate_acceptance
+        from proto.work.journal import GoalJournal
+        # M45 预算地板：owner 池见底时不起必死链（半路烧干=白烧），
+        # 记审计+收件箱留言等充值/次日重置，零 LLM 消耗。
+        floor = (self.kernel.pools.remaining_all()
+                 .get("owner_tasks", {}).get("tokens", 0.0))
+        if floor < 2000.0:
+            self.spine.append("budget_floor_wait",
+                              {"remaining": round(floor, 1),
+                               "goal": node.text[:60]})
+            self._inbox.append(
+                f"〔预算地板〕{node.text[:40]}… 暂停推进：任务池余量 "
+                f"{round(floor)} tokens，不够一轮有效工作。充值或等次日 "
+                "0 点自动重置后自动恢复。")
+            return {"status": "budget_floor_wait",
+                    "reason": "owner_tasks 低于 2000 tokens",
+                    "goal": node.text}
         project_dir = f"projects/{self._goal_slug(node.text)}"
         acceptance = node.acceptance or generate_acceptance(
             self.llm_fast, f"{node.text}（产出落在 {project_dir}）")
         # M41：工作区治理——项目索引（每个目录对应哪个目标/什么状态）
         self._refresh_projects_index()
+        # M45 接力日志：跨尝试传递 发现/产出/下一步（防每轮从零探索）。
+        # 放 agent 数据目录而非工作区——内部机制不占交付区。
+        journal = GoalJournal(
+            Path(self.data_dir) / "work" / node.id / "JOURNAL.md")
+        escalation = _escalation_prefix(journal.consecutive_no_output())
         # M37：方法菜单注入（多元+自发明，主人限定才收窄）
         menu = self._curate_methods(node.text)
         # 项目目录约定注入任务描述
-        task = (f"{node.text}。产出必须写入项目目录 {project_dir}/ "
+        task = (f"{escalation}{node.text}。产出必须写入项目目录 {project_dir}/ "
                 f"（write_file 的 path 以 {project_dir}/ 开头）。"
                 + (f"\n{menu}" if menu else ""))
-        result = AgenticLoop(self, max_steps=10).run(task, acceptance=acceptance)
+        result = AgenticLoop(self, max_steps=24).run(
+            task, acceptance=acceptance, journal=journal)
         if result.get("status") == "awaiting_retry":
-            retry = AgenticLoop(self, max_steps=6).run(
-                task, acceptance=acceptance,
+            retry = AgenticLoop(self, max_steps=12).run(
+                task, acceptance=acceptance, journal=journal,
                 feedback="；".join(result.get("missing", [])))
             if retry.get("verified") is not None:
                 result = retry
