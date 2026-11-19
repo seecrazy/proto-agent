@@ -454,3 +454,12 @@ P2（工程化）：
 
 - **docs/DEBT.md**：已知未修债必须登记（触发条件/风险/修法/建议时机），未登记的拖延视为流程违规。当前在账：D1 mut_lock 整段持锁（单写者队列重构，专门会话做）/ D2 force_act 文案 / D3 method 重复发明 / D5 Linux runsc 未验证。
 - **D4 当天偿还**（登记即修的示范）：实测沙盒确实挡 xcrun（DARWIN 用户级临时/缓存目录 /var/folders/… 不受 TMPDIR 环境变量控制，写被拒）——这正是专家"本地验证"即将撞的墙。profile 按 confstr 动态放行本用户 TEMP/CACHE 两目录，`xcrun swiftc -typecheck` 沙盒内实测 exit 0，593 测试全绿（遏制未放松）。
+
+### M50 — D1 偿还：per-agent 单写者 + 主人快通道（用户"现在就修"）
+
+- **per-agent ops_lock**：服务器全局 mut_lock → 每 agent 一把（manager.ops_lock）。A 的分钟级链只挡 A 自己的操作，不再挡全舰队；心跳从"全局一把锁 tick 整队"改为逐 agent try-lock（0.2s，忙者跳过）。
+- **主人快通道免锁扩容**（M49 mute/awake 之外新增）：budget/refill、priority（文本部分）、goals drop、agents pause/select。安全性由资源级 RLock 支撑：BudgetPools（consume/refill/ensure_cycle）、GoalTree（add/complete/drop/seed）、ApprovalQueue（submit/approve/deny）。
+- **set_priority 拆分**：set_priority_text（纯单资源写，免锁即时生效，置 _priority_seed_dirty）+ seed_priority_goals（LLM 播种，心跳空闲时补做——manager.seed_if_dirty）。链运行时设优先级不再 409。
+- 409 文案改为"该 agent…（不影响其他 agent）"。/api/act 后台 job 改持 per-agent 锁；/api/agents（注册表）保留全局锁。
+- 顺手修：drop_goal 在 workspace/projects 不存在时 500（快通道暴露的潜伏 bug）。
+- 测试：tests/test_m50_per_agent_locks.py 6 项（跨 agent 不互阻/占用时 refill+drop+priority 快通道/播种延迟补做/预算并发/目标树并发）。全套 599 绿。

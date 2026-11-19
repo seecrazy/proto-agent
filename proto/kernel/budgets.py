@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from datetime import date
 from typing import Callable, Dict, Optional
@@ -33,6 +34,7 @@ class BudgetPools:
         }
         self.breaker_tripped: bool = False
         self.on_trip: Optional[Callable[[str], None]] = None  # 由 Kernel 接线到审计
+        self._lock = threading.RLock()   # M50：资源级锁（链消耗与主人充值并发安全）
         self._load()
 
     def _load(self) -> None:
@@ -62,17 +64,20 @@ class BudgetPools:
 
     def refill(self) -> None:
         """主人显式充值：今日各池恢复到配置上限（审计由调用方记）。"""
-        self._remaining = {name: dict(units) for name, units in self._config.items()}
-        self._save()
+        with self._lock:
+            self._remaining = {name: dict(units)
+                               for name, units in self._config.items()}
+            self._save()
 
     def ensure_cycle(self) -> None:
-        today = date.today().isoformat()
-        if today != self._cycle_date:
-            self._remaining = {
-                name: dict(units) for name, units in self._config.items()}
-            self.breaker_tripped = False
-            self._cycle_date = today
-            self._save()
+        with self._lock:
+            today = date.today().isoformat()
+            if today != self._cycle_date:
+                self._remaining = {
+                    name: dict(units) for name, units in self._config.items()}
+                self.breaker_tripped = False
+                self._cycle_date = today
+                self._save()
 
     def _trip(self, reason: str) -> BudgetDecision:
         self.breaker_tripped = True
@@ -81,7 +86,13 @@ class BudgetPools:
             self.on_trip(reason)
         return BudgetDecision(False, reason)
 
-    def try_consume(self, pool: str, amounts: Dict[str, float]) -> BudgetDecision:
+    def try_consume(self, pool: str,
+                    amounts: Dict[str, float]) -> BudgetDecision:
+        with self._lock:
+            return self._try_consume_locked(pool, amounts)
+
+    def _try_consume_locked(self, pool: str,
+                            amounts: Dict[str, float]) -> BudgetDecision:
         self.ensure_cycle()
         if self.breaker_tripped:
             return BudgetDecision(False, "breaker_tripped")

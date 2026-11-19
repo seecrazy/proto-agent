@@ -512,6 +512,8 @@ class ProtoAgent:
             return
         slug = self._goal_slug(text)
         root = self.code_workspace.root / "projects"
+        if not root.is_dir():
+            return          # 全新 agent 尚无 projects 目录（快通道暴露的潜伏 500）
         for d in root.iterdir():
             if d.is_dir() and (slug.startswith(d.name[:8])
                                or d.name.startswith(slug[:8])):
@@ -1305,7 +1307,9 @@ class ProtoAgent:
         result = self.mgr.owner_override(param, value)
         return {"param": param, "value": result.value, "clamped": result.clamped}
 
-    def set_priority(self, text: str) -> dict:
+    def set_priority_text(self, text: str) -> dict:
+        """M50 快通道：只写文本+方法限定（全部单资源写，免 agent 锁）。
+        目标播种（LLM，分钟级）推迟到空闲心跳补做。"""
         self.state.owner_priority = text
         self.arbiter.owner_priority = text
         self.mgr.save()
@@ -1316,9 +1320,24 @@ class ProtoAgent:
             if restriction:
                 self.spine.append(AuditEvent.OWNER_OVERRIDE,
                                   {"action": "method_restriction", "text": restriction})
-        self.goal_tree.seed_from_priority(text, self.llm_fast)  # L3:播种长期目标
+        self._priority_seed_dirty = True          # 播种由 seed_priority_goals 补做
         return {"owner_priority": text,
-                "method_restriction": self.methods_lib.restriction}
+                "method_restriction": self.methods_lib.restriction,
+                "seed_deferred": True}
+
+    def seed_priority_goals(self) -> None:
+        """补做优先级播种（心跳空闲时或快通道直接调用；持 agent 锁）。"""
+        text = self.state.owner_priority
+        if text:
+            self.goal_tree.seed_from_priority(text, self.llm_fast)
+        self._priority_seed_dirty = False
+
+    def set_priority(self, text: str) -> dict:
+        """完整路径：文本+播种一气呵成（需持 agent 锁，链运行时会 409）。"""
+        result = self.set_priority_text(text)
+        self.seed_priority_goals()
+        result.pop("seed_deferred", None)
+        return result
 
     # ------------------ L5 进化（OWNER 通道驱动） ------------------
     def _evolution(self):

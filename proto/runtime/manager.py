@@ -37,6 +37,9 @@ class AgentManager:
         self._fast = fast_llm if fast_llm is not None else llm
         self._webtools = webtools
         self.blackboard = blackboard or Blackboard(create_store(self.root))
+        import threading as _th
+        self._ops_locks = {}            # M50: per-agent 单写者锁
+        self._ops_locks_guard = _th.Lock()
         self._cache: Dict[str, ProtoAgent] = {}
         self._lock = threading.Lock()
         self._registry_path = self.root / REGISTRY
@@ -199,6 +202,21 @@ class AgentManager:
         return {"status": status, "detail": str(latest.get("payload", ""))[:80],
                 "at": latest.get("ts")}
 
+    def ops_lock(self, agent_id: str):
+        """M50: per-agent 单写者锁——一个 agent 的长链不再挡住其他 agent。"""
+        with self._ops_locks_guard:
+            lock = self._ops_locks.get(agent_id)
+            if lock is None:
+                import threading as _th
+                lock = _th.Lock()
+                self._ops_locks[agent_id] = lock
+            return lock
+
+    def seed_if_dirty(self, agent) -> None:
+        """空闲时补做被推迟的优先级播种（M50 快通道遗留任务）。"""
+        if getattr(agent, "_priority_seed_dirty", False):
+            agent.seed_priority_goals()
+
     def _fleet_status_for(self, agent_id: str):
         """M47: 给每个 agent 一份'其他成员在干什么'的只读快照（闭包惰性求值）。"""
         def snapshot() -> list:
@@ -258,13 +276,23 @@ class AgentManager:
         }
 
     def tick_all(self) -> None:
+        import logging
         for info in self._load_registry()["agents"]:
             if info.get("paused"):
                 continue
             try:
                 agent = self.get(info["id"])
-                if agent is not None:
+                if agent is None:
+                    continue
+                # M50：逐 agent try-lock——A 的长链不再饿死 B 的节律
+                lock = self.ops_lock(info["id"])
+                if not lock.acquire(timeout=0.2):
+                    continue
+                try:
+                    self.seed_if_dirty(agent)   # 快通道推迟的播种在此补做
                     agent.maybe_proactive()
+                finally:
+                    lock.release()
             except Exception:
                 # 失败不致命但必须留痕——静默吞异常曾掩盖整段自主性停摆
                 import logging

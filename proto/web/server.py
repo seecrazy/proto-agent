@@ -189,7 +189,7 @@ class _Handler(BaseHTTPRequestHandler):
 
             def _run():
                 try:
-                    with server.mut_lock:
+                    with server.manager.ops_lock(m5.group(1)):
                         result = target.force_act()
                     target._inbox.append(
                         result.get("message")
@@ -284,7 +284,9 @@ class _Handler(BaseHTTPRequestHandler):
                                                    float(body.get("value", 0))))
 
         if path == "/api/priority" and method == "POST":
-            return self._json(200, agent.set_priority(self._body().get("text", "")))
+            # M50 快通道：文本即存；目标播种由空闲心跳补做（seed_deferred）
+            return self._json(200,
+                              agent.set_priority_text(self._body().get("text", "")))
         if path == "/api/projects-root" and method == "GET":
             return self._json(200, {"root": agent.projects_root()})
         if path == "/api/projects-root" and method == "POST":

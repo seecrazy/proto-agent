@@ -102,6 +102,8 @@ class ApprovalQueue:
         self._decisions: Dict[str, ApprovalRecord] = {}
         self._store = store
         self.auto_quota = auto_quota
+        import threading as _th
+        self._lock = _th.RLock()   # M50：链 submit 与主人 decide 并发安全
         self._today = time.strftime("%Y-%m-%d")
         self._self_initiated_today = 0
         self._load()
@@ -150,7 +152,7 @@ class ApprovalQueue:
             self._self_initiated_today = 0
             self._save()
 
-    def submit(self, proposal: ActionProposal) -> Submission:
+    def _submit_unlocked(self, proposal: ActionProposal) -> Submission:
         self._roll_day()
         decision = self.kernel.vet_action(proposal.category, proposal.description,
                                           self_initiated=proposal.self_initiated)
@@ -215,7 +217,7 @@ class ApprovalQueue:
             else:
                 self._damping.record_ignored(proposal.desire_dim)
 
-    def approve(self, proposal_id: str) -> ApprovalRecord:
+    def _approve_unlocked(self, proposal_id: str) -> ApprovalRecord:
         if proposal_id in self._decisions:
             return self._decisions[proposal_id]
         pending = self._pending.pop(proposal_id)
@@ -231,7 +233,7 @@ class ApprovalQueue:
         self._save()
         return record
 
-    def deny(self, proposal_id: str, reason: str) -> ApprovalRecord:
+    def _deny_unlocked(self, proposal_id: str, reason: str) -> ApprovalRecord:
         if proposal_id in self._decisions:
             return self._decisions[proposal_id]
         pending = self._pending.pop(proposal_id)
@@ -245,3 +247,18 @@ class ApprovalQueue:
         self._decisions[proposal_id] = record
         self._save()
         return record
+
+
+# ---- M50 资源锁包装 ----
+def _locked_queue_op(cls, name):
+    orig = getattr(cls, f"_{name}_unlocked")
+
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return orig(self, *args, **kwargs)
+
+    setattr(cls, name, wrapper)
+
+
+for _n in ("submit", "approve", "deny"):
+    _locked_queue_op(ApprovalQueue, _n)

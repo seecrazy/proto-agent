@@ -62,8 +62,10 @@ class GoalNode:
 
 class GoalTree:
     def __init__(self, store: DocumentStore, collection: str = "goaltree"):
+        import threading
         self._store = store
         self._collection = collection
+        self._lock = threading.RLock()   # M50：链 fail_streak 写与主人 drop 并发安全
         self.on_milestone = None   # 完成中期/长期目标时的回调（agent 注入情绪/记忆）
         self._nodes: Dict[str, GoalNode] = {}
         for r in store.find(collection, lambda _d: True):
@@ -77,7 +79,7 @@ class GoalTree:
                 fail_streak=int(r.get("fail_streak", 0)))
             self._nodes[node.id] = node
 
-    def add(self, text: str, level: str, parent_id: str = None,
+    def _add_unlocked(self, text: str, level: str, parent_id: str = None,
             source: str = "owner", acceptance: str = "") -> GoalNode:
         if level not in LEVELS:
             raise ValueError(f"非法层级: {level}")
@@ -102,7 +104,7 @@ class GoalTree:
         return [n for n in self.all_active()
                 if n.parent_id == parent_id and n.level == level]
 
-    def complete(self, node_id: str) -> Optional[GoalNode]:
+    def _complete_unlocked(self, node_id: str) -> Optional[GoalNode]:
         node = self._nodes.get(node_id)
         if node is None:
             return None
@@ -114,7 +116,7 @@ class GoalTree:
         self._repropagate(node.parent_id)
         return node
 
-    def drop(self, node_id: str) -> None:
+    def _drop_unlocked(self, node_id: str) -> None:
         node = self._nodes.get(node_id)
         if node is None:
             return
@@ -198,7 +200,7 @@ class GoalTree:
                     acceptance=str(row.get("acceptance", ""))[:300]))
         return children
 
-    def seed_from_priority(self, owner_priority: str, llm) -> Optional[GoalNode]:
+    def _seed_from_priority_unlocked(self, owner_priority: str, llm) -> Optional[GoalNode]:
         """主人优先级 → 长期目标播种（幂等：已有活跃长期目标则跳过）。"""
         if not owner_priority.strip():
             return None
@@ -218,3 +220,18 @@ class GoalTree:
                     "acceptance": n.acceptance}
         return {"nodes": [node_view(n) for n in
                           sorted(self._nodes.values(), key=lambda x: x.created_at)]}
+
+
+# ---- M50 资源锁包装：公共变更入口全部经 RLock（内部互调靠重入性）----
+def _locked_mutator(cls, name):
+    orig = getattr(cls, f"_{name}_unlocked")
+
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return orig(self, *args, **kwargs)
+
+    setattr(cls, name, wrapper)
+
+
+for _n in ("add", "complete", "drop", "seed_from_priority"):
+    _locked_mutator(GoalTree, _n)
