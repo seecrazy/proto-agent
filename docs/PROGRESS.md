@@ -530,3 +530,9 @@ P2（工程化）：
 - 诊断：专家没卡死——75 分钟占空比图显示三波 5-8 分钟真干活（写 Swift/迭代自验脚本），间隙是 SELF_ACT_COOLDOWN_S（默认 30 分钟）行动冷却；活动中心的"💤 心跳空闲/等待主人"把冷却期误报为停滞。
 - 修复：①/api/activity 暴露 last_act_ts/cooldown_s/has_goals，空闲文案区分三种真实状态——"冷却中，约 N 分钟后自动继续（上一轮 X 分钟前结束）/冷却已过下一拍继续/无活跃目标"；②生产 proto.env 设 PROTO_ACT_COOLDOWN_S=300（5 分钟——预算已配大、M45 探索配额/M48 计费诚实/预算地板等防呆在位，30 分钟是缺省保守值）。
 - 附：不变量测试正确拦截了新代码里的 Date.now()/1000（此处是合法秒换算），断言收窄到真 bug 形态 fmtTime(Date.now()/1000)——宽断言误伤合法代码的平衡案例。628 绿。
+
+### M58b — 冷却配置两连坑（300 秒两次未生效的根因）
+
+1. SELF_ACT_COOLDOWN_S 是 import 时求值的类属性，proto.env 其后才加载（M36 --token 同款）→ 改 __init__ 读 env；
+2. load_env_file 只解析 `export ` 开头的行——我写入 proto.env 的 PROTO_ACT_COOLDOWN_S=300 没带前缀被静默跳过 → 补 export。
+两层修完线上 cooldown_s=300 生效。教训：配置不生效时逐层验证（文件内容→解析器语义→读取时机→进程环境），任何一层想当然都会白修一次。
