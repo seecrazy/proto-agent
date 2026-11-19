@@ -533,7 +533,11 @@ def _activity_view(agent: ProtoAgent) -> dict:
                          or pe.get("event") or "")[:60]
         evs.append({"ts": e.get("ts"), "type": t, "detail": detail})
     return {"current": cur, "goal_work": goals[:6],
-            "recent_files": files[:12], "recent_events": evs[:15]}
+            "recent_files": files[:12], "recent_events": evs[:15],
+            # M58：空闲成因——冷却倒计时（"等待主人"曾误导冷却期为停滞）
+            "last_act_ts": getattr(agent, "_last_self_act", 0.0),
+            "cooldown_s": getattr(agent, "SELF_ACT_COOLDOWN_S", 1800.0),
+            "has_goals": bool(goal_active := agent.goal_tree.all_active())}
 
 
 def _budget_view(agent: ProtoAgent) -> dict:

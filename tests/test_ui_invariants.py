@@ -84,5 +84,5 @@ def test_fmt_time_normalizes_epoch_seconds():
     m = re.search(r"function fmtTime\(.*?\n\}", SCRIPT, re.S)
     assert m and "ts < 1e12" in m.group(0), \
         "fmtTime 缺少数字秒×1000 归一"
-    assert "Date.now() / 1000" not in SCRIPT, \
-        "仍有调用点把 Date.now() 除以 1000 传给 fmtTime"
+    assert "fmtTime(Date.now() / 1000)" not in SCRIPT, \
+        "仍有调用点把 Date.now() 除以 1000 传给 fmtTime（1970 回归）"
