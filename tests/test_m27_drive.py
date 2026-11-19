@@ -58,11 +58,15 @@ class TestActOnGapNotClock:
         msg = agent.maybe_proactive()
         assert msg and ("目标" in msg or "学习" in msg)
 
-    def test_cooldown_blocks_repeat(self, agent):
+    def test_recent_action_does_not_block(self, agent):
+        """M59 新契约：干完活立即允许再干（冷却已废）；只有秒败熔断才挡。
+        旧契约（_last_self_act 冷却挡重复）随 M59 废除。"""
         agent.state.set_within_bounds("desires.curiosity_gap", 0.95)
         agent.maybe_proactive()
-        agent._last_self_act = time.time()
-        assert agent.maybe_proactive() is None
+        agent._last_chain = {"ended": time.time(), "status": "verified"}
+        assert agent._may_start_chain() is True
+        agent._last_chain = {"ended": time.time(), "status": "failed"}
+        assert agent._may_start_chain() is False   # 秒败熔断（防打转）
 
 
 class TestForceAct:

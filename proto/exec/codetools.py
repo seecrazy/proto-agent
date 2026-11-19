@@ -66,6 +66,11 @@ class CodeTools:
     def write_file(self, path: str, content: str) -> str:
         target = self._abs(path)
         target.parent.mkdir(parents=True, exist_ok=True)
+        # M59 假勤奋识别：写入内容与现状完全一致=无产出（unchanged），
+        # 接力日志据此计入零产出升级，不冒充干活。
+        if target.exists() and target.read_text(encoding="utf-8",
+                                                errors="replace") == content:
+            return f"unchanged:{path}（内容未变——这不是产出，改点真东西）"
         target.write_text(content, encoding="utf-8")
         return f"written:{path}"
 

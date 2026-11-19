@@ -725,15 +725,9 @@ async function refreshActivity() {
   } else {
     state.textContent = "空闲"; state.className = "badge zzz";
     let idleText = "💤 当前没有执行中的链";
-    if (a.has_goals && a.last_act_ts) {
-      const elapsed = (Date.now() / 1000) - a.last_act_ts;
-      const remain = Math.max(0, a.cooldown_s - elapsed);
-      if (remain > 60) {
-        idleText = `💤 两轮工作之间的冷却：约 ${Math.ceil(remain / 60)} 分钟后自动继续（上一轮 ${Math.max(1, Math.round(elapsed / 60))} 分钟前结束）`;
-      } else {
-        idleText = `💤 冷却已过，下一拍心跳（≤30 秒）自动继续`;
-      }
-    } else if (!a.has_goals) {
+    if (a.has_goals) {
+      idleText = "💤 等待下一拍心跳（≤30 秒）自动继续推进目标（M59 起无冷却）";
+    } else {
       idleText = "💤 无活跃目标——设定主人优先级会播种目标";
     }
     now.innerHTML = `<div class="empty">${esc(idleText)}</div>`;

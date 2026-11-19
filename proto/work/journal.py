@@ -125,6 +125,8 @@ class GoalJournal:
         files = []
         for step in trace or []:
             if step.get("tool") in ("write_file", "edit_file"):
+                if "unchanged" in str(step.get("result", "")):
+                    continue          # M59：原样重写=没干活，不计产出
                 path = (step.get("args") or {}).get("path", "")
                 if path and path not in files:
                     files.append(path)

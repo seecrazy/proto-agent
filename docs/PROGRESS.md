@@ -536,3 +536,12 @@ P2（工程化）：
 1. SELF_ACT_COOLDOWN_S 是 import 时求值的类属性，proto.env 其后才加载（M36 --token 同款）→ 改 __init__ 读 env；
 2. load_env_file 只解析 `export ` 开头的行——我写入 proto.env 的 PROTO_ACT_COOLDOWN_S=300 没带前缀被静默跳过 → 补 export。
 两层修完线上 cooldown_s=300 生效。教训：配置不生效时逐层验证（文件内容→解析器语义→读取时机→进程环境），任何一层想当然都会白修一次。
+
+### M59 — 冷却废除，意义门控上线（用户："没做完又不累为什么休息；应识别无意义并调整，而不是无缘无故停下"）
+
+- **设计哲学修正**：冷却是用"休息"防失控；正确的是用"意义"防失控——agent 不会累，有活+预算+没卡住就每拍心跳连续干。
+- **_may_start_chain 意义门控**：只拦真停机原因——①秒败熔断（llm_error/failed <15s → 等一拍，防打转烧钱，非休息）；②**全败 hold**（所有 mid 目标 fail_streak≥3 → 停止硬撞，work_hold 审计+收件箱留言+黑板求助帖各限频 1 次/小时——"识别无意义"的真停止）；预算地板/无目标/暂停/静音为既有真实原因。failed_verification/正常完成**立即允许下一轮**。
+- **跨轮失败反馈**：work_on_goal 从接力日志读上轮 awaiting_retry/failed 的发现+下一步，注入本轮任务 feedback——换打法靠信息传递，不靠冷却（此前失败原因只在轮内 retry 传递，跨轮丢失）。
+- **假勤奋识别**：write_file 内容与现状完全一致 → 返回 unchanged（"这不是产出"）；journal._written_files 过滤 unchanged → 原样重写计入零产出升级（M45 机制自然接管）。
+- 清理：SELF_ACT_COOLDOWN_S 属性/env/显示全部废除；m27 旧契约测试迁移（冷却挡重复→干完不挡+秒败才挡）。
+- 测试：tests/test_m59_continuous.py 7 项。全套 635 绿。

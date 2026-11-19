@@ -165,8 +165,6 @@ class ProtoAgent:
                 "owner.key 与已注册锚定不匹配。恢复流程：删除 data/anchor/ 下的记录并"
                 "重走注册（该操作会使旧锚作废，请确认你拥有这台机器）。")
         self._nonce = 0
-        self.SELF_ACT_COOLDOWN_S = float(
-            __import__("os").environ.get("PROTO_ACT_COOLDOWN_S", "1800"))
 
         pools = BudgetPools(pools_config(), store=store, doc_id="main")
         self.kernel = Kernel(self.anchor, self.spine, pools)
@@ -466,9 +464,7 @@ class ProtoAgent:
         history.append({"role": role, "text": text[:400]})
         self.spine.store.put("dialogue", "main", history[-self._HISTORY_TURNS:])
 
-    SELF_ACT_COOLDOWN_S = 1800.0           # 自主行动冷却缺省（实例化时读 env 覆盖：
-                                            # 类属性在 import 时求值，proto.env 尚未加载——
-                                            # 与 M36 --token 坑同款）
+    # M59：SELF_ACT_COOLDOWN_S 冷却已废除——用意义门控（_may_start_chain）
 
     @staticmethod
     def _goal_slug(text: str, fallback_id: str = "") -> str:
@@ -663,12 +659,24 @@ class ProtoAgent:
         task = (f"{escalation}{node.text}。产出必须写入项目目录 {project_dir}/ "
                 f"（write_file 的 path 以 {project_dir}/ 开头）。"
                 + (f"\n{menu}" if menu else ""))
+        # M59 跨轮失败反馈：上轮验证缺什么/下一步是什么，本轮开局就知道
+        # ——换打法靠信息传递，不靠冷却。
+        cross_feedback = ""
+        last_round = journal.latest_round()
+        if last_round and last_round.get("status") in ("awaiting_retry", "failed"):
+            bits = [b for b in (last_round.get("findings"),
+                                last_round.get("next")) if b]
+            if bits:
+                cross_feedback = "；".join(bits)[:300]
+        run_feedback = cross_feedback
         result = AgenticLoop(self, max_steps=24).run(
-            task, acceptance=acceptance, journal=journal)
+            task, acceptance=acceptance, journal=journal,
+            feedback=run_feedback)
         if result.get("status") == "awaiting_retry":
             retry = AgenticLoop(self, max_steps=12).run(
                 task, acceptance=acceptance, journal=journal,
-                feedback="；".join(result.get("missing", [])))
+                feedback="；".join(result.get("missing", []))
+                or cross_feedback)
             if retry.get("verified") is not None:
                 result = retry
                 if result.get("verified") is False:
@@ -681,6 +689,8 @@ class ProtoAgent:
                 used, result.get("verified") is True)
             self.spine.append("method_used", {"methods": used,
                                               "verified": result.get("verified")})
+        self._last_chain = {"ended": self._now(),
+                            "status": result.get("status", "completed")}
         reason = str(result.get("reason", ""))
         if (result.get("status") in ("failed_verification", "failed")
                 and "budget" not in reason):   # 预算耗尽是资源问题，不是它的挫败
@@ -953,6 +963,41 @@ class ProtoAgent:
         arousal = self.state.emotion.get("arousal", 0.0)
         return min(1.0, total / 1.6 + 0.12 * arousal)
 
+    def _may_start_chain(self) -> bool:
+        """M59 意义门控：只拦真停机原因，不拦勤奋。
+
+        - 秒败熔断：上一条链 <15s 前以 llm_error/failed 崩溃 → 等一拍
+          （防打转烧钱，不是休息）；failed_verification/正常结束不拦。
+        - 全败 hold：所有 mid 目标 fail_streak≥3 → 停止硬撞（换思路/
+          问主人），work_hold 审计+收件箱留言各限频一次。
+        """
+        import os as _os
+        last = getattr(self, "_last_chain", None)
+        if last and last.get("status") in ("failed", "no_llm", "llm_error"):
+            if self._now() - last.get("ended", 0) < 15.0:
+                return False
+        mids = [n for n in self.goal_tree.all_active()
+                if n.level in ("mid", "short", "task")]
+        if mids and all(getattr(n, "fail_streak", 0) >= 3 for n in mids):
+            now_ts = self._now()
+            if now_ts - getattr(self, "_last_hold_ts", 0.0) >= 3600:
+                self._last_hold_ts = now_ts
+                self.spine.append("work_hold", {
+                    "reason": "所有目标连续验证失败≥3——硬撞无意义，"
+                              "需换思路或主人输入", "goals": len(mids)})
+                self._inbox.append(
+                    "〔工作暂停〕所有目标连续验证失败。我在黑板发了求助帖/"
+                    "需要你的新指示或新思路（看目标树的失败原因）。")
+                try:
+                    if self.blackboard is not None:
+                        self.post_to_blackboard(
+                            "所有目标连续验证失败≥3，请求思路指点或主人指示",
+                            kind="help")
+                except Exception:
+                    pass
+            return False
+        return True
+
     def maybe_proactive(self) -> Optional[str]:
         """无人交互时的生活（服务端心跳驱动，浏览器开不开都活着）：
         欲望增长 + 情绪衰减 + 定时目标生成；缺口超阈值时——
@@ -990,8 +1035,11 @@ class ProtoAgent:
                           key=lambda kv: kv[1]["value"] / max(kv[1]["threshold"], 1e-6))
                 self.spine.append("internal_urge", {
                     "tension": round(tension, 3), "top_drive": top[0]})
-        cooled = (self._now() - self._last_self_act) >= self.SELF_ACT_COOLDOWN_S
-        if ("goal_generation" not in fired) and not ((has_work or gap_ready) and cooled):
+        # M59：冷却→意义门控。agent 不会累：有活+预算+没卡住就连续干；
+        # 停止只因真实原因（预算地板/无目标/全目标连败/秒败熔断）。
+        if not self._may_start_chain():
+            return None
+        if ("goal_generation" not in fired) and not (has_work or gap_ready):
             # 模型有权不行动：张力已积蓄但未越阈 → 显式记录 wait（限频防噪）
             if tension >= 0.6 * tension_threshold and not has_work:
                 now_ts = self._now()
