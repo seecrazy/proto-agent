@@ -203,6 +203,13 @@
   </section>
 
   <aside id="side">
+    <div class="card" id="activity-card">
+      <h3>它现在在干嘛 <span class="badge" id="act-state">…</span></h3>
+      <div id="activity-now" class="empty">（加载中…）</div>
+      <div id="activity-goals" style="margin-top:8px"></div>
+      <div id="activity-files" style="margin-top:8px"></div>
+    </div>
+
     <div class="card">
       <h3>内在状态 <span style="float:right" id="emo"></span></h3>
       <div id="desire-human" style="display:none"></div>
@@ -560,6 +567,35 @@ function renderBudgetPanel(b) {
       `<div class="bar"><div class="fill${low}" style="width:${pct}%"></div></div>${calls}</div>`;
   }
   box.innerHTML = html;
+}
+async function refreshActivity() {
+  const a = await api("GET", "/api/activity");
+  const now = document.getElementById("activity-now");
+  const cur = a.current;
+  const state = document.getElementById("act-state");
+  if (cur) {
+    state.textContent = "执行中"; state.className = "badge";
+    const mins = Math.max(1, Math.round((cur.elapsed_s || 0) / 60));
+    now.innerHTML = `<div style="font-size:12px;line-height:1.6">🟢 <b>${esc((cur.goal || "").slice(0, 44))}</b><br>` +
+      `第 ${cur.step}/${cur.max_steps} 步 · ${esc(cur.tool || "")} ${esc((cur.detail || "").split("/").pop().slice(0, 30))} · 已 ${mins} 分钟</div>`;
+  } else {
+    state.textContent = "空闲"; state.className = "badge zzz";
+    now.innerHTML = `<div class="empty">💤 当前没有执行中的链（心跳空闲/等待主人）</div>`;
+  }
+  const gbox = document.getElementById("activity-goals");
+  const goals = a.goal_work || [];
+  gbox.innerHTML = goals.length
+    ? goals.map(g => `<div style="font-size:11px;line-height:1.6;margin-bottom:6px">` +
+        `<span class="badge">${g.rounds}轮</span> <b>${esc(g.text.slice(0, 32))}</b>` +
+        `<div style="color:var(--dim)">产出：${esc((g.produced || "无").slice(0, 50))}</div>` +
+        `<div style="color:var(--dim)">下一步：${esc((g.next || "—").slice(0, 50))}</div></div>`).join("")
+    : "";
+  const fbox = document.getElementById("activity-files");
+  const files = a.recent_files || [];
+  fbox.innerHTML = files.length
+    ? `<div style="color:var(--dim);font-size:10px;margin-bottom:3px">近 24 小时落盘</div>` +
+      files.slice(0, 8).map(f => `<div style="font-size:11px;color:var(--dim)">📄 ${esc(f.path.split("/").slice(-2).join("/"))} · ${new Date(f.mtime * 1000).toTimeString().slice(0, 5)}</div>`).join("")
+    : "";
 }
 async function refreshState() {
   const s = await api("GET", "/api/state");
@@ -1247,7 +1283,7 @@ async function loop() {
     ["audit", refreshAudit], ["rules", refreshRules], ["evolution", refreshEvolution],
     ["scratch", refreshScratch], ["memory", refreshMemory],
     ["goaltree", refreshGoalTree], ["world", refreshWorld], ["fleet", refreshFleet],
-    ["identity", refreshIdentity]]) {
+    ["identity", refreshIdentity], ["activity", refreshActivity]]) {
     await SAFE(name, fn)();
   }
   setTimeout(loop, 8000);

@@ -54,6 +54,28 @@ class GoalJournal:
                 break
         return count
 
+    def latest_round(self) -> Optional[dict]:
+        """最近一轮的结构化内容（活动中心用）。"""
+        blocks = self._round_blocks()
+        if not blocks:
+            return None
+        b = blocks[-1]
+        def _field(key):
+            line = next((ln for ln in b.splitlines()
+                         if ln.startswith(key)), "")
+            return line[len(key):].strip() or None
+        status = ""
+        first = b.splitlines()[0] if b.splitlines() else ""
+        if "·" in first:
+            status = first.split("·")[-1].strip()
+        return {"status": status,
+                "findings": _field("发现："),
+                "produced": _field("产出："),
+                "next": _field("下一步：")}
+
+    def round_count(self) -> int:
+        return len(self._round_blocks())
+
     def _round_blocks(self) -> List[str]:
         text = self.path.read_text(encoding="utf-8") if self.path.exists() else ""
         return [b for b in text.split("\n## ") if b.strip()]

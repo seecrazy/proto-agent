@@ -59,7 +59,7 @@ READ_ONLY_GETS = {
     "/api/evolution", "/api/scratch", "/api/memory", "/api/inbox",
     "/api/goaltree", "/api/world", "/api/taste", "/api/agents",
     "/api/summary", "/api/blackboard", "/api/projects-root", "/api/methods",
-    "/api/identity",
+    "/api/identity", "/api/activity",
 }
 
 
@@ -384,6 +384,8 @@ class _Handler(BaseHTTPRequestHandler):
                             agent.methods_lib.menu(agent.persona,
                                                     agent.state.owner_priority or "")]
             return self._json(200, snap)
+        if path == "/api/activity" and method == "GET":
+            return self._json(200, _activity_view(agent))
         if path == "/api/blackboard" and method == "GET":
             return self._json(200, {"notes": agent.read_blackboard()})
         if path == "/api/blackboard" and method == "POST":
@@ -454,6 +456,57 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(200, {"promoted": ok})
 
         return self._json(404, {"error": "not_found"})
+
+
+def _activity_view(agent: ProtoAgent) -> dict:
+    """M51 活动中心：现在在干嘛（链实时标记）+ 每目标接力日志 + 近 24h 落盘。"""
+    import time as _t
+    from pathlib import Path as _P
+    from proto.work.journal import GoalJournal
+    cur = getattr(agent, "_current_op", None)
+    if cur:
+        cur = dict(cur, elapsed_s=round(_t.time() - cur.get("since", _t.time())))
+    goals = []
+    node_text = {n.id: n.text for n in agent.goal_tree.all_active()}
+    work_dir = _P(agent.data_dir) / "work"
+    if work_dir.is_dir():
+        for d in sorted(work_dir.iterdir()):
+            if not d.is_dir():
+                continue
+            j = GoalJournal(d / "JOURNAL.md")
+            lr = j.latest_round()
+            if lr:
+                goals.append({"goal_id": d.name,
+                              "text": (node_text.get(d.name) or "（目标已归档）")[:60],
+                              "rounds": j.round_count(), **lr})
+    goals.sort(key=lambda g: -g["rounds"])
+    files = []
+    proot = agent.code_workspace.root / "projects"
+    cutoff = _t.time() - 86400
+    if proot.is_dir():
+        for f in proot.rglob("*"):
+            try:
+                if not f.is_file():
+                    continue
+                st = f.stat()
+            except OSError:
+                continue
+            if st.st_mtime >= cutoff and "_archived" not in str(f):
+                files.append({"path": str(f.relative_to(agent.code_workspace.root)),
+                              "mtime": round(st.st_mtime), "size": st.st_size})
+        files.sort(key=lambda x: -x["mtime"])
+    evs = []
+    for e in agent.audit_tail(20):
+        pe = e.get("payload", {})
+        t = e.get("event_type", "")
+        if t == "tool_exec":
+            detail = str(pe.get("path") or pe.get("tool") or "")[:80]
+        else:
+            detail = str(pe.get("goal") or pe.get("action")
+                         or pe.get("event") or "")[:60]
+        evs.append({"ts": e.get("ts"), "type": t, "detail": detail})
+    return {"current": cur, "goal_work": goals[:6],
+            "recent_files": files[:12], "recent_events": evs[:15]}
 
 
 def _budget_view(agent: ProtoAgent) -> dict:

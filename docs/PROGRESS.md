@@ -463,3 +463,10 @@ P2（工程化）：
 - 409 文案改为"该 agent…（不影响其他 agent）"。/api/act 后台 job 改持 per-agent 锁；/api/agents（注册表）保留全局锁。
 - 顺手修：drop_goal 在 workspace/projects 不存在时 500（快通道暴露的潜伏 bug）。
 - 测试：tests/test_m50_per_agent_locks.py 6 项（跨 agent 不互阻/占用时 refill+drop+priority 快通道/播种延迟补做/预算并发/目标树并发）。全套 599 绿。
+
+### M51 — 活动中心（用户："干了什么/在干什么都看不出，别再问我"）
+
+- **/api/activity**（只读免锁）：①current——链实时标记（AgenticLoop 每步更新 agent._current_op：目标/第几步/共几步/当前工具/操作对象/已进行时间，_finish 清除）；②goal_work——每个活跃目标的接力日志最近一轮（发现/产出/下一步/轮数，GoalJournal.latest_round）；③recent_files——projects/ 近 24h 落盘（排除 _archived）；④recent_events——近 20 条审计带细节。
+- **前端「它现在在干嘛」卡**（侧栏第一张，双视角都可见）：执行中显示 🟢 目标+步数+工具+对象+耗时，空闲显示 💤；每目标一行 上轮产出/下一步；近 24h 文件列表（路径+时刻）。8 秒轮询。
+- 顺带修 M50 编辑丢失事故（D6 留档）：server _api 重写真正落盘，测试加固为双锁占用（旧实现必 409）。
+- 测试：tests/test_m51_activity.py 5 项。全套 604 绿。浏览器目检（空闲态渲染/折叠按钮/首卡位）。

@@ -121,12 +121,17 @@ class AgenticLoop:
         if self._agent.llm is None:
             return {"status": "no_llm",
                     "reason": "Agentic 循环需要 LLM（离线模式请用直接步骤）"}
+        self._agent._current_op = {          # M51: 实时活动标记（只读轮询）
+            "kind": "chain", "goal": task_text[:80], "step": 0,
+            "max_steps": self.max_steps, "tool": "", "detail": "",
+            "since": time.time()}
         observations: List[str] = []
         trace: List[dict] = []
         task_id = f"loop-{int(time.time() * 1000)}"
 
         def _finish(result: Dict) -> Dict:
             """统一出口：无论怎么结束都把接力小结写进日志（M45）。"""
+            self._agent._current_op = None      # M51: 活动中心实时状态
             if journal is not None:
                 try:
                     summarize = None
@@ -219,6 +224,14 @@ class AgenticLoop:
             if tool not in self._agent.tools.names():
                 observations.append(f"错误：未知工具 {tool!r}（从清单里选）")
                 continue
+            marker = self._agent._current_op or {}
+            args_for_marker = decision.get("args", {}) or {}
+            marker.update(step=step + 1, tool=tool,
+                          detail=str(args_for_marker.get("path")
+                                     or args_for_marker.get("code")
+                                     or args_for_marker.get("pattern")
+                                     or args_for_marker.get("paths")
+                                     or "")[:90])
             # M48 重复调用硬拦截：同一工具+同参数连续第 3 次=死循环信号，
             # 不再执行（提示词的"禁止连用"拦不住就代码拦），强令换路
             sig = tool + "|" + json.dumps(decision.get("args", {}),
