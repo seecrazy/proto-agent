@@ -478,3 +478,11 @@ P2（工程化）：
 - **POST /api/budget/caps**（快通道免锁）：{self_initiated_tokens:"50k", owner_tasks_tokens:"20万", global_calls:...}，逐项解析-校验-应用，记 owner_override 审计。
 - **面板内联编辑**：点击上限数字→输入框（placeholder 示例单位）→Enter 应用/Esc 取消，成功即刷新头栏与面板；说明文字更新。
 - 测试：tests/test_m52_budget_config.py 10 项（单位解析/上调补量/下调夹紧/持久化重启/未知池拒绝/API 单位接受/快通道/非法拒绝/env 单位）。全套 614 绿。临时实例实测：面板输入 50k → 自主池 8000→50000 立即生效，头栏同步。
+
+### M53 — 项目目录 ASCII 化 + goal→dir 持久映射（用户第二次点名中文目录名）
+
+- **回答用户质询**：目录名=目标文字前 18 字符是我 M41 的明确代码决策（白纸黑字保留中文字符）；目标文字是中文（LLM 分解中文优先级的自然结果）；agent 没跟谁学。M41 只修长度没修字符集且未向用户说明取舍——判断错误，本次根治。
+- **_goal_slug ASCII only**：取目标文本英文单词+数字小写连字符（≤24）；纯中文目标回退 goal-<id8>。可读性由 projects/README.md 索引承担（M41 已有）。
+- **goal→dir 持久映射**（store: project_dirs/<goal_id>）：slug 算法再变，既有目标不换目录（此前每次改 slug 同目标换新目录、旧目录靠手动归档）。
+- **存量迁移**：首次映射时若旧式中文目录存在→原地改名（保进度，记 project_dir_migrated 审计）；drop/索引均兼容 legacy 目录名。
+- 测试：tests/test_m53_ascii_slug.py 6 项 + m30 契约迁移。全套 620 绿。坑：测试 monkey-patch 类级 staticmethod 后恢复必须用 __dict__ 取原始包装（class 属性访问返回裸函数→恢复后变绑定方法）。
