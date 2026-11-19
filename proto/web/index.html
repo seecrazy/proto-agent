@@ -154,6 +154,9 @@
   .bp-row .lbl b { color: var(--text); font-weight: normal; }
   .bp-row .bar { margin-top: 2px; }
   .bp-row .fill.low { background: var(--bad); }
+  .bp-cap { cursor: pointer; border-bottom: 1px dashed var(--dim); }
+  .bp-cap:hover { color: var(--accent); }
+  .bp-cap input { width: 90px; font-size: 11px; padding: 2px 6px; }
   .bp-note { color: var(--dim); font-size: 10px; line-height: 1.6; margin-top: 10px;
     border-top: 1px solid var(--border); padding-top: 8px; }
   #budget-panel .btns { display: flex; gap: 8px; margin-top: 10px; }
@@ -187,8 +190,8 @@
     <button onclick="toggleBudget()">关闭</button>
   </div>
   <div class="bp-note">每日 0 点自动重置到上限；充值=立即恢复今日全部上限并记审计。
-    上限可在 proto.env 配置 PROTO_BUDGET_GLOBAL_TOKENS / PROTO_BUDGET_OWNER_TOKENS /
-    PROTO_BUDGET_SELF_TOKENS（重启生效，下周期兑现）。</div>
+    <b>点击上限数字即可修改</b>（支持 8k / 16万 / 1.2M / 裸数字），立即生效并持久化；
+    也可在 proto.env 配 PROTO_BUDGET_*_TOKENS（重启生效）。</div>
 </div>
 
 <main>
@@ -552,6 +555,7 @@ async function refillBudget() {
   btn.disabled = false;
 }
 function renderBudgetPanel(b) {
+  lastBudgets = b;
   const box = document.getElementById("bp-rows");
   if (!box) return;
   const NAMES = {global: "全局（总闸）", owner_tasks: "主人任务", self_initiated: "自主行动"};
@@ -563,11 +567,41 @@ function renderBudgetPanel(b) {
     const low = pct < 15 ? " low" : "";
     const calls = key === "global" && p.cap_calls
       ? `<div class="lbl"><span>调用次数</span><span><b>${Math.round(p.calls || 0)}</b> / ${Math.round(p.cap_calls)}</span></div>` : "";
-    html += `<div class="bp-row"><div class="lbl"><span>${label}</span><span><b>${Math.round(cur)}</b> / ${Math.round(cap)}</span></div>` +
+    const capAttrs = `class="bp-cap" title="点击修改上限（支持 8k / 16万 / 1.2M / 数字）" data-pool="${key}" data-cap="${Math.round(cap)}"`;
+    html += `<div class="bp-row"><div class="lbl"><span>${label}</span><span><b>${Math.round(cur)}</b> / <span ${capAttrs}>${Math.round(cap)}</span></span></div>` +
       `<div class="bar"><div class="fill${low}" style="width:${pct}%"></div></div>${calls}</div>`;
   }
   box.innerHTML = html;
+  box.querySelectorAll(".bp-cap").forEach(el => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      const pool = el.dataset.pool;
+      const input = document.createElement("input");
+      input.value = el.dataset.cap;
+      input.placeholder = "8k / 16万 / 200000";
+      el.replaceWith(input);
+      input.focus(); input.select();
+      const commit = async () => {
+        const v = input.value.trim();
+        if (!v || v === el.dataset.cap) { renderBudgetPanel(lastBudgets); return; }
+        try {
+          await api("POST", "/api/budget/caps", {[`${pool}_tokens`]: v});
+          await refreshState();
+          renderBudgetPanel(lastBudgets);
+        } catch (err) {
+          addMsg(`上限修改失败：${err && err.message ? err.message : err}`, "system");
+          renderBudgetPanel(lastBudgets);
+        }
+      };
+      input.onblur = commit;
+      input.onkeydown = ev => {
+        if (ev.key === "Enter") input.blur();
+        if (ev.key === "Escape") { input.onblur = null; renderBudgetPanel(lastBudgets); }
+      };
+    };
+  });
 }
+let lastBudgets = {};
 async function refreshActivity() {
   const a = await api("GET", "/api/activity");
   const now = document.getElementById("activity-now");

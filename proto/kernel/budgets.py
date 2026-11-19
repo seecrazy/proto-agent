@@ -14,6 +14,28 @@ from typing import Callable, Dict, Optional
 from proto.storage.store import DocumentStore
 
 
+_UNIT_SUFFIX = {"k": 1e3, "w": 1e4, "万": 1e4, "m": 1e6, "兆": 1e6}
+
+
+def parse_amount(text) -> float:
+    """数值+单位解析（M52）：'8k'→8000、'16万'→160000、'1.2M'→1200000、
+    '200000'→200000。非法/负数返回 None。"""
+    if text is None:
+        return None
+    s = str(text).strip().lower().replace("，", "").replace(",", "")
+    if not s:
+        return None
+    mult = 1.0
+    if s[-1] in _UNIT_SUFFIX:
+        mult = _UNIT_SUFFIX[s[-1]]
+        s = s[:-1].strip()
+    try:
+        value = float(s) * mult
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 @dataclass
 class BudgetDecision:
     granted: bool
@@ -42,6 +64,12 @@ class BudgetPools:
             return
         raw = self._store.get("kernel_budget", self._doc_id) or {}
         today = date.today().isoformat()
+        # M52：控制台改过的上限优先于 env/默认（持久化，重启保持）
+        saved_caps = raw.get("caps")
+        if isinstance(saved_caps, dict):
+            for name, units in saved_caps.items():
+                if name in self._config and isinstance(units, dict):
+                    self._config[name].update(units)
         saved_date = raw.get("cycle_date")
         if saved_date == today and isinstance(raw.get("remaining"), dict):
             self._remaining = {
@@ -56,11 +84,26 @@ class BudgetPools:
                 "cycle_date": self._cycle_date,
                 "remaining": {name: dict(units)
                               for name, units in self._remaining.items()},
+                "caps": {name: dict(units)
+                         for name, units in self._config.items()},
                 "breaker_tripped": self.breaker_tripped,
             })
 
     def remaining_all(self) -> dict:
         return {name: dict(units) for name, units in self._remaining.items()}
+
+    def set_cap(self, pool: str, unit: str, value: float) -> None:
+        """M52：主人直改某池某单位上限（持久化）。立即生效语义：
+        上调→余量同步补到新上限；下调→余量夹紧到新上限。"""
+        with self._lock:
+            if pool not in self._config or unit not in self._config[pool]:
+                raise KeyError(f"unknown_pool_or_unit:{pool}.{unit}")
+            old = self._config[pool][unit]
+            self._config[pool][unit] = float(value)
+            cur = self._remaining.get(pool, {}).get(unit, 0.0)
+            self._remaining.setdefault(pool, {})[unit] = \
+                float(value) if value > old else min(cur, float(value))
+            self._save()
 
     def refill(self) -> None:
         """主人显式充值：今日各池恢复到配置上限（审计由调用方记）。"""

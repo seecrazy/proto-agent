@@ -48,7 +48,7 @@ class _HTTPError(Exception):
 # 安全性来源：kernel 旗标步边界生效；预算/目标树/审批队列各持 RLock；
 # priority 只写文本（单资源），目标播种推迟到空闲心跳补做。
 CONTROL_POSTS = {"/api/mute", "/api/awake", "/api/budget/refill",
-                 "/api/priority"}
+                 "/api/budget/caps", "/api/priority"}
 _CONTROL_POST_RE = [
     re.compile(r"^/api/goals/[0-9a-f]+/drop$"),
     re.compile(r"^/api/agents/[A-Za-z0-9_-]+/(pause|select)$"),
@@ -281,6 +281,33 @@ class _Handler(BaseHTTPRequestHandler):
                 "chain_ok": agent.spine.verify_chain().ok,
             })
 
+        if path == "/api/budget/caps" and method == "POST":
+            # M52：上限直改（支持 8k/16万/1.2M/裸数字），立即生效并持久化
+            from proto.kernel.budgets import parse_amount
+            body = self._body()
+            pools = agent.kernel.pools
+            applied = {}
+            for key, val in body.items():
+                if not key.endswith("_tokens") and key != "global_calls":
+                    continue
+                amount = parse_amount(val)
+                if amount is None:
+                    return self._json(400, {"error": "bad_amount",
+                                            "hint": f"{key}={val!r} 无法解析"
+                                                    "（支持 8k/16万/1.2M/数字）"})
+                if key == "global_calls":
+                    pools.set_cap("global", "calls", amount)
+                    applied.setdefault("global", {})["calls"] = amount
+                    continue
+                pool = key[:-len("_tokens")]
+                pools.set_cap(pool, "tokens", amount)
+                applied.setdefault(pool, {})["tokens"] = amount
+            if applied:
+                from proto.kernel.audit import AuditEvent
+                agent.spine.append(AuditEvent.OWNER_OVERRIDE,
+                                   {"action": "budget_caps", "caps": applied})
+            return self._json(200, {"caps": applied,
+                                    "remaining": pools.remaining_all()})
         if path == "/api/budget/refill" and method == "POST":
             agent.kernel.pools.refill()
             remaining = agent.kernel.pools.remaining_all()

@@ -75,11 +75,12 @@ def pools_config() -> dict:
     import os
     cfg = copy.deepcopy(DEFAULT_POOLS)
 
+    from proto.kernel.budgets import parse_amount
+
     def _f(name, default):
-        try:
-            return float(os.environ[name])
-        except (KeyError, ValueError):
-            return default
+        # M52：支持 8k / 16万 / 1.2M 等单位后缀；非法值回退默认
+        parsed = parse_amount(os.environ.get(name))
+        return parsed if parsed is not None else default
 
     cfg["global"]["tokens"] = _f("PROTO_BUDGET_GLOBAL_TOKENS",
                                  cfg["global"]["tokens"])
