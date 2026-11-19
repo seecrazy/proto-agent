@@ -165,6 +165,8 @@ class ProtoAgent:
                 "owner.key 与已注册锚定不匹配。恢复流程：删除 data/anchor/ 下的记录并"
                 "重走注册（该操作会使旧锚作废，请确认你拥有这台机器）。")
         self._nonce = 0
+        self.SELF_ACT_COOLDOWN_S = float(
+            __import__("os").environ.get("PROTO_ACT_COOLDOWN_S", "1800"))
 
         pools = BudgetPools(pools_config(), store=store, doc_id="main")
         self.kernel = Kernel(self.anchor, self.spine, pools)
@@ -464,8 +466,9 @@ class ProtoAgent:
         history.append({"role": role, "text": text[:400]})
         self.spine.store.put("dialogue", "main", history[-self._HISTORY_TURNS:])
 
-    SELF_ACT_COOLDOWN_S = float(__import__("os").environ.get(
-        "PROTO_ACT_COOLDOWN_S", "1800"))    # 自主行动冷却（默认 30 分钟）
+    SELF_ACT_COOLDOWN_S = 1800.0           # 自主行动冷却缺省（实例化时读 env 覆盖：
+                                            # 类属性在 import 时求值，proto.env 尚未加载——
+                                            # 与 M36 --token 坑同款）
 
     @staticmethod
     def _goal_slug(text: str, fallback_id: str = "") -> str:
