@@ -566,7 +566,7 @@ function addMsg(text, who) {
   // 每条消息带时间戳（小字灰色，hover 可复制完整内容）
   const time = document.createElement("span");
   time.className = "msg-time";
-  time.textContent = fmtTime(Date.now() / 1000);
+  time.textContent = fmtTime(Date.now());
   div.appendChild(time);
   const body = document.createElement("span");
   body.textContent = text;
@@ -1401,7 +1401,10 @@ function renderRadar(ocean, seed) {
 }
 function fmtTime(ts) {
   if (!ts) return "";
-  const d = new Date(ts);
+  // M57：数字时间戳统一按秒处理（<1e12 必是秒——毫秒现在 ~1.8e12）。
+  // 曾把 Date.now()/1000 传进来，new Date(秒) 解析成 1970-01-22。
+  const d = (typeof ts === "number" && ts < 1e12)
+    ? new Date(ts * 1000) : new Date(ts);
   return (d.getMonth()+1)+"-"+String(d.getDate()).padStart(2,"0")+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
 }
 function esc(s) { const d = document.createElement("i"); d.textContent = s; return d.innerHTML; }

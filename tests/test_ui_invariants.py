@@ -77,3 +77,12 @@ def test_collapse_attached_on_every_distribute():
     m = re.search(r"function distribute\(.*?\n\}", SCRIPT, re.S)
     assert m and "initCollapsible()" in m.group(0), \
         "distribute() 末尾必须调用 initCollapsible（池中首次上来的卡才能折叠）"
+
+
+def test_fmt_time_normalizes_epoch_seconds():
+    """M57：fmtTime 必须把数字秒归一（曾把秒当毫秒→1970-01-22）。"""
+    m = re.search(r"function fmtTime\(.*?\n\}", SCRIPT, re.S)
+    assert m and "ts < 1e12" in m.group(0), \
+        "fmtTime 缺少数字秒×1000 归一"
+    assert "Date.now() / 1000" not in SCRIPT, \
+        "仍有调用点把 Date.now() 除以 1000 传给 fmtTime"
