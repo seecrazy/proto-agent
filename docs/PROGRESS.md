@@ -441,3 +441,11 @@ P2（工程化）：
 5. **死循环硬拦**：同工具同参连续第 3 次调用不执行（观察强令换路）——提示词拦不住的代码拦；run_python 长输出**头尾保留**（测试报错在尾部，原 [:20000] 砍法会丢失败原因）。
 
 测试：tests/test_m48_capabilities.py 9 项 + 3 个旧 read_file 测试更新到分页契约。全套 589 绿。
+
+### M49 — 主人控制免锁（用户报"点防休眠报 agent_busy"）
+
+设计倒置：静音/防休眠是自主长链运行中最需要的**紧急控制**，却和链抢同一把 mut_lock（M45 步数放开后链一跑几分钟）→ 紧急按钮在最需要时失灵。修复：
+- **CONTROL_POSTS 免锁直通**：/api/mute、/api/awake 不再等 mut_lock——kernel 旗标在步边界生效（当前链跑完即静默），keeper 是主机级开关。
+- **审计脊柱线程锁**（M49 补 M43 残口）：M43 revision 防的是跨进程覆写；进程内两线程共享同一 spine 实例仍有 append 读-改-写竞态（此前靠 mut_lock 隐式串行）。append/reseal 全程 RLock；4 线程×25 并发 append 实测 seq 连续无丢失、链验证通过。
+- 普通变更操作（priority/drop/pause/task…）仍走锁——状态一致性优先，409+稍后重试语义不变。
+- 测试：tests/test_m49_control_routes.py 4 项（占锁时 awake/mute 可用、priority 仍 409、并发 append 安全）。全套 593 绿。

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, List, Optional
@@ -92,6 +93,7 @@ class AuditSpine:
         self._last_seq = last["seq"] if last else 0
         self._last_hash = last["hash"] if last else GENESIS_HASH
         self._seen_revision = self._store.revision(self._collection)
+        self._wlock = threading.RLock()   # M49: 进程内并发 append 保护
         self._verified_ok = None  # 缓存：append 后失效
         self._verified_revision = None
 
@@ -117,6 +119,10 @@ class AuditSpine:
         return {"seq": self._last_seq, "hash": self._last_hash}
 
     def append(self, event_type: str, payload: dict) -> int:
+        with self._wlock:
+            return self._append_locked(event_type, payload)
+
+    def _append_locked(self, event_type: str, payload: dict) -> int:
         self._reload_head_if_stale()
         last = self._last_record()
         seq = (last["seq"] + 1) if last else 1
@@ -186,6 +192,10 @@ class AuditSpine:
         3. 追加一条 chain_repair 事件把事故原因写进链本身。
         返回 {"ok": bool, "repaired": bool, "repaired_from": seq, "reason": str}。
         """
+        with self._wlock:
+            return self._reseal_locked(reason)
+
+    def _reseal_locked(self, reason: str) -> dict:
         rows = sorted(self._store.find(self._collection, lambda _d: True),
                       key=lambda r: r["seq"])
         # 1) 自哈希校验：链可以断（prev 接错），但单条记录内容不可被改过

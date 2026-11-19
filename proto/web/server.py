@@ -44,6 +44,9 @@ class _HTTPError(Exception):
         self.status = status
         self.message = message
 
+# 主人控制类 POST：免 mut_lock（M49——长链占锁时紧急控制必须可用）
+CONTROL_POSTS = {"/api/mute", "/api/awake"}
+
 READ_ONLY_GETS = {
     "/api/state", "/api/audit", "/api/proposals", "/api/rules",
     "/api/evolution", "/api/scratch", "/api/memory", "/api/inbox",
@@ -144,6 +147,11 @@ class _Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/judge":
             return self._safely(lambda: self._routes(method, path, query,
                                                     agent, server))
+        # M49 主人控制免锁直通：静音/防休眠是长链运行中最需要的紧急控制，
+        # 与自主链抢 mut_lock 等于紧急按钮失灵。安全性由审计脊柱线程锁
+        # （M49）与 kernel 旗标的步边界语义保证，不破坏链的其余状态。
+        if method == "POST" and path in CONTROL_POSTS:
+            return self._routes(method, path, query, agent, server)
         if method == "GET" and path in READ_ONLY_GETS:
             return self._routes(method, path, query, agent, server)
         # 变更操作有界等待：长心跳/聊天占锁时快速 409，而不是让浏览器挂几分钟
