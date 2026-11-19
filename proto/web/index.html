@@ -1029,7 +1029,10 @@ async function refreshBuckets() {
       Object.keys(label).map(k=>`<div style="font-size:12px;margin-bottom:3px">`+
         `<b style="display:inline-block;width:2.5em">${label[k]}</b> ${b[k].total} 事件 `+
         `<span style="color:var(--dim)">${top(b[k])}</span></div>`).join("");
-  } catch (e) {}
+  } catch (e) {
+    document.getElementById("time-buckets").innerHTML =
+      `<span class="empty">汇总加载失败：${esc(String(e && e.message || e)).slice(0, 80)}</span>`;
+  }
 }
 async function refreshTaste() {
   try {
@@ -1436,7 +1439,8 @@ async function loop() {
     ["audit", refreshAudit], ["rules", refreshRules], ["evolution", refreshEvolution],
     ["scratch", refreshScratch], ["memory", refreshMemory],
     ["goaltree", refreshGoalTree], ["world", refreshWorld], ["fleet", refreshFleet],
-    ["identity", refreshIdentity], ["activity", refreshActivity]]) {
+    ["identity", refreshIdentity], ["activity", refreshActivity],
+    ["buckets", refreshBuckets]]) {
     await SAFE(name, fn)();
   }
   setTimeout(loop, 8000);
