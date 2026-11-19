@@ -429,3 +429,15 @@ P2（工程化）：
 - **FleetTools**（proto/exec/fleettools.py）：blackboard_read / blackboard_post / fleet_status 三个 read 级工具进 Router 目录，模型看得见协作面；manager 给每个 agent 注入"其他成员快照"闭包（list() 惰性求值，含状态/待审批/目标数）。
 - 监工目标重播种（运营）：清跑偏目标树，优先级改为"监督舰队：巡查各 agent 进展与卡点，经黑板向主人汇报"。
 - 测试：tests/test_m47_collab.py 6 项。全套 580 绿。
+
+### M48 — 能力对齐专项（用户："编程 agent 能做的都要能做"）
+
+以编程 agent 能力清单逐项排查，五处补齐（对应用户三项控诉）：
+
+1. **预算失真根治**：`_complete` 原按 字符数/4 估算计费——glm thinking token 完全不入账（账面 16 万实际早烧完）。两客户端（OpenAI/Anthropic 兼容）捕获 API usage 回执（`last_usage`，入口重置防串账），实报实销；无 usage 协议回退估算。**注意：真实计费后同额度消耗在账面上更快显现——这正是诚实**，额度不足请调 PROTO_BUDGET_* 或充值。
+2. **大文件**：read_file 行级分页（offset/limit，带行号+总行数尾注+下一页提示），"读不全还不自知"终结。
+3. **多文件**：read_files 批量读工具（≤5 文件各前 60 行，总预算 6000 字符）——扫一组源码不再一文件烧一步。
+4. **链不再暴毙**：工具参数错误（历史"TypeError: <lambda>"真身）与执行错误一律降级为**单步失败**——观察带回可自纠提示（缺哪些参数/收到什么），链继续；任务级 failed 只留给系统性问题。
+5. **死循环硬拦**：同工具同参连续第 3 次调用不执行（观察强令换路）——提示词拦不住的代码拦；run_python 长输出**头尾保留**（测试报错在尾部，原 [:20000] 砍法会丢失败原因）。
+
+测试：tests/test_m48_capabilities.py 9 项 + 3 个旧 read_file 测试更新到分页契约。全套 589 绿。

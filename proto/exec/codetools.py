@@ -69,11 +69,70 @@ class CodeTools:
         target.write_text(content, encoding="utf-8")
         return f"written:{path}"
 
-    def read_file(self, path: str):
+    def read_file(self, path: str, offset: int = 0, limit: int = 200):
+        """读文件（M48 行级分页，对齐编程 agent）。
+
+        返回带行号文本 + 尾注（总行数/下一页 offset）——大文件不再
+        "读不全还不自知"。offset/limit 均按行。
+        """
         target = self._abs(path)
         if not target.exists():
             return None
-        return target.read_text(encoding="utf-8", errors="replace")[:MAX_READ]
+        try:
+            offset = max(0, int(offset))
+            limit = max(1, min(500, int(limit)))
+        except (TypeError, ValueError):
+            return "参数错误：offset/limit 需为整数"
+        text = target.read_text(encoding="utf-8", errors="replace")[:MAX_READ]
+        lines = text.splitlines()
+        total = len(lines)
+        if total == 0:
+            return "（空文件）"
+        chunk = lines[offset:offset + limit]
+        if not chunk:
+            return f"offset={offset} 超出范围：文件共 {total} 行（0~{total-1}）"
+        body = "\n".join(f"{offset + i + 1}\t{ln}"
+                         for i, ln in enumerate(chunk))
+        footer = f"\n〔共 {total} 行，已读第 {offset+1}-{offset+len(chunk)} 行〕"
+        if offset + limit < total:
+            footer += f"；继续读：read_file(path, offset={offset + limit})"
+        return body + footer
+
+    def read_files(self, paths=None):
+        """批量读（M48）：一次调用读多个文件各前 60 行——扫目录/核对
+        一组源码不再一个文件烧一步。上限 5 个，总字符封顶防爆上下文。"""
+        paths = paths or []
+        if isinstance(paths, str):
+            paths = [paths]
+        paths = paths[:5]
+        if not paths:
+            return "参数错误：paths 需为文件路径数组（≤5 个）"
+        parts, budget = [], 6000
+        for p in paths:
+            out = str(self.read_file(p, limit=60))
+            if out.startswith("参数错误") or "超出范围" in out:
+                parts.append(f"### {p}\n{out}")
+                continue
+            if len(out) > 2000:
+                out = out[:2000] + "\n…（单文件截断，read_file 分页读全文）"
+            parts.append(f"### {p}\n{out}")
+            budget -= len(out)
+            if budget <= 0:
+                parts.append("（批量预算用尽，其余文件单独 read_file）")
+                break
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _clip_output(text: str, head: int = 1500, tail: int = 2000) -> str:
+        """长输出头尾保留（M48）：测试/编译输出关键信息在头（命令）和
+        尾（报错栈），全砍头会丢失败原因。"""
+        if not text or len(text) <= head + tail + 100:
+            return text
+        skipped = len(text) - head - tail
+        lines = text.count("\n")
+        return (text[:head]
+                + f"\n…（中间省略约 {skipped} 字符/{lines} 行）\n"
+                + text[-tail:])
 
     def _read_full(self, path: str) -> str:
         target = self._abs(path)
@@ -201,8 +260,11 @@ class CodeTools:
                     env=env,
                     preexec_fn=_limit_resources)
                 return {"exit": proc.returncode,
-                        "stdout": proc.stdout.decode("utf-8", "replace")[:20000],
-                        "stderr": proc.stderr.decode("utf-8", "replace")[:4000],
+                        "stdout": self._clip_output(
+                            proc.stdout.decode("utf-8", "replace")),
+                        "stderr": self._clip_output(
+                            proc.stderr.decode("utf-8", "replace"),
+                            head=800, tail=1500),
                         "timeout": False, "backend": backend}
             except subprocess.TimeoutExpired:
                 return {"exit": -1, "stdout": "", "stderr": "timeout",
@@ -212,9 +274,14 @@ class CodeTools:
     # ---- 注册到 Router ----
     def register_all(self, registry) -> None:
         from proto.kernel.kernel import ActionCategory
-        registry.register("read_file", lambda path: self.read_file(path),
+        registry.register("read_file",
+                          lambda path, offset=0, limit=200:
+                          self.read_file(path, offset, limit),
                           category=ActionCategory.READ_DRAFT,
-                          description="读工作区文件")
+                          description="读工作区文件（行级分页：offset/limit）")
+        registry.register("read_files", lambda paths=None: self.read_files(paths),
+                          category=ActionCategory.READ_DRAFT,
+                          description="批量读多个文件（≤5 个，各前 60 行）")
         registry.register("write_file",
                           lambda path, content: self.write_file(path, content),
                           category=ActionCategory.WORKSPACE_WRITE,

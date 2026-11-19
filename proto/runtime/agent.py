@@ -350,7 +350,14 @@ class ProtoAgent:
                                   {"fails": self._breaker._fails})
             raise
         self._breaker.record_success()
-        total = max(1, (len(system) + len(user) + len(reply)) // 4)
+        # M48 真实用量计费：API 回执的 usage（含 thinking token）优先；
+        # 协议无 usage 回退字符估算。修复"预算烧得比账面快"的失真。
+        usage = getattr(client, "last_usage", None)
+        if usage and (usage.get("input_tokens") or usage.get("output_tokens")):
+            total = (usage.get("input_tokens") or 0) + \
+                    (usage.get("output_tokens") or 0)
+        else:
+            total = max(1, (len(system) + len(user) + len(reply)) // 4)
         self.kernel.pools.try_consume(
             pool, {"tokens": max(0, total - estimated_in),
                    "wallclock_s": time.time() - started})

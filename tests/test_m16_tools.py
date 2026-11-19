@@ -28,14 +28,15 @@ def kernel(tmp_path):
 class TestFileTools:
     def test_write_read_list_roundtrip(self, tools):
         tools.write_file("src/main.py", "print('hi')\n")
-        assert tools.read_file("src/main.py") == "print('hi')\n"
+        # M48 起带行号+尾注（分页契约）
+        assert "print('hi')" in tools.read_file("src/main.py")
         listing = tools.list_dir("")
         assert "src/" in listing
 
     def test_edit_file_replaces_unique(self, tools):
         tools.write_file("a.txt", "hello world")
         n = tools.edit_file("a.txt", "world", "proto")
-        assert n == 1 and tools.read_file("a.txt") == "hello proto"
+        assert n == 1 and "hello proto" in tools.read_file("a.txt")
 
     def test_path_traversal_blocked(self, tools):
         with pytest.raises(ValueError):
@@ -54,7 +55,8 @@ class TestFileTools:
 
     def test_read_size_capped(self, tools):
         tools.write_file("big.txt", "x" * 60000)
-        assert len(tools.read_file("big.txt")) <= 50000
+        # M48：MAX_READ 截内容 + 行号/尾注开销
+        assert len(tools.read_file("big.txt")) <= 50200
 
 
 class TestPythonRunner:

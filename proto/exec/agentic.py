@@ -178,6 +178,7 @@ class AgenticLoop:
         except Exception:
             pass
         explore_run = 0   # M45 探索配额：连续只读步计数
+        last_sigs: List[str] = []   # M48 重复调用硬拦截：最近两次调用指纹
         for step in range(self.max_steps):
             feedback_block = (f"\n上一轮独立验证未通过，缺少：{feedback}\n"
                               "本轮必须补齐这些证据。" if feedback else "")
@@ -218,6 +219,17 @@ class AgenticLoop:
             if tool not in self._agent.tools.names():
                 observations.append(f"错误：未知工具 {tool!r}（从清单里选）")
                 continue
+            # M48 重复调用硬拦截：同一工具+同参数连续第 3 次=死循环信号，
+            # 不再执行（提示词的"禁止连用"拦不住就代码拦），强令换路
+            sig = tool + "|" + json.dumps(decision.get("args", {}),
+                                          sort_keys=True, ensure_ascii=False)
+            if len(last_sigs) >= 2 and sig == last_sigs[-1] == last_sigs[-2]:
+                observations.append(
+                    f"拦截：{tool} 重复调用（相同参数已是连续第 3 次，"
+                    "死循环信号）——本次不执行。改变参数、换工具，或宣布 done。")
+                last_sigs.append(sig)
+                continue
+            last_sigs.append(sig)
             from proto.exec.router import Task
             step_task_id = f"{task_id}-{step}"
             task = Task(id=step_task_id, description=task_text,

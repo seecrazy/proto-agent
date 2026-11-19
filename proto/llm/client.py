@@ -24,6 +24,12 @@ class LLMError(Exception):
 
 
 class LLMClient(ABC):
+    """M48: 兼容所有客户端的用量回执约定——complete() 后可读
+    self.last_usage = {"input_tokens", "output_tokens"}（协议无 usage 时为 None，
+    调用方回退字符估算）。"""
+
+    last_usage = None
+
     @abstractmethod
     def complete(self, system: str, user: str) -> str:
         """单轮补全。失败抛 LLMError。"""
@@ -50,6 +56,7 @@ class OpenAICompatClient(LLMClient):
         return f"{self._model} @ {self._base}"
 
     def complete(self, system: str, user: str) -> str:
+        self.last_usage = None
         payload = {
             "model": self._model,
             "temperature": self._temperature,
@@ -73,6 +80,11 @@ class OpenAICompatClient(LLMClient):
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
                 ValueError, KeyError) as exc:
             raise LLMError(f"LLM 调用失败: {exc}") from exc
+        usage = body.get("usage") or {}
+        self.last_usage = {
+            "input_tokens": usage.get("prompt_tokens") or 0,
+            "output_tokens": usage.get("completion_tokens") or 0,
+        } if usage else None
         try:
             return body["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
@@ -98,6 +110,7 @@ class AnthropicCompatClient(LLMClient):
         return f"{self._model} @ {self._base} (anthropic)"
 
     def complete(self, system: str, user: str) -> str:
+        self.last_usage = None
         payload = {
             "model": self._model,
             "max_tokens": self._max_tokens,
@@ -127,6 +140,11 @@ class AnthropicCompatClient(LLMClient):
             raise LLMError(f"LLM 调用失败: {exc} {detail}") from exc
         except (urllib.error.URLError, TimeoutError, ValueError) as exc:
             raise LLMError(f"LLM 调用失败: {exc}") from exc
+        usage = body.get("usage") or {}
+        self.last_usage = {
+            "input_tokens": usage.get("input_tokens") or 0,
+            "output_tokens": usage.get("output_tokens") or 0,
+        } if usage else None
         try:
             for block in body["content"]:
                 if block.get("type") == "text":

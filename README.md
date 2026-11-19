@@ -2,7 +2,7 @@
 
 > **能力完整 · 内在状态显式可调制 · 行为主动但受约束 · 能自我进化但边界不可逾越**
 
-[![tests](https://img.shields.io/badge/tests-574%20passed-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-589%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
 [![version](https://img.shields.io/badge/version-0.32.0-orange.svg)]()
@@ -134,7 +134,7 @@ PROTO> 〔主动提议〕围绕……推进一个小目标  ← 欲望缺口+调
 
 ```bash
 cd proto-agent
-python3 -m pytest -q      # 574 项测试全绿（另 2 项可选依赖测试自动跳过；CI 矩阵 3.9–3.12 + 可选依赖作业）
+python3 -m pytest -q      # 589 项测试全绿（另 2 项可选依赖测试自动跳过；CI 矩阵 3.9–3.12 + 可选依赖作业）
 python3 -m proto.demo     # 12 段全链路演示：锚定→调制→毒化拒收→评估→审批→进化两轨→自驱执行→审计
 ```
 
@@ -177,7 +177,7 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 
 ## 验证
 
-- **574 项测试**（主环境；装有可选依赖的环境全绿；GitHub Actions 全矩阵）覆盖全部安全边界输入类：伪造签名 / nonce 重放 / ts 过期 / CONTENT 洪泛 / 越界调制 / owner_locked / 审计篡改（含外部改写存储、并发覆写）/ 预算侵占 / 状态文件损坏拒载 / 沙盒逃逸探针 / 影子回归规则 / 工具策略降级 / symlink 逃逸 / 重启状态恢复 / 超时裁决瀑布 / 人格漂移双护栏 / 推进力机制（接力日志、探索配额、预算地板）。
+- **589 项测试**（主环境；装有可选依赖的环境全绿；GitHub Actions 全矩阵）覆盖全部安全边界输入类：伪造签名 / nonce 重放 / ts 过期 / CONTENT 洪泛 / 越界调制 / owner_locked / 审计篡改（含外部改写存储、并发覆写）/ 预算侵占 / 状态文件损坏拒载 / 沙盒逃逸探针 / 影子回归规则 / 工具策略降级 / symlink 逃逸 / 重启状态恢复 / 超时裁决瀑布 / 人格漂移双护栏 / 推进力机制（接力日志、探索配额、预算地板）。
 - 两轮独立上下文代码评审（核心引擎 + 阶段 6–8 前 minor 批），全部发现项 TDD 修复。
 - 测试全为真实行为断言，零 mock；沙盒用真实 subprocess 验证清洁环境与资源限制。
 
@@ -232,7 +232,7 @@ PROTO 不靠"性格"掩盖能力短板。M16 起它自带完整的工具族与**
 - **瓶颈定位**：agent 引擎的工作是 JSON/哈希/状态机（毫秒级），真正的延迟全在 LLM I/O（秒级）——换 Rust 优化的是不存在的瓶颈；
 - **零依赖可移植**：clone 即跑（3.9+ 无编译链、无运行时安装），这是产品前提，压倒性能偏好；
 - **自我进化的一致性**：L5 进化闭环生成并验证的是 Python 代码——自我修改的语言必须与实现语言一致（DGM 范式前提），选 Rust 等于让 agent 改写一个它看不懂的二进制内核；
-- **代价与对策**：类型安全→dataclass + 574 项测试；性能上限→`DocumentStore`/工具面全是接口，存储可下沉 SQLite；GIL→交互全局锁串行化；
+- **代价与对策**：类型安全→dataclass + 589 项测试；性能上限→`DocumentStore`/工具面全是接口，存储可下沉 SQLite；GIL→交互全局锁串行化；
 - **Rust/Go 的正确时机**：当记忆与审计到 10 万级条目、或多租户服务化时，把 kernel/storage 下沉为系统语言库、上层 Python 不动——**在值得重写时重写，而不是在demo阶段预支复杂度**。可靠性来自架构（三通道/锚定/审计/测试），不来自语言。
 
 ## 好想法与高质量完成，靠什么保证

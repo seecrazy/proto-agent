@@ -267,12 +267,34 @@ class Router:
                 outcome = fn(**call_args)
                 step_results.append(outcome)
                 self._tool_exec_audit(step["tool"], category, None)
+            except TypeError as exc:
+                # 参数错误=单步失败不是任务失败（M48）：给出可自纠的提示，
+                # 链继续——原来 "TypeError: <lambda>() missing..." 直接判死整链
+                required = []
+                try:
+                    sig = _insp.signature(fn)
+                    required = [p.name for p in sig.parameters.values()
+                                if p.default is _insp.Parameter.empty
+                                and p.kind in (_insp.Parameter.POSITIONAL_OR_KEYWORD,
+                                               _insp.Parameter.KEYWORD_ONLY)]
+                except (ValueError, TypeError):
+                    pass
+                missing = [p for p in required if p not in call_args]
+                hint = (f"参数错误：{step['tool']} 缺少必需参数 {missing}"
+                        if missing else
+                        f"参数错误：{step['tool']}（{type(exc).__name__}: {exc}）")
+                step_results.append(
+                    hint + f"；收到参数 {sorted(call_args)}。修正参数后重试。")
+                self._tool_exec_audit(step["tool"], category, None,
+                                      error=f"arg_error:{exc}")
             except Exception as exc:
+                # 工具执行失败同样是单步失败（M48）：观察带回错误，链继续，
+                # 模型下一轮换路——任务级 failed 只留给系统性问题（未知工具/预算）
                 self._tool_exec_audit(step["tool"], category, None,
                                       error=f"{type(exc).__name__}: {exc}")
-                return TaskResult(task.id, "failed", step_results,
-                                  reason=f"{type(exc).__name__}: {exc}",
-                                  next_step=i)
+                step_results.append(
+                    f"{step['tool']} 执行失败：{type(exc).__name__}: {exc}"
+                    "（换一种做法或修正后重试）")
         self._cps.put(task.id, {"step": len(task.steps), "results": step_results},
                       variant_id=VARIANT_ID)
         return TaskResult(task.id, "completed", step_results)
