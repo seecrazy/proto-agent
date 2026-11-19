@@ -41,7 +41,7 @@
 | 左栏页签 ×2 | 只含 ov/inner，切换只影响左栏 | proto-panel-left |
 | 右栏页签 ×2 | 只含 work/tech，切换只影响右栏 | proto-panel-right |
 | 待批徽标 | 右栏切 work 类 + 滚动到 #proposals | — |
-| 每卡片 ▾ 折叠钮 | 本卡片 | proto-collapsed |
+| 每卡片 ▾ 折叠钮 | 本卡片（**distribute 每次分发后对新增卡补挂**，含从池中首次上来的卡） | proto-collapsed |
 | 额度数字/面板/充值/上限编辑 | 顶栏+浮层 | proto-collapsed 无关 |
 
 ## 布局不变量（改动后逐条自检）

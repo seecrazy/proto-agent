@@ -70,3 +70,10 @@ def test_uispec_exists_and_current():
             / "docs" / "UISPEC.md").read_text(encoding="utf-8")
     for key in ("整图", "不变量", "改动流程", "完形目检", "邻接清单"):
         assert key in spec, f"UISPEC 缺少 {key}"
+
+
+def test_collapse_attached_on_every_distribute():
+    """I-附：卡片折叠能力在每次类别分发后都成立（M56 丢失回归的源级锁死）。"""
+    m = re.search(r"function distribute\(.*?\n\}", SCRIPT, re.S)
+    assert m and "initCollapsible()" in m.group(0), \
+        "distribute() 末尾必须调用 initCollapsible（池中首次上来的卡才能折叠）"

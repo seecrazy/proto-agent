@@ -459,6 +459,7 @@ function distribute() {
     cardsOf(PANEL[side].cat).forEach(c => box.appendChild(c));
   }
   renderTabs();
+  initCollapsible();   // 幂等：从池中首次上来的卡也要有折叠钮/监听（M56 修复丢失）
 }
 function togglePanel(side) {
   const main = document.querySelector("main");
