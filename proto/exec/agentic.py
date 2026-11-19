@@ -46,6 +46,39 @@ LOOP_SYSTEM = (
 # 只读工具（M45 探索配额：连续多个只读步后强制转向产出）
 READ_ONLY_TOOLS = {"list_dir", "read_file", "grep", "clock"}
 
+# 观察截断分级（M47）：统一 600 字曾让 read_file 永远读不全设计文档
+# （"确认完整性"每轮都失败）。读文件给足预算并提示出路；跑代码次之。
+OBS_LIMITS = {"read_file": 3000, "run_python": 1500, "grep": 1000,
+              "blackboard_read": 1200, "fleet_status": 1200}
+OBS_DEFAULT = 600
+
+
+def _clip(tool: str, text: str) -> str:
+    limit = OBS_LIMITS.get(tool, OBS_DEFAULT)
+    text = str(text)
+    if len(text) <= limit:
+        return text
+    return (text[:limit]
+            + f"\n…（截断：原文 {len(text)} 字符。用 grep 定位关键段，"
+              "或分块读取所需部分）")
+
+
+def _recent_observations(observations: List[str], budget: int = 9000,
+                         at_least: int = 3) -> str:
+    """观察回灌（M47）：累计字符预算制——大观察（读文件 3000 字）时代
+    固定取 12 条会撑爆上下文；从尾部往回收，至少保留最近 3 条。"""
+    picked: List[str] = []
+    used = 0
+    for obs in reversed(observations):
+        if used + len(obs) > budget and len(picked) >= at_least:
+            break
+        picked.append(obs)
+        used += len(obs)
+        if len(picked) >= 12:
+            break
+    return "\n".join(f"{i+1}. {o}"
+                     for i, o in enumerate(reversed(picked))) or "（无）"
+
 
 def _overlap(a: str, b: str) -> bool:
     from proto.memory.stream import _tokens
@@ -77,6 +110,9 @@ class AgenticLoop:
             "edit_file": "精确替换文件片段", "list_dir": "列工作区目录",
             "grep": "正则搜索工作区", "run_python": "沙盒跑 Python（验证/测试）",
             "clock": "当前时间", "delegate_coding": "外包给外部编码 agent（重活）",
+            "blackboard_read": "读舰队黑板（求助/分享/汇报）",
+            "blackboard_post": "发舰队黑板帖（help 求助/report 汇报）",
+            "fleet_status": "看舰队其他 agent 在干什么（监督/协作）",
         }
         return "\n".join(f"- {n}: {hints.get(n, '')}" for n in names)
 
@@ -150,8 +186,7 @@ class AgenticLoop:
                     f"\n\n任务：{task_text}\n\n"
                     f"可用工具：\n{self._tool_catalog()}\n\n"
                     f"已有观察：\n"
-                    + ("\n".join(f"{i+1}. {o}" for i, o in enumerate(observations[-12:]))
-                       or "（无）"))
+                    + _recent_observations(observations))
             try:
                 raw = self._agent._complete(
                     self._agent.llm, LOOP_SYSTEM, user, pool=self._pool)
@@ -204,11 +239,12 @@ class AgenticLoop:
                 observations.append(f"{tool} → {result.status}: {result.reason}")
                 continue
             observation = result.step_results[0] if result.step_results else ""
-            observations.append(f"{tool} → {str(observation)[:600]}")
+            clipped = _clip(tool, observation)
+            observations.append(f"{tool} → {clipped}")
             trace.append({"step": step, "tool": tool,
                           "args": decision.get("args", {}),
                           "category": decision.get("category", ""),
-                          "result": str(observation)[:600]})
+                          "result": clipped})
             # M45 探索配额：连续只读不产出 → 强制转向写/跑
             if tool in READ_ONLY_TOOLS:
                 explore_run += 1

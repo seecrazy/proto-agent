@@ -419,3 +419,13 @@ P2（工程化）：
 - **卡片折叠按钮明确化**：h3 右端渲染带边框的 ▾/▸ 小按钮（悬停高亮+accent 变色），标题整行仍可点、Enter/空格可操作，折叠记忆不变；标题已有右侧徽标（#emo/float:right）时按钮贴其后不挤占。
 - 17/17 卡实测折叠/恢复、把手收放、刷新双状态保持；快照确认 [expanded] 语义与 chev 存在；两态截图目检通过。
 - 坑：周期性 refreshState 重绘会让 Playwright actionability 等待偶发超时——用页面内 evaluate 直调 click 绕过（功能本身无问题）。
+
+### M47 — 舰队协作接线 + 观察截断分级（用户审查"专家没产出/监工零交互"）
+
+诊断（2026-11-19 证据）：①专家充值后已按 M45 真写 Swift（「温故 Wengu」SM-2 记忆卡片 App：Package.swift+数据模型+XCTest+verify_all.py），但卡在 awaiting_retry 循环——**read_file 观察被统一截断 600 字，设计文档永远读不全，"确认完整性"每轮失败**（接力日志三轮都写"被截断"）；②监工与专家 blackboard 事件均为 0、黑板存储目录不存在——M32 黑板是手工 API 壳，**自主回路零接线**（工具目录无黑板、心跳不读、监工无舰队视野），监工目标跑偏成"建告警系统项目"。
+
+修复：
+- **观察截断分级**（agentic.py OBS_LIMITS）：read_file 3000 / run_python 1500 / grep·黑板·舰队 1000-1200，其余 600；截断显式提示（原文长度+grep 定位出路）。观察回灌改**累计字符预算制**（尾部回收 ~9000 字、至少 3 条）——大观察时代固定 12 条会撑爆上下文。
+- **FleetTools**（proto/exec/fleettools.py）：blackboard_read / blackboard_post / fleet_status 三个 read 级工具进 Router 目录，模型看得见协作面；manager 给每个 agent 注入"其他成员快照"闭包（list() 惰性求值，含状态/待审批/目标数）。
+- 监工目标重播种（运营）：清跑偏目标树，优先级改为"监督舰队：巡查各 agent 进展与卡点，经黑板向主人汇报"。
+- 测试：tests/test_m47_collab.py 6 项。全套 580 绿。

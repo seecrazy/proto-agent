@@ -108,9 +108,10 @@ class ProtoAgent:
     def __init__(self, data_dir: Path, llm=None, now=time.time,
                  goal_interval_s: float = 4 * 3600,
                  persona: str = None, webtools=None, fast_llm=None,
-                 blackboard=None):
+                 blackboard=None, fleet_status=None):
         self._now = now
         self.blackboard = blackboard
+        self._fleet_status_fn = fleet_status   # M47: manager 注入的舰队快照
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -230,6 +231,8 @@ class ProtoAgent:
                             category=ActionCategory.READ_DRAFT,
                             description="当前时间")
         self.code_workspace.register_all(self.tools)
+        from proto.exec.fleettools import FleetTools
+        FleetTools(self, fleet_status=self._fleet_status_fn).register_all(self.tools)
         from proto.exec.bridge import CodingBridge
         self.bridge = CodingBridge.autodetect(os.environ.get("PROTO_BRIDGE_CLI", ""))
         if self.bridge and self.bridge.available:

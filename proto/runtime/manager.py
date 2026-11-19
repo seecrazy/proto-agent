@@ -111,7 +111,8 @@ class AgentManager:
         agent = ProtoAgent(data_dir=self._dir_for(info), llm=self._llm,
                            fast_llm=self._fast, webtools=self._webtools,
                            persona=persona or None,
-                           blackboard=self.blackboard)
+                           blackboard=self.blackboard,
+                           fleet_status=self._fleet_status_for(agent_id))
         if priority:
             agent.set_priority(priority)
         if info.get("paused"):
@@ -197,6 +198,25 @@ class AgentManager:
                 break
         return {"status": status, "detail": str(latest.get("payload", ""))[:80],
                 "at": latest.get("ts")}
+
+    def _fleet_status_for(self, agent_id: str):
+        """M47: 给每个 agent 一份'其他成员在干什么'的只读快照（闭包惰性求值）。"""
+        def snapshot() -> list:
+            rows = []
+            for row in self.list():
+                if row.get("id") == agent_id:
+                    continue
+                act = row.get("activity") or {}
+                rows.append({
+                    "name": row.get("name") or row.get("id"),
+                    "status": act.get("status", "?"),
+                    "detail": f"{act.get('detail', '')[:60]}"
+                              f"｜待审批 {row.get('pending_proposals', 0)}"
+                              f"｜目标 {row.get('goals_active', 0)} 个"
+                              if act else "",
+                })
+            return rows
+        return snapshot
 
     # ---- 观测与驱动 ----
     def list(self) -> List[dict]:
