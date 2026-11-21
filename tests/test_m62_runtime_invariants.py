@@ -155,10 +155,16 @@ def test_approved_file_uses_original_content_not_another_draft(agent):
     assert visible.read_text() == "first approved content"
 
 
-def test_resumed_tool_uses_same_parameter_filter_and_audit(agent):
+def test_resumed_tool_uses_same_parameter_contract_and_audit(agent):
     task, calls = visible_task(agent, steps=[{
         "tool": "external", "args": {"value": "approved", "unexpected": "ignored"}}])
-    agent.router.run(task)
+    invalid = agent.router.run(task)
+    assert "未知参数" in str(invalid.step_results)
+    assert calls == []
+    assert not agent.queue.pending()
+    task.id = "corrected-parameters"
+    task.steps[0]["args"] = {"value": "approved"}
+    assert agent.router.run(task).status == "paused"
     result = agent.resume_task(task.id, True)
     assert result["status"] == "completed"
     assert calls == ["approved"]
@@ -279,11 +285,13 @@ def test_timeout_risk_assessment_uses_proposal_source_pool(agent, self_initiated
     assert (after == before) if self_initiated else (after < before)
 
 
-def test_loop_observes_actual_result_after_parameter_filter(agent):
+def test_loop_observes_actual_result_after_parameter_correction(agent):
     agent.llm.decisions = [
         {"tool": "clock", "args": {"noise": "ignored"}},
+        {"tool": "clock", "args": {}},
         {"done": True, "summary": "ok"}]
     result = AgenticLoop(agent).run("观察真实结果")
+    assert any("未知参数" in observation for observation in result["observations"])
     assert ":" in result["trace"][0]["result"]
     assert "忽略未知参数" not in result["trace"][0]["result"]
 

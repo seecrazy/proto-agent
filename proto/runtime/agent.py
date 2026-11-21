@@ -18,6 +18,8 @@ from typing import List, Optional
 
 from proto.exec.approval import ActionProposal, ApprovalQueue
 from proto.exec.agentic import AgenticLoop
+from proto.exec.contracts import builtin_parameters
+from proto.exec.sessions import ExecutionSessions
 from proto.exec.checkpoints import CheckpointStore
 from proto.exec.codetools import CodeTools
 from proto.exec.injector import StateInjector
@@ -230,11 +232,12 @@ class ProtoAgent:
             self.kernel, self.spine, damping=self.damping,
             store=store, auto_quota=self.auto_quota)
         self.checkpoints = CheckpointStore(store)
+        self.sessions = ExecutionSessions(store)
         self.code_workspace = self._build_projects_workspace()
         self.tools = ToolRegistry()
         self.tools.register("clock", lambda: time.strftime("%Y-%m-%d %H:%M:%S"),
                             category=ActionCategory.READ_DRAFT,
-                            description="当前时间")
+                            description="当前时间", parameters=builtin_parameters("clock"))
         self.code_workspace.register_all(self.tools)
         # M61：执行链内也能做领域学习。外部内容仍是 READ_DRAFT + 白名单，
         # 并在提示词中声明为素材非指令。
@@ -249,7 +252,7 @@ class ProtoAgent:
                 lambda task: self._delegate_output(task),
                 category=ActionCategory.VISIBLE_WRITE,
                 description="外包给外部编码 agent（需审批）",
-                owner_only=True)   # 外部执行=较高权限：主人超时也不代批
+                owner_only=True, parameters=builtin_parameters("delegate_coding"))
         self.router = Router(self.kernel, self.queue, self.workspace,
                              self.checkpoints, self.tools,
                              code_workspace=self.code_workspace)
@@ -378,14 +381,16 @@ class ProtoAgent:
         return reply
 
     def _system_prompt(self) -> str:
+        return SYSTEM_PROMPT + self._identity_prompt()
+
+    def _identity_prompt(self) -> str:
         from proto.runtime.taste import load_taste, taste_prompt_block
         internal = self.ledger.internal_rules()
         rules_block = ""
         if internal:
             rules_block = ("\n[已内化规矩] 以下来自主人，长期有效：\n"
                            + "\n".join(f"- {r['text'][:300]}" for r in internal[:20]))
-        return (SYSTEM_PROMPT
-                + f"\n你的人设：{self.persona}。独处学习与草稿都应体现这个人设。\n"
+        return (f"\n你的人设：{self.persona}。独处学习与草稿都应体现这个人设。\n"
                 + f"{self.identity.prompt_block()}\n"
                 + rules_block
                 + taste_prompt_block(load_taste(self.spine.store)))
@@ -654,6 +659,21 @@ class ProtoAgent:
 
     def work_on_goal(self, node) -> dict:
         """目标牵引执行：在 projects/<目标slug>/ 下自主开发，验收走质量门。"""
+        with self.sessions.lock:
+            if node.status != "active":
+                return {"status": "cancelled", "goal_id": node.id}
+            pending = self.sessions.pending_for_goal(node.id)
+            if pending:
+                if (self.sessions.compatible(pending) and self.sessions.valid(pending)
+                        and pending["status"] == "awaiting_approval"):
+                    return dict(pending.get("result", {}), status="paused", session_id=pending["id"],
+                                task_id=pending["pending_call"]["task_id"], goal_id=node.id,
+                                reason="existing_execution_session")
+                return {"status": "blocked", "reason": "execution_session_pending",
+                        "session_id": pending["id"], "goal_id": node.id}
+            return self._work_on_goal(node)
+
+    def _work_on_goal(self, node) -> dict:
         from proto.exec.agentic import AgenticLoop
         from proto.quality.gate import generate_acceptance
         from proto.work.journal import GoalJournal
@@ -721,17 +741,24 @@ class ProtoAgent:
         run_feedback = cross_feedback
         result = AgenticLoop(self, max_steps=24, pool=pool).run(
             task, acceptance=acceptance, journal=journal,
-            feedback=run_feedback)
+            feedback=run_feedback, goal_id=node.id, project_dir=project_dir)
         if result.get("status") == "awaiting_retry":
             retry = AgenticLoop(self, max_steps=12, pool=pool).run(
                 task, acceptance=acceptance, journal=journal,
                 feedback="；".join(result.get("missing", []))
-                or cross_feedback)
-            if retry.get("verified") is not None:
-                result = retry
-                if result.get("verified") is False:
-                    result["status"] = "failed_verification"
-        # 方法战果记账（好用的浮上来，久折的沉下去）
+                or cross_feedback, goal_id=node.id, project_dir=project_dir)
+            result = retry
+            result["retried"] = True
+            if result.get("verified") is False:
+                result["status"] = "failed_verification"
+        return self._finish_goal_result(node, result, project_dir)
+
+    def _finish_goal_result(self, node, result, project_dir):
+        result["project_dir"] = project_dir
+        if result.get("status") in ("paused", "blocked", "needs_reconciliation", "cancelled", "denied"):
+            return result
+        if node.status != "active":
+            return dict(result, status="cancelled", verified=False)
         used = self._attribute_methods(self.methods_lib, result)
         if used:
             self.methods_lib.mark_used(used)
@@ -1389,7 +1416,15 @@ class ProtoAgent:
                         encoding="utf-8")[:160]
                 except OSError:
                     preview = ""
+            checkpoint = self.checkpoints.resume(p.task_id) if p.task_id else None
+            state = checkpoint.get("state", {}) if checkpoint else {}
+            session = self.sessions.lookup(p.task_id) if p.task_id else None
+            step = (state.get("pending_step") if isinstance(state, dict)
+                    and state.get("waiting_for") == p.proposal_id else None)
             rows.append({"proposal_id": p.proposal_id,
+                         "task_id": p.task_id, "session_id": session["id"] if session else None,
+                         "resumable": bool(checkpoint or session), "step": step,
+                         "category": p.category.value, "owner_only": p.owner_only,
                          "description": p.description,
                          "desire_dim": p.desire_dim,
                          "goal": (p.payload or {}).get("goal", ""),
@@ -1403,6 +1438,8 @@ class ProtoAgent:
                          if p.proposal_id == proposal_id), None)
         dim = proposal.desire_dim if proposal else None
         self.queue.deny(proposal_id, reason="owner_denied")
+        if proposal is not None:
+            self._resume_proposal(proposal, approved=False)
         self._drift("rejection")
         self._drift("rejection")
         self.pad.apply_event("rejection")
@@ -1414,10 +1451,28 @@ class ProtoAgent:
         return None
 
     def accept_proposal(self, proposal_id: str) -> dict:
+        with self.sessions.lock:
+            return self._accept_proposal(proposal_id)
+
+    def _resume_proposal(self, proposal, approved):
+        with self.sessions.lock:
+            checkpoint = self.checkpoints.resume(proposal.task_id) if proposal.task_id else None
+            session = self.sessions.lookup(proposal.task_id) if proposal.task_id else None
+            if checkpoint is None and session is None:
+                return None
+            state = checkpoint.get("state", {}) if checkpoint else {}
+            if checkpoint and (not isinstance(state, dict) or state.get("waiting_for") != proposal.proposal_id):
+                return {"status": "blocked", "reason": "proposal_checkpoint_mismatch"}
+            return self.resume_task(proposal.task_id, approved)
+
+    def _accept_proposal(self, proposal_id: str) -> dict:
         proposal = next((p for p in self.queue.pending()
                          if p.proposal_id == proposal_id), None)
         if proposal is None:
             return {"status": "failed", "reason": "no_such_proposal"}
+        resumed = self._resume_proposal(proposal, approved=True)
+        if resumed is not None:
+            return resumed
         steps = ([{"tool": "clock", "args": {}, "category": "read_draft"},
                   {"tool": "write_file",
                    "args": {"path": f"proposals/{proposal_id}.md",
@@ -1454,39 +1509,39 @@ class ProtoAgent:
                     description, acceptance=acceptance,
                     feedback="；".join(result.get("missing", [])))
                 retry["retried"] = True
-                result = retry if retry.get("verified") is not None else result
+                result = retry
                 if result.get("verified") is False:
                     result["status"] = "failed_verification"   # 重试后仍失败
-            if result["status"] == "verified":
-                self.pad.apply_event("task_success")
-                self.desires.satisfy("goal_urgency", 0.25)
-                self._inbox.append(
-                    f"〔任务验证通过〕{description} → {result.get('summary', '')}")
-                return result
-            if result["status"] == "completed":
-                self.pad.apply_event("task_success")
-                self._inbox.append(f"〔任务完成·未验证〕{description} → "
-                                   f"{result.get('summary', '')}（无验收定义或离线）")
-                return result
-            if result.get("verified") is False:
-                # 验证未过：目标不完成，失败蒸馏为教训（Reflexion）
-                self.pad.apply_event("blocked")
-                missing = "；".join(result.get("missing", []))
-                self.library.add(f"当任务类似「{description[:40]}」时缺少证据：{missing}",
-                                 cluster="chat", utility=0.4, valence=-0.1)
-                self._inbox.append(f"〔验证未过〕{description}——缺少：{missing}。"
-                                   "我已把教训记下，目标保持未完成。")
-                self.spine.append("verification_failed",
-                                  {"task": description[:100], "missing": missing[:200]})
-            self.scheduler.on_task_completed(
-                type("R", (), {"status": result["status"], "retries": 0,
-                               "reason": result.get("reason", "")})())
-            return result
+            return self._finish_owner_result(description, result)
         steps = self.planner.plan(description) if self.planner else []
         if not steps:
             return {"status": "no_plan",
                     "reason": "无法规划步骤（离线模式或模型未给出计划）"}
         return self.run_task_with_steps(description, steps)
+
+    def _finish_owner_result(self, description, result):
+        if result["status"] == "verified":
+            self.pad.apply_event("task_success")
+            self.desires.satisfy("goal_urgency", 0.25)
+            self._inbox.append(f"〔任务验证通过〕{description} → {result.get('summary', '')}")
+            return result
+        if result["status"] == "completed":
+            self.pad.apply_event("task_success")
+            self._inbox.append(f"〔任务完成·未验证〕{description} → "
+                               f"{result.get('summary', '')}（无验收定义或离线）")
+            return result
+        if result.get("verified") is False:
+            self.pad.apply_event("blocked")
+            missing = "；".join(result.get("missing", []))
+            self.library.add(f"当任务类似「{description[:40]}」时缺少证据：{missing}",
+                             cluster="chat", utility=0.4, valence=-0.1)
+            self._inbox.append(f"〔验证未过〕{description}——缺少：{missing}。"
+                               "我已把教训记下，目标保持未完成。")
+            self.spine.append("verification_failed", {"task": description[:100], "missing": missing[:200]})
+        self.scheduler.on_task_completed(
+            type("R", (), {"status": result["status"], "retries": 0,
+                           "reason": result.get("reason", "")})())
+        return result
 
     def run_task_with_steps(self, description: str, steps: list) -> dict:
         task = Task(id=f"owner-{pysecrets.token_hex(16)}", description=description, steps=steps)
@@ -1521,6 +1576,21 @@ class ProtoAgent:
 
     def resume_task(self, task_id: str, approved: bool) -> dict:
         """从暂停检查点恢复任务：批准→续跑余下步骤并晋升；拒绝→中止。"""
+        if type(approved) is not bool:
+            return {"status": "failed", "reason": "invalid_approval_decision"}
+        with self.sessions.lock:
+            session = self.sessions.lookup(task_id)
+            if session is not None:
+                result = AgenticLoop(self).resume(task_id, approved)
+                if result.get("status") in ("verified", "completed", "awaiting_retry", "max_steps"):
+                    goal_id = session["context"]["goal_id"]
+                    if goal_id:
+                        node = self.goal_tree.get(goal_id)
+                        if node is not None:
+                            return self._finish_goal_result(node, result, session["context"]["project_dir"])
+                    else:
+                        return self._finish_owner_result(session["context"]["task"], result)
+                return result
         record = self.checkpoints.resume(task_id)
         if record is None:
             return {"status": "failed", "reason": "no_checkpoint"}

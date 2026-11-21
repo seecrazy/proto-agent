@@ -8,11 +8,14 @@ Router 串行调度任务：预算预留 → 逐步执行 → 每步检查点 �
 from __future__ import annotations
 
 import threading
+import copy
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
 from proto.exec.approval import ActionProposal, ApprovalQueue
-from proto.exec.checkpoints import CheckpointStore
+from proto.exec.checkpoints import CheckpointStore, SCHEMA_VERSION
+from proto.exec.contracts import (ParameterError, builtin_parameters, check_schema,
+                                  checked_arguments, infer_parameters)
 from proto.exec.workspace import ScratchWorkspace
 from proto.kernel.kernel import ActionCategory, Kernel
 
@@ -38,14 +41,20 @@ class ToolPolicy:
 class ToolRegistry:
     def __init__(self):
         self._tools: Dict[str, tuple] = {}
+        self._parameters: Dict[str, dict] = {}
 
     def register(self, name: str, fn: Callable, policy: ToolPolicy = None,
                  category: ActionCategory = None, description: str = "",
-                 owner_only: bool = False) -> None:
+                 owner_only: bool = False, parameters: dict = None) -> None:
         if policy is None:
             policy = ToolPolicy(category=category or ActionCategory.READ_DRAFT,
                                 description=description, owner_only=owner_only)
+        schema = copy.deepcopy(parameters) if parameters is not None else infer_parameters(fn)
+        check_schema(schema)
+        if schema.get("type") != "object":
+            raise ValueError("tool_parameters_must_be_object")
         self._tools[name] = (fn, policy)
+        self._parameters[name] = schema
 
     def get(self, name: str) -> Callable:
         if name not in self._tools:
@@ -59,6 +68,19 @@ class ToolRegistry:
 
     def names(self):
         return set(self._tools)
+
+    def definition(self, name: str) -> dict:
+        policy = self.policy(name)
+        return {"name": name, "description": policy.description,
+                "category": policy.category.value, "owner_only": policy.owner_only,
+                "parameters": copy.deepcopy(self._parameters[name])}
+
+    def definitions(self) -> List[dict]:
+        return [self.definition(name) for name in sorted(self.names())]
+
+    def validate(self, name: str, arguments: dict) -> dict:
+        self.get(name)
+        return checked_arguments(name, arguments, self._parameters[name])
 
 
 @dataclass
@@ -142,6 +164,8 @@ class Router:
 
     def resume(self, task: Task, human_approved: bool) -> TaskResult:
         """从暂停检查点恢复：批准→继续余下步骤；拒绝→中止（产物留 scratch）。"""
+        if type(human_approved) is not bool:
+            return TaskResult(task.id, "failed", reason="invalid_approval_decision")
         with self._resume_lock:
             return self._resume_locked(task, human_approved)
 
@@ -149,10 +173,37 @@ class Router:
         record = self._cps.resume(task.id)
         if record is None:
             return TaskResult(task.id, "failed", reason="no_checkpoint")
+        if (type(record.get("schema_version")) is not int or record["schema_version"] != SCHEMA_VERSION
+                or record.get("variant_id") != VARIANT_ID):
+            return TaskResult(task.id, "failed", reason="checkpoint_version_mismatch")
         state = record["state"]
+        if not isinstance(state, dict):
+            return TaskResult(task.id, "failed", reason="invalid_checkpoint")
         proposal_id = state.get("waiting_for")
         if proposal_id is None:
             return TaskResult(task.id, "failed", reason="not_paused")
+        pending_step = state.get("pending_step")
+        if human_approved:
+            spec = state.get("task")
+            step_index = state.get("step")
+            if (not isinstance(spec, dict) or not isinstance(spec.get("steps"), list)
+                    or not isinstance(spec.get("description"), str)
+                    or not isinstance(state.get("results"), list)
+                    or type(step_index) is not int or not 0 <= step_index < len(spec["steps"])
+                    or not isinstance(pending_step, dict) or pending_step != spec["steps"][step_index]):
+                return TaskResult(task.id, "failed", reason="invalid_checkpoint")
+            try:
+                current_category = self._effective_category(pending_step)
+                tool = pending_step["tool"]
+                policy = self._tools.policy(tool) if tool in self._tools.names() else None
+                if (state.get("approved_category", current_category.value) != current_category.value
+                        or state.get("owner_only", bool(policy and policy.owner_only)) != bool(policy and policy.owner_only)):
+                    return TaskResult(task.id, "failed", reason="tool_policy_changed")
+                schema = (self._tools._parameters[tool] if tool in self._tools.names()
+                          else builtin_parameters("write_file"))
+                checked_arguments(tool, pending_step.get("args", {}), schema)
+            except (KeyError, ValueError) as exc:
+                return TaskResult(task.id, "failed", reason=f"parameter_contract:{exc}")
         try:
             approval = (self._queue.approve(proposal_id) if human_approved else
                         self._queue.deny(proposal_id, reason="human_denied"))
@@ -177,7 +228,7 @@ class Router:
 
     def _execute(self, task: Task, start_step: int, step_results: list,
                  approved_step: int = None, approval=None) -> TaskResult:
-        task_spec = {"description": task.description, "steps": task.steps,
+        task_spec = {"description": task.description, "steps": copy.deepcopy(task.steps),
                      "owner_assigned": task.owner_assigned,
                      "desire_dim": task.desire_dim}
         for i in range(start_step, len(task.steps)):
@@ -194,6 +245,16 @@ class Router:
             except (KeyError, ValueError) as exc:
                 return TaskResult(task.id, "failed", step_results,
                                   reason=str(exc), next_step=i)
+            try:
+                schema = (self._tools._parameters[step["tool"]]
+                          if step["tool"] in self._tools.names()
+                          else builtin_parameters("write_file"))
+                step = dict(step, args=checked_arguments(step["tool"], step.get("args", {}), schema))
+                task_spec["steps"][i] = step
+            except ParameterError as exc:
+                step_results.append(f"参数错误：{step['tool']} {exc}。修正参数后重试。")
+                self._tool_exec_audit(step["tool"], category, error=f"parameter_contract:{exc}")
+                continue
             self._cps.put(task.id, {
                 "step": i, "results": step_results, "task": task_spec,
                 "status": "resuming" if i == approved_step else "running",
@@ -240,6 +301,8 @@ class Router:
                             "waiting_for": sub.proposal_id,
                             "pending_promotion": path,
                             "pending_step": step,
+                            "approved_category": category.value,
+                            "owner_only": bool(tool_policy and tool_policy.owner_only),
                         }, variant_id=VARIANT_ID)
                         return TaskResult(task.id, "paused", step_results,
                                           proposal_id=sub.proposal_id, next_step=i)
@@ -269,26 +332,12 @@ class Router:
                         "step": i, "results": step_results, "task": task_spec,
                         "waiting_for": sub.proposal_id,
                         "pending_step": step,
+                        "approved_category": category.value,
+                        "owner_only": bool(tool_policy and tool_policy.owner_only),
                     }, variant_id=VARIANT_ID)
                     return TaskResult(task.id, "paused", step_results,
                                       proposal_id=sub.proposal_id, next_step=i)
-            # LLM 常带多余键：只传工具声明的参数（防御性过滤）
-            import inspect as _insp
-            try:
-                parameters = _insp.signature(fn).parameters
-                sig_params = (None if any(parameter.kind is _insp.Parameter.VAR_KEYWORD
-                                          for parameter in parameters.values())
-                              else set(parameters))
-            except (ValueError, TypeError):
-                sig_params = None
             call_args = step.get("args", {}) or {}
-            if sig_params is not None:
-                extra = set(call_args) - sig_params
-                if extra:
-                    step_results.append(
-                        f"忽略未知参数: {sorted(extra)}")
-                    call_args = {k: v for k, v in call_args.items()
-                                 if k in sig_params}
             try:
                 outcome = fn(**call_args)
                 step_results.append(outcome)
@@ -296,19 +345,7 @@ class Router:
             except TypeError as exc:
                 # 参数错误=单步失败不是任务失败（M48）：给出可自纠的提示，
                 # 链继续——原来 "TypeError: <lambda>() missing..." 直接判死整链
-                required = []
-                try:
-                    sig = _insp.signature(fn)
-                    required = [p.name for p in sig.parameters.values()
-                                if p.default is _insp.Parameter.empty
-                                and p.kind in (_insp.Parameter.POSITIONAL_OR_KEYWORD,
-                                               _insp.Parameter.KEYWORD_ONLY)]
-                except (ValueError, TypeError):
-                    pass
-                missing = [p for p in required if p not in call_args]
-                hint = (f"参数错误：{step['tool']} 缺少必需参数 {missing}"
-                        if missing else
-                        f"参数错误：{step['tool']}（{type(exc).__name__}: {exc}）")
+                hint = f"参数错误：{step['tool']}（{type(exc).__name__}: {exc}）"
                 step_results.append(
                     hint + f"；收到参数 {sorted(call_args)}。修正参数后重试。")
                 self._tool_exec_audit(step["tool"], category, None,

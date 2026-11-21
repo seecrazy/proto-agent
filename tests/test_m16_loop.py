@@ -63,6 +63,7 @@ class TestAgenticLoop:
             {"tool": "write_file",
              "args": {"path": "shared.md", "content": "对外内容"},
              "category": "visible_write"},
+            {"done": True, "summary": "已批准并发布文档"},
         ]
         loop = AgenticLoop(agent, max_steps=4)
         result = loop.run("发布文档")

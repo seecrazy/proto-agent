@@ -185,7 +185,7 @@ class TestBudgetFloorAndSteps:
         """实现类目标步数上限升到 24/12（源级断言防回退）。"""
         import inspect
         from proto.runtime import agent as agent_mod
-        src = inspect.getsource(agent_mod.ProtoAgent.work_on_goal)
+        src = inspect.getsource(agent_mod.ProtoAgent._work_on_goal)
         assert "max_steps=24" in src and "max_steps=12" in src
 
     def test_zero_output_escalation_prefix(self, tmp_path):

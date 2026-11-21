@@ -60,7 +60,8 @@ class TestObservationLimits:
             "发现：ok\n产出：无\n下一步：done",
         ]
         result = AgenticLoop(agent, max_steps=4).run("t")
-        assert any(o.startswith("clock →") for o in result["observations"])
+        assert any(o.startswith("clock({}) →") for o in result["observations"])
+        assert len(result["trace"][0]["result"]) <= 600
 
 
 class TestFleetTools:

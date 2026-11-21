@@ -263,7 +263,10 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(200, agent.run_task(self._body().get("text", "")))
         m3 = re.match(r"^/api/task/([A-Za-z0-9_-]+)/resume$", path)
         if m3 and method == "POST":
-            result = agent.resume_task(m3.group(1), bool(self._body().get("approved")))
+            body = self._body()
+            if not isinstance(body, dict) or type(body.get("approved")) is not bool:
+                return self._json(400, {"error": "approved_must_be_boolean"})
+            result = agent.resume_task(m3.group(1), body["approved"])
             return self._json(200, result)
 
         if path == "/api/proposals" and method == "GET":

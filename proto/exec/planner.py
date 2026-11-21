@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 from typing import List
 
 from proto.exec.router import ToolRegistry
@@ -21,7 +22,7 @@ class LLMPlanner:
         self._tools = tools
 
     def _prompt(self) -> str:
-        names = ", ".join(sorted(self._tools.names()))
+        names = json.dumps(self._tools.definitions(), ensure_ascii=False)
         return (
             "你是成长型 Agent PROTO 的任务规划器。把任务拆解为工具调用步骤。"
             f"可用工具：{names}。\n"

@@ -1,5 +1,7 @@
 # PROTO v2.0 核心引擎实现计划
 
+> **历史执行计划，仅供溯源。** 当前完整设计和验收见 [PROTO 总设计](../DESIGN.md)，当前进度见 [PROGRESS](../PROGRESS.md)；下文任务指令、勾选状态与工具建议不作为新会话的执行要求。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 实现设计 §12.1 范围——L1 内核（锚定/边界/预算/审计）、L2 状态与有界调制、L3 元认知、L4 注入器与情绪调制器、行为评估 harness，全量测试离线可跑。

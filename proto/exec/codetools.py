@@ -16,6 +16,8 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Iterable, List
 
+from proto.exec.contracts import builtin_parameters
+
 MAX_READ = 50000
 MAX_EDIT = 1_000_000
 MAX_GREP_HITS = 50
@@ -384,26 +386,29 @@ class CodeTools:
     # ---- 注册到 Router ----
     def register_all(self, registry) -> None:
         from proto.kernel.kernel import ActionCategory
-        registry.register("read_file",
+        def register(name, function, **options):
+            registry.register(name, function, parameters=builtin_parameters(name), **options)
+
+        register("read_file",
                           lambda path, offset=0, limit=200:
                           self.read_file(path, offset, limit),
                           category=ActionCategory.READ_DRAFT,
                           description="读工作区文件（行级分页：offset/limit）")
-        registry.register("read_files", lambda paths=None: self.read_files(paths),
+        register("read_files", lambda paths=None: self.read_files(paths),
                           category=ActionCategory.READ_DRAFT,
                           description="批量读多个文件（≤5 个，各前 60 行）")
-        registry.register("write_file",
+        register("write_file",
                           lambda path, content: self.write_file(path, content),
                           category=ActionCategory.WORKSPACE_WRITE,
                           description="写工作区文件")
-        registry.register("edit_file", lambda path, old, new, replace_all=False:
+        register("edit_file", lambda path, old, new, replace_all=False:
                           self.edit_file(path, old, new, replace_all),
                           category=ActionCategory.WORKSPACE_WRITE,
                           description="精确替换工作区文件片段")
-        registry.register("list_dir", lambda path="": self.list_dir(path),
+        register("list_dir", lambda path="": self.list_dir(path),
                           category=ActionCategory.READ_DRAFT,
                           description="列工作区目录")
-        registry.register("grep", lambda pattern, glob="*": self.grep(pattern, glob),
+        register("grep", lambda pattern, glob="*": self.grep(pattern, glob),
                           category=ActionCategory.READ_DRAFT,
                           description="搜索工作区文本")
         # 沙盒后端（写遏制+禁网）下代码只能写 tmp/工作区 → 能力等同 WORKSPACE_WRITE；
@@ -413,12 +418,12 @@ class CodeTools:
                                if backend in ("runsc", "sandbox-exec")
                                else ActionCategory.VISIBLE_WRITE)
         # 未隔离执行=较高权限：主人超时也绝不自主代批
-        registry.register("run_python", lambda code, timeout_s=60:
+        register("run_python", lambda code, timeout_s=60:
                           self.run_python(code, timeout_s),
                           category=run_python_category,
                           description="沙盒跑 Python（验证/测试）",
                           owner_only=backend not in ("runsc", "sandbox-exec"))
-        registry.register(
+        register(
             "run_command", lambda argv, cwd="", timeout_s=120:
             self.run_command(argv, cwd, timeout_s),
             category=run_python_category,

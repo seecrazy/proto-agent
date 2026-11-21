@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Callable, List, Optional
 
+from proto.exec.contracts import builtin_parameters
+
 
 def _fmt_age(ts: float, now: float) -> str:
     delta = max(0.0, now - ts)
@@ -31,14 +33,17 @@ class FleetTools:
         from proto.kernel.kernel import ActionCategory
         registry.register("blackboard_read", self.bb_read,
                           category=ActionCategory.READ_DRAFT,
-                          description="读舰队共享黑板（求助帖/分享/回复）")
+                          description="读舰队共享黑板（求助帖/分享/回复）",
+                          parameters=builtin_parameters("blackboard_read"))
         registry.register("blackboard_post", self.bb_post,
                           category=ActionCategory.READ_DRAFT,
                           description="向舰队黑板发帖（kind=help 求助/share 分享/"
-                                      "report 汇报），供其他 agent 或主人查看")
+                                      "report 汇报），供其他 agent 或主人查看",
+                          parameters=builtin_parameters("blackboard_post"))
         registry.register("fleet_status", self.status,
                           category=ActionCategory.READ_DRAFT,
-                          description="舰队各 agent 当前状态（谁在做什么/卡点/预算）")
+                          description="舰队各 agent 当前状态（谁在做什么/卡点/预算）",
+                          parameters=builtin_parameters("fleet_status"))
 
     # ---- 工具实现（返回字符串：直接成为循环观察） ----
     def bb_read(self) -> str:
