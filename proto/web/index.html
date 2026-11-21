@@ -912,7 +912,7 @@ document.addEventListener("click", e => {
     panel.classList.remove("open");
 });
 
-async function api(method, path, body, requestKey, agentId) {
+async function api(method, path, body, requestKey, agentId, signal) {
   // GET/HEAD 绝不带 body（浏览器 fetch 会直接拒绝——曾致全页卡片静默挂死）
   const payload = (method === "GET" || method === "HEAD")
     ? undefined : (body ? JSON.stringify(body) : undefined);
@@ -922,6 +922,7 @@ async function api(method, path, body, requestKey, agentId) {
                        ...(agentId ? {"X-Proto-Agent": agentId} : {}),
                        ...(payload ? {"Content-Type": "application/json"} : {}) },
     body: payload,
+    signal,
   });
   if (resp.status === 401) { addMsg("令牌失效，请用终端里的完整 URL 重新打开。", "system"); throw new Error("unauthorized"); }
   if (!resp.ok) {
@@ -1611,6 +1612,7 @@ async function refreshFleet() {
   document.getElementById("agent-identity-btn").disabled = !sel.value;
   if (!sel.value) document.getElementById("model").textContent = "模型接入";
   if (!sel.value || sel.value !== previous) {
+    resetTaste(sel.value);
     liveVersion++;
     document.getElementById("live-status").textContent = sel.value ? "同步中…" : "舰队暂无 Agent，点「＋Agent」创建。";
     document.getElementById("live-detail").textContent = "";
@@ -1745,6 +1747,7 @@ async function forceAct(id, btn) {
   finally { btn.disabled = false; }
 }
 async function switchAgent(id) {
+  resetTaste(id);
   liveVersion++;
   document.getElementById("live-status").textContent = "正在切换 Agent…";
   document.getElementById("live-detail").textContent = "";
@@ -1957,20 +1960,41 @@ async function refreshBuckets() {
       `<span class="empty">汇总加载失败：${esc(String(e && e.message || e)).slice(0, 80)}</span>`;
   }
 }
+let tasteRefresh = 0;
+function resetTaste(agentId) {
+  tasteRefresh++;
+  document.getElementById("taste-dims").textContent = agentId ? "（加载中）" : "（暂无 Agent）";
+}
 async function refreshTaste() {
+  const selector = document.getElementById("agent-select"), agentId = selector.value;
+  if (!agentId) return;
+  const refresh = ++tasteRefresh;
+  const isCurrent = () => refresh === tasteRefresh && agentId === selector.value;
+  const box = document.getElementById("taste-dims");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const r = await api("GET", "/api/taste");
-    const box = document.getElementById("taste-dims");
-    box.innerHTML = "";
-    for (const [key, d] of Object.entries(r.taste)) {
-      const div = document.createElement("div");
-      div.style.cssText = "font-size:12px;margin-bottom:5px;line-height:1.5";
-      div.innerHTML = `<b>${d.label}</b> <span class="badge">权重 ${d.weight}</span><br>` +
-        `<span style="color:var(--dim)">= ${esc(d.anchor)}</span><br>` +
-        `<span style="color:var(--dim);opacity:.6">≠ ${esc(d.anti_anchor)}</span>`;
-      box.appendChild(div);
+    const {taste} = await api("GET", "/api/taste", undefined, undefined, agentId, controller.signal);
+    if (!isCurrent()) return;
+    if (!taste || typeof taste !== "object" || Array.isArray(taste)) throw new Error("invalid_taste");
+    const rows = Object.values(taste).map(dimension => {
+      const entry = document.createElement("div");
+      entry.style.cssText = "font-size:12px;margin-bottom:5px;line-height:1.5";
+      entry.innerHTML = `<b>${esc(dimension.label)}</b> <span class="badge">权重 ${esc(dimension.weight)}</span><br>` +
+        `<span style="color:var(--dim)">= ${esc(dimension.anchor)}</span><br>` +
+        `<span style="color:var(--dim);opacity:.6">≠ ${esc(dimension.anti_anchor)}</span>`;
+      return entry;
+    });
+    if (rows.length) box.replaceChildren(...rows);
+    else box.textContent = "（暂无审美定义）";
+  } catch (error) {
+    if (!isCurrent()) return;
+    if (error.message === "unauthorized") {
+      box.textContent = "令牌失效，请用启动终端里的完整 URL 重新打开。";
+    } else {
+      box.textContent = controller.signal.aborted ? "审美读取超时，将自动重试。" : "审美加载失败，将自动重试。";
     }
-  } catch (e) {}
+  } finally { clearTimeout(timeout); }
 }
 async function refineTaste() {
   const feedback = document.getElementById("taste-feedback").value.trim();
@@ -2980,6 +3004,7 @@ const SAFE = (name, fn) => async () => {
 async function loop() {
   await SAFE("fleet", refreshFleet)();
   if (document.getElementById("agent-select").value) {
+    const tasteRead = SAFE("taste", refreshTaste)();
     await SAFE("inbox", async () => {
       const inbox = await api("GET", "/api/inbox");
       for (const m of inbox.messages) addMsg(m, "agent");
@@ -2992,6 +3017,7 @@ async function loop() {
       if (!document.getElementById("agent-select").value) break;
       await SAFE(name, fn)();
     }
+    await tasteRead;
   } else {
     await SAFE("awake", async () => {
       const state = await api("GET", "/api/awake");

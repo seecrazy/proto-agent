@@ -604,7 +604,7 @@ CodingBridge 自动探测 `claude/codex/zcode`，可用 `PROTO_BRIDGE_CLI` 指�
 ├────────────────┬──────────────────────────┬──────────────────────┤
 │ 左栏 340px      │ 对话 1fr                 │ 右栏 380px           │
 │ 概览 / 内在     │ 消息流、输入、任务反馈    │ 工作 / 项目 / 工程   │
-│ 观察信息        │                          │ 项目：公司 / 交付    │
+│ 内在：审美/学习 │                          │ 项目：公司 / 交付    │
 │ 舰队额度内编辑  │                          │ 指派：执行 / 先审计划 │
 ├────────────────┤                          ├──────────────────────┤
 │ 左栏边缘把手    │                          │ 右栏边缘把手         │
@@ -638,6 +638,7 @@ CodingBridge 自动探测 `claude/codex/zcode`，可用 `PROTO_BRIDGE_CLI` 指�
 | 先审计划 | 工作栏原指派卡 `#task-plan-form` 复用 `#task-input`；`#task-plan-review` 或历史 `审阅计划` 打开 `#coord-detail`，`#coord-approve-plan` 只批准所示计划 | 不保存浏览器计划副本，重载查运行历史 |
 | 公司组织 | 项目栏公司卡 `#company-open` 打开 `#company-panel`，`#company-pick` 只切公司；`#company-create-form`、`#company-tree`、`#company-role-form`、`#company-message-form` 只操作公司数据。`#company-role-new-agent` 复用 `#agent-create-panel` 草稿预览，保留当前对话与项目选择；`#company-status` 随弹窗滚动贴底报告结果 | 无新存储键；组织与消息以协调库为准 |
 | Agent 黑板 | `#blackboard` 与 `#bb-controls`；已任职成员切至定向组织消息入口，不保留通用发帖入口 | 无新存储键 |
+| 审美 | 左栏「内在 → 它的审美」。`#taste-dims` 是当前 Agent 的只读定义和加载反馈，原「校准」「评判」控件留在其下方 | 不缓存到浏览器；以 Agent 本地审美为准 |
 
 待批卡片沿用右侧 work 分区，不增加新页签。`refreshProposals` 显示并转义原始工具请求和审批类别；批准按钮对执行会话标为“批准并续跑原任务”，未绑定执行器的旧自主学习提案才沿用草稿行为。任务面板与提案按钮的结果统一交给 `renderTaskResult`，包括再次暂停、验收失败和核对原因；待批徽标只按本次返回的提案列表计算。保持现有 DOM id、CSS 和存储键，不改变左右栏布局。
 
@@ -647,7 +648,9 @@ UI 改动流程：先改**本节**整图和控件归属 → 列全 DOM id、CSS�
 
 ### 13.3 API、轮询与错误反馈
 
-只读接口提供 state、audit、proposals、rules、evolution、memory、inbox、goaltree、world、identity、activity、agents、summary、blackboard、methods、项目根等视图。对话、任务、进化与审批续跑属于长操作；控制快通道独立分组。
+只读接口提供 state、audit、proposals、rules、evolution、memory、inbox、goaltree、world、identity、activity、agents、summary、blackboard、methods、审美、项目根等视图。对话、任务、进化与审批续跑属于长操作；控制快通道独立分组。
+
+**审美加载。** 控制台拿到 Agent 名册后随正常轮询发起 `GET /api/taste`，显式携带当前 Agent ID；不用先校准，与其他卡片读取并行。展示本地保存的定义，没有保存值时用五个默认维度；读取不调用模型、不等待长任务，也不改变校准和评判规则。首次读取或切换成员显示加载状态，过期响应不得覆盖当前成员；空舰队不发请求。空数据、请求失败和 5 秒超时都退出加载状态，失败由下一轮自动重试。验收包括空配置/忙碌时有默认定义、切换不串卡，以及失败后恢复。
 
 API 默认绑定 `127.0.0.1:8420`，使用强令牌与恒定时间比较；限制请求体，坏 JSON 返回 400、超大返回 413、同 Agent 忙返回 409。界面转义外部文本，设置 CSP、nosniff、禁止被嵌入等响应头；当前 CSP 仍允许内联脚本/样式，不宣称零 XSS 风险。
 

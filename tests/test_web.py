@@ -12,6 +12,7 @@ import pytest
 
 from proto.llm.client import LLMClient
 from proto.runtime.manager import AgentManager
+from proto.runtime.taste import DEFAULT_TASTE
 from proto.web import server as web_server
 from proto.web.server import ProtoWebServer
 from tests.test_m66_fleet_runs import console
@@ -98,6 +99,15 @@ def test_console_serves_startup_html_until_restart(tmp_path, monkeypatch):
     with console(AgentManager(fleet_root)) as restarted:
         with urllib.request.urlopen(f"http://127.0.0.1:{restarted.port}/", timeout=5) as response:
             assert response.read() == updated
+
+
+def test_taste_reads_offline_while_agent_work_lock_is_held(tmp_path):
+    fleet = AgentManager(tmp_path)
+    agent_id = fleet.create("样例成员")["id"]
+    with console(fleet) as server, fleet.ops_lock(agent_id):
+        assert fleet.get(agent_id).llm is None
+        assert call(server, "GET", "/api/taste", token=server.token, agent_id=agent_id) == (
+            200, {"taste": DEFAULT_TASTE})
 
 
 class TestStateAndChat:
@@ -298,6 +308,91 @@ function reply(status, body) { return {status, ok: status === 200, json: async (
 })().catch(error => { console.error(error); process.exitCode = 1; });
 '''
     subprocess.run([node], input=harness + transport + panel + assertions, text=True, check=True, timeout=10)
+
+
+def test_taste_poll_loads_retries_and_ignores_stale_member():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is not installed")
+    html = web_server.INDEX_PATH.read_text(encoding="utf-8")
+    transport = re.search(r"async function api\(.*?(?=let modelCatalog)", html, re.S).group()
+    loader = re.search(r"let tasteRefresh = 0;.*?(?=async function refineTaste)", html, re.S).group()
+    polling = re.search(r"const SAFE = .*?(?=\nloop\(\);)", html, re.S).group()
+    harness = r'''
+const assert = require("node:assert/strict");
+const TOKEN = "test";
+const selector = {value: "alpha"}, box = {textContent: "（加载中）", replaceChildren(...entries) {
+  this.textContent = entries.map(entry => entry.innerHTML).join("");
+}};
+const controls = {"agent-select": selector, "taste-dims": box, "awake-btn": {}};
+const document = {getElementById: id => controls[id], createElement: () => ({style: {}})};
+function esc(value) { return String(value); }
+function addMsg() {}
+for (const name of ["Fleet", "State", "Proposals", "Audit", "Rules", "Evolution", "Scratch", "Memory",
+  "GoalTree", "World", "Identity", "Activity", "Blackboard", "Buckets", "Runs", "Delivery", "TrackedTask"]) {
+  globalThis[`refresh${name}`] = async () => {};
+}
+let respond, deadline;
+const requests = [];
+function setTimeout(action, delay) { if (delay === 5000) deadline = action; }
+function clearTimeout() {}
+function reply(status, body) { return {status, ok: status === 200, json: async () => body}; }
+function taste(label) { return {taste: {fun: {label, weight: 0.5, anchor: "正例", anti_anchor: "反例"}}}; }
+function fetch(path, options) {
+  if (path === "/api/inbox") return reply(200, {messages: []});
+  if (path === "/api/awake") return reply(200, {awake: false});
+  assert.equal(path, "/api/taste");
+  assert.equal(options.method, "GET");
+  requests.push(options.headers["X-Proto-Agent"]);
+  return respond(options.signal);
+}
+'''
+    assertions = r'''
+const timers = require("node:timers");
+const watchdog = timers.setTimeout(() => { throw new Error("taste test did not finish"); }, 3000);
+(async () => {
+  respond = () => reply(200, taste("甲的定义"));
+  await loop();
+  assert.match(box.textContent, /甲的定义/);
+  assert.deepEqual(requests, ["alpha"]);
+
+  respond = () => reply(503, {error: "internal"});
+  await loop();
+  assert.match(box.textContent, /加载失败.*自动重试/);
+  respond = signal => new Promise((resolve, reject) => {
+    signal.addEventListener("abort", () => reject(new Error("aborted")));
+  });
+  const timedOut = refreshTaste();
+  deadline();
+  await timedOut;
+  assert.match(box.textContent, /读取超时.*自动重试/);
+
+  let finish;
+  respond = () => new Promise(resolve => { finish = resolve; });
+  const staleRead = refreshTaste();
+  selector.value = "beta";
+  resetTaste(selector.value);
+  respond = () => reply(200, taste("乙的定义"));
+  await loop();
+  finish(reply(200, taste("已过期的甲的定义")));
+  await staleRead;
+  assert.match(box.textContent, /乙的定义/);
+  assert.equal(requests.at(-1), "beta");
+
+  respond = () => reply(200, {taste: {}});
+  await loop();
+  assert.match(box.textContent, /暂无审美定义/);
+  selector.value = "";
+  resetTaste(selector.value);
+  const count = requests.length;
+  await loop();
+  assert.equal(requests.length, count);
+  assert.match(box.textContent, /暂无 Agent/);
+})().catch(error => { console.error(error); process.exitCode = 1; })
+    .finally(() => timers.clearTimeout(watchdog));
+'''
+    subprocess.run([node], input=harness + transport + loader + polling + assertions,
+                   text=True, check=True, timeout=10)
 
 
 class TestProposalsAndControls:
