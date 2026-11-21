@@ -26,7 +26,7 @@ def rewrite_proposal(agent, raw: str) -> str:
     try:
         out = agent._complete(agent.llm_fast,
                               REWRITE_PROMPT.format(raw=raw[:400]),
-                              raw[:200])
+                              raw[:200], pool="self_initiated")
         out = out.strip()
         # 简单质量门：必须含"做什么"关键字，否则用兜底
         if "做什么" in out and len(out) < 300:

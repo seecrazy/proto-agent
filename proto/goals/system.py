@@ -21,12 +21,19 @@ DEPTH_BONUS = {"long": 0.2, "mid": 0.5, "short": 0.8, "task": 1.0}
 
 DECOMPOSE_PROMPT = (
     "你是 PROTO 的目标分解器。把下面的父目标按**交付阶梯**拆成 3-4 个子目标，"
-    "顺序为：设计规格 → 功能实现 → 本地验证 → 就绪交付。"
+    "顺序为：领域学习与设计规格 → 功能实现 → 本地验证 → 就绪交付。"
+    "设计阶段必须先研读可访问的优秀同类作品/模式，说明值得保留的用户价值与取舍。"
     "最后一个子目标固定为'就绪交付'：本地全部完成后整理交付清单"
     "（已完成/待主人提供/一键继续指引）。"
     "每个子目标附**最小可检验定义**（≤3 条关键证据，必须本机可验："
     "能写出的文件、能跑通的脚本；需主人账号/设备/外部服务的事项只进交付清单）。"
     '只输出 JSON 数组：[{"text": "...", "acceptance": "..."}]。'
+)
+
+DELIVERY_GOAL = "整理就绪交付包：README、运行/测试证据、待主人提供事项、一键继续指引"
+DELIVERY_ACCEPTANCE = (
+    "项目目录存在 README 与交付报告；报告列出本机测试/编译证据、"
+    "待主人提供事项和一键继续指引"
 )
 
 
@@ -94,7 +101,8 @@ class GoalTree:
         return self._nodes.get(node_id)
 
     def all_active(self) -> List[GoalNode]:
-        return [n for n in self._nodes.values() if n.status == "active"]
+        with self._lock:
+            return [n for n in self._nodes.values() if n.status == "active"]
 
     def active_long_term(self) -> List[GoalNode]:
         return sorted((n for n in self.all_active() if n.level == "long"),
@@ -106,8 +114,10 @@ class GoalTree:
 
     def _complete_unlocked(self, node_id: str) -> Optional[GoalNode]:
         node = self._nodes.get(node_id)
-        if node is None:
+        if node is None or node.status == "dropped":
             return None
+        if node.status == "done":
+            return node
         node.status = "done"
         node.progress = 1.0
         self._store.put(self._collection, node.id, node.to_dict())
@@ -135,14 +145,19 @@ class GoalTree:
             return
         kids = [n for n in self._nodes.values()
                 if n.parent_id == parent_id and n.status != "dropped"]
-        if kids:
-            parent.progress = round(
-                sum(k.progress for k in kids) / len(kids), 4)
+        if parent.status == "done":
+            parent.progress = 1.0
+        else:
+            parent.progress = (round(sum(k.progress for k in kids) / len(kids), 4)
+                               if kids else 0.0)
         done = all(k.status == "done" for k in kids) if kids else False
-        if done and parent.status == "active":
+        became_done = done and parent.status == "active"
+        if became_done:
             parent.status = "done"
             parent.progress = 1.0
         self._store.put(self._collection, parent.id, parent.to_dict())
+        if became_done and parent.level in ("mid", "long") and self.on_milestone:
+            self.on_milestone(parent)
         self._repropagate(parent.parent_id)      # 逐级上传
 
     def select_executable(self, owner_priority: str) -> Optional[GoalNode]:
@@ -177,39 +192,70 @@ class GoalTree:
                 best_node, best_score = node, key
         return best_node
 
-    def decompose(self, node: GoalNode, llm) -> List[GoalNode]:
+    def decompose(self, node: GoalNode, llm, complete=None) -> List[GoalNode]:
         """目标分解（独立于生成）：LLM 拆子目标；失败/离线返回空。"""
         child_level = CHILD_LEVEL.get(node.level)
         if child_level is None or llm is None:
             return []
+        with self._lock:
+            if self._nodes.get(node.id) is not node or node.status != "active":
+                return []
+            existing = [child for child in self._nodes.values()
+                        if child.parent_id == node.id and child.status != "dropped"]
+            if existing:
+                return existing
         try:
-            raw = llm.complete(DECOMPOSE_PROMPT, node.text)
+            raw = (complete(llm, DECOMPOSE_PROMPT, node.text)
+                   if complete is not None else llm.complete(DECOMPOSE_PROMPT, node.text))
             cleaned = re.sub(r"```(?:json)?", "", raw).strip()
             start, end = cleaned.find("["), cleaned.rfind("]")
             if start == -1:
                 return []
             rows = __import__("json").loads(cleaned[start:end + 1])
+            if not isinstance(rows, list):
+                return []
         except Exception:
             return []
-        children = []
-        for row in rows[:3]:
-            text = str(row.get("text", "")).strip()
+        valid = []
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("text"), str):
+                continue
+            text = row["text"].strip()
             if text:
+                acceptance = row.get("acceptance", "")
+                valid.append((text, acceptance if isinstance(acceptance, str) else ""))
+            if len(valid) >= 4:
+                break
+        with self._lock:
+            if node.status != "active":
+                return []
+            existing = [child for child in self._nodes.values()
+                        if child.parent_id == node.id and child.status != "dropped"]
+            if existing:
+                return existing
+            children = [self.add(text, child_level, parent_id=node.id,
+                                 source=node.source, acceptance=acceptance[:300])
+                        for text, acceptance in valid]
+            if children and not any(("交付" in child.text or "readiness" in child.text.lower())
+                                    for child in children):
                 children.append(self.add(
-                    text, child_level, parent_id=node.id, source=node.source,
-                    acceptance=str(row.get("acceptance", ""))[:300]))
-        return children
+                    DELIVERY_GOAL, child_level, parent_id=node.id,
+                    source=node.source, acceptance=DELIVERY_ACCEPTANCE))
+            return children
 
-    def _seed_from_priority_unlocked(self, owner_priority: str, llm) -> Optional[GoalNode]:
+    def seed_from_priority(
+            self, owner_priority: str, llm,
+            source: str = "owner", complete=None) -> Optional[GoalNode]:
         """主人优先级 → 长期目标播种（幂等：已有活跃长期目标则跳过）。"""
         if not owner_priority.strip():
             return None
-        existing = [n for n in self.active_long_term()
-                    if _alignment(n.text, owner_priority) > 0.6]
-        if existing:
-            return existing[0]
-        long_goal = self.add(owner_priority[:200], "long", source="owner")
-        self.decompose(long_goal, llm)
+        with self._lock:
+            existing = [n for n in self.active_long_term()
+                        if _alignment(n.text, owner_priority) > 0.6]
+            if existing:
+                return existing[0]
+            long_goal = self.add(owner_priority[:200], "long", source=source)
+        self.decompose(long_goal, llm, complete=complete)
         return long_goal
 
     def snapshot(self) -> dict:
@@ -218,8 +264,9 @@ class GoalTree:
                     "status": n.status, "progress": n.progress,
                     "source": n.source, "created_at": n.created_at,
                     "acceptance": n.acceptance}
-        return {"nodes": [node_view(n) for n in
-                          sorted(self._nodes.values(), key=lambda x: x.created_at)]}
+        with self._lock:
+            return {"nodes": [node_view(n) for n in
+                              sorted(self._nodes.values(), key=lambda x: x.created_at)]}
 
 
 # ---- M50 资源锁包装：公共变更入口全部经 RLock（内部互调靠重入性）----
@@ -233,5 +280,5 @@ def _locked_mutator(cls, name):
     setattr(cls, name, wrapper)
 
 
-for _n in ("add", "complete", "drop", "seed_from_priority"):
+for _n in ("add", "complete", "drop"):
     _locked_mutator(GoalTree, _n)

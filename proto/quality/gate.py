@@ -56,7 +56,8 @@ def generate_acceptance(llm, task_text: str, complete=None) -> str:
         cleaned = re.sub(r"```(?:json)?", "", raw).strip()
         start, end = cleaned.find("{"), cleaned.rfind("}")
         data = json.loads(cleaned[start:end + 1])
-        return str(data.get("acceptance", "")).strip()[:300]
+        acceptance = data.get("acceptance", "")
+        return acceptance.strip()[:300] if isinstance(acceptance, str) else ""
     except Exception:
         return ""
 
@@ -89,20 +90,36 @@ def verify(task_text: str, acceptance: str, trace: List[dict],
         start, end = cleaned.find("{"), cleaned.rfind("}")
         data = json.loads(cleaned[start:end + 1])
         verdict = data.get("verdict", "fail")
-        missing = [str(m)[:200] for m in data.get("missing", [])][:5]
-        if verdict == "pass":
+        missing = data.get("missing", [])
+        if (verdict not in ("pass", "fail") or not isinstance(missing, list)
+                or any(not isinstance(item, str) for item in missing)):
+            raise ValueError("invalid_verdict_schema")
+        missing = [item[:200] for item in missing][:5]
+        if verdict == "pass" and not missing:
             return Verdict(True)
         return Verdict(False, missing or ["未给出缺少项"], "evidence_missing")
     except Exception:
         return Verdict(False, ["验证器输出不可解析"], "parse_error")
 
 
-def artifacts_from_trace(trace: List[dict]) -> str:
-    """从轨迹提取产物原文（write_file 的内容即客观产物）。"""
+def artifacts_from_trace(trace: List[dict], workspace=None) -> str:
+    """从轨迹提取最终产物原文（M61：编辑后读最终文件，不只看参数）。"""
     parts = []
+    paths = []
     for t in trace:
         if t.get("tool") in ("write_file", "edit_file"):
             args = t.get("args", {})
+            path = args.get("path")
+            if path:
+                paths.append(str(path))
             parts.append(f"--- {args.get('path', '?')} ---\n"
                          f"{str(args.get('content', ''))[:800]}")
+    if workspace is not None:
+        parts = []
+        for rel in dict.fromkeys(paths):
+            try:
+                text = workspace.read_file(rel, limit=80)
+                parts.append(f"--- {rel}（当前最终内容） ---\n{text or '（空/不存在）'}")
+            except Exception as exc:
+                parts.append(f"--- {rel}（无法读取：{type(exc).__name__}） ---")
     return "\n".join(parts)[:4000]

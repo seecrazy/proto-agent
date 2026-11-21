@@ -14,6 +14,7 @@ import logging
 import re
 import secrets
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -64,7 +65,7 @@ READ_ONLY_GETS = {
 
 
 class _Handler(BaseHTTPRequestHandler):
-    server_version = "ProtoWeb/0.30.0"
+    server_version = "ProtoWeb/0.33.0"
 
     def log_message(self, fmt, *args):
         pass
@@ -203,8 +204,10 @@ class _Handler(BaseHTTPRequestHandler):
             import threading as _th
             import uuid as _uuid
             job_id = _uuid.uuid4().hex[:12]
+            server._purge_jobs()
             server.jobs[job_id] = {"status": "running", "result": None,
-                                    "agent": m5.group(1)}
+                                    "agent": m5.group(1),
+                                    "created_at": time.time(), "done_at": None}
 
             def _run():
                 try:
@@ -215,10 +218,12 @@ class _Handler(BaseHTTPRequestHandler):
                         or f"行动未成：{result.get('reason', '')}")
                     server.jobs[job_id]["result"] = result
                     server.jobs[job_id]["status"] = "done"
+                    server.jobs[job_id]["done_at"] = time.time()
                 except Exception as exc:
                     server.jobs[job_id]["result"] = {"acted": False,
                                                       "reason": str(exc)[:200]}
                     server.jobs[job_id]["status"] = "error"
+                    server.jobs[job_id]["done_at"] = time.time()
 
             _th.Thread(target=_run, daemon=True).start()
             return self._json(200, {"job": job_id, "status": "running"})
@@ -287,22 +292,22 @@ class _Handler(BaseHTTPRequestHandler):
             body = self._body()
             pools = agent.kernel.pools
             applied = {}
+            fields = {"global_tokens": ("global", "tokens"),
+                      "owner_tasks_tokens": ("owner_tasks", "tokens"),
+                      "self_initiated_tokens": ("self_initiated", "tokens"),
+                      "global_calls": ("global", "calls")}
             for key, val in body.items():
-                if not key.endswith("_tokens") and key != "global_calls":
-                    continue
+                if key not in fields:
+                    return self._json(400, {"error": "bad_budget_field", "field": key})
                 amount = parse_amount(val)
                 if amount is None:
                     return self._json(400, {"error": "bad_amount",
                                             "hint": f"{key}={val!r} 无法解析"
                                                     "（支持 8k/16万/1.2M/数字）"})
-                if key == "global_calls":
-                    pools.set_cap("global", "calls", amount)
-                    applied.setdefault("global", {})["calls"] = amount
-                    continue
-                pool = key[:-len("_tokens")]
-                pools.set_cap(pool, "tokens", amount)
-                applied.setdefault(pool, {})["tokens"] = amount
+                pool, unit = fields[key]
+                applied.setdefault(pool, {})[unit] = amount
             if applied:
+                pools.set_caps(applied)
                 from proto.kernel.audit import AuditEvent
                 agent.spine.append(AuditEvent.OWNER_OVERRIDE,
                                    {"action": "budget_caps", "caps": applied})
@@ -534,9 +539,9 @@ def _activity_view(agent: ProtoAgent) -> dict:
         evs.append({"ts": e.get("ts"), "type": t, "detail": detail})
     return {"current": cur, "goal_work": goals[:6],
             "recent_files": files[:12], "recent_events": evs[:15],
-            # M58：空闲成因——冷却倒计时（"等待主人"曾误导冷却期为停滞）
+            # M59/M61：空闲成因按意义门控暴露；冷却字段已废除，避免旧文案复生。
             "last_act_ts": getattr(agent, "_last_self_act", 0.0),
-            "cooldown_s": getattr(agent, "SELF_ACT_COOLDOWN_S", 1800.0),
+            "idle_policy": "meaning_gate",
             "has_goals": bool(goal_active := agent.goal_tree.all_active())}
 
 
@@ -617,6 +622,20 @@ class ProtoWebServer(ThreadingHTTPServer):
     def _effective_interval(interval: float, hour: int) -> float:
         """昼夜节律节流：默认 8-23 点为活跃期，夜间间隔×5——凌晨的 PROTO 也在睡觉。"""
         return interval if 8 <= hour < 23 else interval * 5
+
+    def _purge_jobs(self, max_jobs: int = 100, ttl_s: float = 3600.0) -> None:
+        """清理已完成/过期异步 job，防止长驻控制台内存缓慢增长。"""
+        now = time.time()
+        for job_id, job in list(self.jobs.items()):
+            if job.get("done_at") is not None and now - job["done_at"] > ttl_s:
+                self.jobs.pop(job_id, None)
+            elif job.get("status") == "running" and now - job.get("created_at", now) > 30 * 60:
+                # 兜底标记：线程异常未更新时避免前端无限轮询。
+                job.update(status="error", done_at=now,
+                           result={"acted": False, "reason": "job_timeout"})
+        while len(self.jobs) > max_jobs:
+            oldest = min(self.jobs, key=lambda k: self.jobs[k].get("created_at", 0))
+            self.jobs.pop(oldest, None)
 
     def _heartbeat(self, interval: float) -> None:
         import time as _time

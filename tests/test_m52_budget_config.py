@@ -128,6 +128,17 @@ class TestConsoleApi:
             call(server, "POST", "/api/budget/caps",
                  {"self_initiated_tokens": "abc"})
 
+    @pytest.mark.parametrize("invalid", [{"global_tokens": "abc"},
+                                        {"ghost_tokens": "1k"}])
+    def test_invalid_batch_does_not_partially_apply(self, server, invalid):
+        pools = server.agent.kernel.pools
+        before = pools.remaining_all()
+        with pytest.raises(urllib.error.HTTPError) as error:
+            call(server, "POST", "/api/budget/caps",
+                 {"owner_tasks_tokens": "1k", **invalid})
+        assert error.value.code == 400
+        assert pools.remaining_all() == before
+
 
 class TestEnvUnits:
     def test_env_accepts_unit_suffix(self, tmp_path, monkeypatch):

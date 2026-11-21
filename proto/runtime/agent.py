@@ -42,6 +42,7 @@ from proto.llm.breaker import CircuitBreaker
 from proto.memory.extract import extract_facts, reflect as llm_reflect
 from proto.memory.extract import score_importance
 from proto.goals.system import GoalTree
+from proto.goals.forge import GoalForge
 from proto.memory.stream import MemoryStream
 from proto.world.model import PREDICT_PROMPT, VERDICT_PROMPT, WorldModel
 from proto.state.emotion import PAD, circadian_arousal_setpoint
@@ -60,7 +61,7 @@ SYSTEM_PROMPT = (
 DEFAULT_POOLS = {
     "global": {"tokens": 200000.0, "wallclock_s": 86400.0, "calls": 2000.0},
     "owner_tasks": {"tokens": 160000.0},
-    "self_initiated": {"tokens": 8000.0},
+    "self_initiated": {"tokens": 40000.0},
 }
 
 
@@ -188,6 +189,8 @@ class ProtoAgent:
         self._goal_interval = goal_interval_s
         self.scheduler = MetacogScheduler(goal_interval_s=goal_interval_s, clock=now)
         self.scheduler.register("distill", self._on_task_completed)
+        self.scheduler.register("goal_generation",
+                                lambda: self._run_goal_forge("schedule"))
         self.ledger = RuleLedger(self.spine)
         self._load_metacog()   # 重启不失忆：策略/兴趣/阻尼/台账/调度时间戳
         self._wire_metacog_callbacks()
@@ -207,6 +210,7 @@ class ProtoAgent:
         self.methods_lib = MethodLibrary(store)   # M37：方法策展（多元+自发明）
         self.memory = MemoryStream(store)
         self.goal_tree = GoalTree(store)
+        self.goal_forge = GoalForge(store, now)
         self.goal_tree.on_milestone = self._on_milestone
         self.world = WorldModel(store)
         # M39 内在生活内核：OCEAN 数值人格（持久化）调制驱力速率/阈值/张力权重
@@ -232,6 +236,9 @@ class ProtoAgent:
                             category=ActionCategory.READ_DRAFT,
                             description="当前时间")
         self.code_workspace.register_all(self.tools)
+        # M61：执行链内也能做领域学习。外部内容仍是 READ_DRAFT + 白名单，
+        # 并在提示词中声明为素材非指令。
+        self.webtools.register_readonly(self.tools)
         from proto.exec.fleettools import FleetTools
         FleetTools(self, fleet_status=self._fleet_status_fn).register_all(self.tools)
         from proto.exec.bridge import CodingBridge
@@ -294,6 +301,8 @@ class ProtoAgent:
             raw.get("scheduler", {}), goal_interval_s=self._goal_interval)
         self.scheduler.register("distill",
                                 lambda result: self.distiller.distill(result, domain="chat"))
+        self.scheduler.register("goal_generation",
+                                lambda: self._run_goal_forge("schedule"))
         self.arbiter = GoalArbiter(self.kernel, owner_priority=self.state.owner_priority,
                                    interest_model=self.interest)
         self._wire_metacog_callbacks()
@@ -303,6 +312,10 @@ class ProtoAgent:
         self.library.on_change = self._persist_metacog
         self.interest.on_change = self._persist_metacog
         self.damping.on_change = self._persist_metacog
+
+    def _run_goal_forge(self, trigger: str):
+        """调度器入口：真正执行定时目标生成，而不是只留下事件名。"""
+        return self.goal_forge.maybe_create(self, trigger=trigger)
 
     def instruct(self, text: str) -> str:
         """主人立规矩（外部规则入台账，反复成功应用后内化为倾向）。"""
@@ -343,8 +356,8 @@ class ProtoAgent:
             reply = client.complete(system, user)
         except Exception:
             self._breaker.record_failure()
-            self.kernel.pools.try_consume(
-                pool, {"tokens": 0, "wallclock_s": time.time() - started})
+            self.kernel.pools.settle(
+                pool, {}, {"wallclock_s": max(0.0, time.time() - started)})
             if (self._breaker.state == "open"
                     and not self.spine.find(lambda d: d["event_type"] == "llm_breaker_trip")):
                 self.spine.append("llm_breaker_trip",
@@ -359,9 +372,9 @@ class ProtoAgent:
                     (usage.get("output_tokens") or 0)
         else:
             total = max(1, (len(system) + len(user) + len(reply)) // 4)
-        self.kernel.pools.try_consume(
-            pool, {"tokens": max(0, total - estimated_in),
-                   "wallclock_s": time.time() - started})
+        self.kernel.pools.settle(
+            pool, {"tokens": estimated_in},
+            {"tokens": total, "wallclock_s": max(0.0, time.time() - started)})
         return reply
 
     def _system_prompt(self) -> str:
@@ -451,7 +464,13 @@ class ProtoAgent:
                               {"persona": persona_text[:60], "applied": applied})
         if seed_goal and not any(g.text == seed_goal
                                  for g in self.goal_tree.all_active()):
-            self.goal_tree.seed_from_priority(seed_goal, self.llm_fast)
+            # 人设驱动的种子是 agent 自己的长期议程，不是主人当日指派；
+            # 预算/统计走 self_initiated。
+            self.goal_tree.seed_from_priority(seed_goal, self.llm_fast,
+                                              source="self",
+                                              complete=lambda client, system, user:
+                                              self._complete(client, system, user,
+                                                             pool="self_initiated"))
 
     _HISTORY_TURNS = 8
 
@@ -519,6 +538,7 @@ class ProtoAgent:
             return
         active = {n.id: n for n in self.goal_tree.all_active()}
         lines = ["# 项目工作区索引（自动维护）", ""]
+        store = create_store(self.data_dir)
         for d in sorted(root.iterdir()):
             if not d.is_dir() or d.name.startswith("_"):
                 continue
@@ -531,7 +551,6 @@ class ProtoAgent:
                 legacy = self._legacy_slug(n.text)
                 return (legacy[:8] and (legacy.startswith(d.name[:8])
                         or d.name.startswith(legacy[:8])))
-            store = create_store(self.data_dir)
             owner = next((n for n in active.values() if _claims(n)), None)
             status = (f"目标[{owner.text[:20]}…] 进行中" if owner
                       else "无活跃目标（待归档或已交付）")
@@ -542,7 +561,14 @@ class ProtoAgent:
             lines.append("")
             lines.append("⚠ 散落文件（应移入项目目录）：" +
                          "、".join(f.name for f in strays))
-        (root / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        index = root / "README.md"
+        content = "\n".join(lines) + "\n"
+        try:
+            changed = index.read_text(encoding="utf-8") != content
+        except OSError:
+            changed = True
+        if changed:
+            index.write_text(content, encoding="utf-8")
 
     def drop_goal(self, node_id: str) -> None:
         """M41：drop 目标时级联归档其项目目录（谱系全灭才归档）。"""
@@ -596,14 +622,17 @@ class ProtoAgent:
                     _sh.move(str(d), str(dest / d.name))
                     self.spine.append("goal_drop", {"archived": d.name})
 
-    def _curate_methods(self, goal_text: str) -> str:
+    def _curate_methods(self, goal_text: str, pool: str = "owner_tasks") -> str:
         """M37 方法策展：发明新做法（限频）→ 返回注入任务的菜单。
         人设+目标为核；主人提示是素材不是上限；主人显式限定才受限。"""
         try:
             if (self._now() - self.methods_lib.last_invent_ts) > 900 \
                     and self.llm_fast is not None:
                 added = self.methods_lib.invent(
-                    self.llm_fast, self._complete, self.persona, goal_text,
+                    self.llm_fast,
+                    lambda client, system, user:
+                    self._complete(client, system, user, pool=pool),
+                    self.persona, goal_text,
                     context=self.state.owner_priority or "")
                 if added:
                     self.spine.append("method_invent", {
@@ -628,24 +657,40 @@ class ProtoAgent:
         from proto.exec.agentic import AgenticLoop
         from proto.quality.gate import generate_acceptance
         from proto.work.journal import GoalJournal
-        # M45 预算地板：owner 池见底时不起必死链（半路烧干=白烧），
+        pool = ("self_initiated" if node.source == "self" else "owner_tasks")
+        # M45/M61 预算地板：对应池见底时不起必死链（半路烧干=白烧），
         # 记审计+收件箱留言等充值/次日重置，零 LLM 消耗。
-        floor = (self.kernel.pools.remaining_all()
-                 .get("owner_tasks", {}).get("tokens", 0.0))
+        remaining = self.kernel.pools.remaining_all()
+        floor = min(remaining.get("global", {}).get("tokens", 0.0),
+                    remaining.get(pool, {}).get("tokens", 0.0))
         if floor < 2000.0:
             self.spine.append("budget_floor_wait",
                               {"remaining": round(floor, 1),
+                               "pool": pool,
                                "goal": node.text[:60]})
             self._inbox.append(
                 f"〔预算地板〕{node.text[:40]}… 暂停推进：任务池余量 "
                 f"{round(floor)} tokens，不够一轮有效工作。充值或等次日 "
                 "0 点自动重置后自动恢复。")
             return {"status": "budget_floor_wait",
-                    "reason": "owner_tasks 低于 2000 tokens",
+                    "reason": f"{pool} 低于 2000 tokens",
                     "goal": node.text}
         project_dir = self._project_dir_for(node)
-        acceptance = node.acceptance or generate_acceptance(
-            self.llm_fast, f"{node.text}（产出落在 {project_dir}）")
+        acceptance = node.acceptance
+        if not acceptance:
+            acceptance = generate_acceptance(
+                self.llm_fast, f"{node.text}（产出落在 {project_dir}）",
+                complete=lambda client, system, user:
+                    self._complete(client, system, user, pool=pool))
+            if not acceptance:
+                # 快模型解析失败也不允许标准漂移：用确定性最低证据门。
+                acceptance = (
+                    f"1) 产物位于 {project_dir}/ 且轨迹有真实 write_file/edit_file；"
+                    "2) 若任务包含代码/逻辑，轨迹包含 run_python 或 run_command "
+                    "的运行证据；3) 产出说明或报告能对应任务目标。"
+                )
+            node.acceptance = acceptance[:300]
+            self.goal_tree._store.put("goaltree", node.id, node.to_dict())
         # M41：工作区治理——项目索引（每个目录对应哪个目标/什么状态）
         self._refresh_projects_index()
         # M45 接力日志：跨尝试传递 发现/产出/下一步（防每轮从零探索）。
@@ -659,7 +704,7 @@ class ProtoAgent:
                            "路径。先重新规划：换一种根本不同的实现/验证方法"
                            "（或先做最小可验证切片），再动手。\n")
         # M37：方法菜单注入（多元+自发明，主人限定才收窄）
-        menu = self._curate_methods(node.text)
+        menu = self._curate_methods(node.text, pool=pool)
         # 项目目录约定注入任务描述
         task = (f"{escalation}{node.text}。产出必须写入项目目录 {project_dir}/ "
                 f"（write_file 的 path 以 {project_dir}/ 开头）。"
@@ -674,11 +719,11 @@ class ProtoAgent:
             if bits:
                 cross_feedback = "；".join(bits)[:300]
         run_feedback = cross_feedback
-        result = AgenticLoop(self, max_steps=24).run(
+        result = AgenticLoop(self, max_steps=24, pool=pool).run(
             task, acceptance=acceptance, journal=journal,
             feedback=run_feedback)
         if result.get("status") == "awaiting_retry":
-            retry = AgenticLoop(self, max_steps=12).run(
+            retry = AgenticLoop(self, max_steps=12, pool=pool).run(
                 task, acceptance=acceptance, journal=journal,
                 feedback="；".join(result.get("missing", []))
                 or cross_feedback)
@@ -715,6 +760,7 @@ class ProtoAgent:
         self._inbox.append(
             f"〔目标推进〕{node.text} → {result.get('status')}，"
             f"产出目录 {project_dir}/")
+        result["project_dir"] = project_dir
         return result
 
     def force_act(self) -> dict:
@@ -734,10 +780,35 @@ class ProtoAgent:
             self.spine.append("force_act", {"stimulated": False})
         # 主人显式指令不受自主冷却限制（冷却约束的是自发节律，不是主人的"现在就做"）
         self._last_self_act = 0.0
+        gate_allowed = self._may_start_chain()
         message = self.maybe_proactive()
         self._save_transient()
-        return {"acted": message is not None, "message": message or "",
-                "reason": "" if message else "行动未产生提案（预算/条件不足）"}
+        if message is None:
+            remaining = self.kernel.pools.remaining_all()
+            min_budget = min(
+                remaining.get("global", {}).get("tokens", 0.0),
+                remaining.get("owner_tasks", {}).get("tokens", 0.0),
+                remaining.get("self_initiated", {}).get("tokens", 0.0))
+            if self.llm is None:
+                reason = "未接 LLM：请先运行部署向导或检查 proto_data/proto.env"
+            elif not gate_allowed:
+                reason = ("连续失败保护中：先等一拍换打法；若所有目标已多次换法，"
+                          "请查看目标树/审计中的失败证据")
+            elif min_budget < 2000.0:
+                reason = (f"自主预算不足（剩余 {round(min_budget)} tokens）："
+                          "充值、调高自主池上限或等每日重置")
+            elif not self.goal_tree.all_active():
+                reason = "本轮未生成可通过本地质量门的目标（详见 goal_forge 审计）"
+            else:
+                reason = "本轮没有产生可汇报产出（详见活动中心与审计轨迹）"
+            return {"acted": False, "message": "", "reason": reason}
+        if isinstance(message, dict):
+            text = (f"目标推进 {message.get('status', 'unknown')}；"
+                    f"产出目录 {message.get('project_dir', '见活动中心')}。"
+                    f"{message.get('reason', '')}".strip())
+        else:
+            text = str(message)
+        return {"acted": True, "message": text, "reason": ""}
 
     def post_to_blackboard(self, text: str, kind: str = "help") -> str:
         """向舰队黑板发帖（求助/分享）。无黑板时静默返回空。"""
@@ -907,8 +978,11 @@ class ProtoAgent:
             if now - submitted_at < self.owner_timeout_s or pid in self._timeout_kept:
                 continue
             minutes = max(1, int((now - submitted_at) // 60))
-            decision = timeout_decide(proposal, self.tools, self.llm_fast,
-                                      self._complete, minutes)
+            pool = "self_initiated" if proposal.self_initiated else "owner_tasks"
+            decision = timeout_decide(
+                proposal, self.tools, self.llm_fast,
+                lambda client, system, user:
+                self._complete(client, system, user, pool=pool), minutes)
             if decision.action != "auto_approve":
                 self._timeout_kept.add(pid)
                 self.spine.append("owner_timeout_keep", {
@@ -1065,6 +1139,15 @@ class ProtoAgent:
                           key=lambda kv: kv[1]["value"] / max(kv[1]["threshold"], 1e-6))
                 self.spine.append("internal_urge", {
                     "tension": round(tension, 3), "top_drive": top[0]})
+        # M61：目标耗尽时，动机必须先进入 GoalForge 立项，而不是退化为
+        # 一张学习笔记。调度器 4h 事件在 scheduler.tick() 内已触发；
+        # 这里覆盖“无目标但想动”的即时路径（同样持久限频）。
+        if selected is None and gap_ready:
+            created = self._run_goal_forge("drive")
+            if created is not None:
+                selected = self.goal_tree.select_executable(
+                    self.state.owner_priority or "")
+                has_work = selected is not None
         # M59：冷却→意义门控。agent 不会累：有活+预算+没卡住就连续干；
         # 停止只因真实原因（预算地板/无目标/全目标连败/秒败熔断）。
         if not self._may_start_chain():
@@ -1084,7 +1167,11 @@ class ProtoAgent:
             # 长期目标没有可执行子目标时先分解一层（专家：把愿景变成活儿）
             children = self.goal_tree.children_of_level(selected.id, "mid")
             if not children and self.llm_fast is not None:
-                self.goal_tree.decompose(selected, self.llm_fast)
+                pool = ("self_initiated" if selected.source == "self" else "owner_tasks")
+                self.goal_tree.decompose(
+                    selected, self.llm_fast,
+                    complete=lambda client, system, user:
+                    self._complete(client, system, user, pool=pool))
                 children = self.goal_tree.children_of_level(selected.id, "mid")
             if children:
                 selected = children[0]
@@ -1148,7 +1235,8 @@ class ProtoAgent:
                 return self._complete(
                     self.llm, self._DRAFT_PROMPT,
                     f"主人优先级：{self.state.owner_priority or '（未设置）'}\n"
-                    f"当前好奇缺口：{self.state.get('desires.curiosity_gap')}")
+                    f"当前好奇缺口：{self.state.get('desires.curiosity_gap')}",
+                    pool="self_initiated")
             except Exception:
                 pass
         return (f"# 工作草稿（离线模板）\n\n"
@@ -1169,7 +1257,8 @@ class ProtoAgent:
         import json as _json
         import re as _re
         try:
-            raw = self._complete(self.llm_fast, PREDICT_PROMPT, topic)
+            raw = self._complete(self.llm_fast, PREDICT_PROMPT, topic,
+                                  pool="self_initiated")
             cleaned = _re.sub(r"```(?:json)?", "", raw).strip()
             start, end = cleaned.find("["), cleaned.rfind("]")
             rows = _json.loads(cleaned[start:end + 1]) if start >= 0 else []
@@ -1202,7 +1291,8 @@ class ProtoAgent:
                 try:
                     raw = self._complete(
                         self.llm_fast, VERDICT_PROMPT,
-                        f"预测：{pred['statement']}\n\n观察材料：{material}")
+                        f"预测：{pred['statement']}\n\n观察材料：{material}",
+                        pool="self_initiated")
                     cleaned = _re.sub(r"```(?:json)?", "", raw).strip()
                     start, end = cleaned.find("{"), cleaned.rfind("}")
                     data = _json.loads(cleaned[start:end + 1])
@@ -1266,7 +1356,7 @@ class ProtoAgent:
                     self.llm_fast,
                     self._BRIEF_PROMPT.format(persona=self.persona,
                                               priority=self.state.owner_priority or "（未设）"),
-                    "\n".join(lines))
+                    "\n".join(lines), pool="self_initiated")
             except Exception:
                 body = ""
         note = (f"# 晨间简报 {today}\n\n主题：{topic}\n\n"
@@ -1356,7 +1446,8 @@ class ProtoAgent:
         if self.llm is not None:
             # 想法出关门：先钉死"什么算做对"，无定义不进入验证执行
             from proto.quality.gate import generate_acceptance
-            acceptance = generate_acceptance(self.llm_fast, description)
+            acceptance = generate_acceptance(self.llm_fast, description,
+                                               complete=self._complete)
             result = AgenticLoop(self).run(description, acceptance=acceptance)
             if result.get("status") == "awaiting_retry":
                 retry = AgenticLoop(self).run(
@@ -1398,7 +1489,7 @@ class ProtoAgent:
         return self.run_task_with_steps(description, steps)
 
     def run_task_with_steps(self, description: str, steps: list) -> dict:
-        task = Task(id=f"owner-{int(self._now())}", description=description, steps=steps)
+        task = Task(id=f"owner-{pysecrets.token_hex(16)}", description=description, steps=steps)
         result = self.router.run(task)
         if result.status == "completed":
             self.pad.apply_event("task_success")
@@ -1480,7 +1571,8 @@ class ProtoAgent:
         """补做优先级播种（心跳空闲时或快通道直接调用；持 agent 锁）。"""
         text = self.state.owner_priority
         if text:
-            self.goal_tree.seed_from_priority(text, self.llm_fast)
+            self.goal_tree.seed_from_priority(text, self.llm_fast,
+                                              complete=self._complete)
         self._priority_seed_dirty = False
 
     def set_priority(self, text: str) -> dict:
@@ -1573,6 +1665,8 @@ class ProtoAgent:
         self.spine.append("owner_override",
                           {"action": "set_projects_root", "path": str(root)})
         self.code_workspace = self._build_projects_workspace()
+        self.code_workspace.register_all(self.tools)
+        self.router._workspace = self.code_workspace
         return str(self.code_workspace.root)
 
     def _build_projects_workspace(self):
@@ -1580,12 +1674,18 @@ class ProtoAgent:
         import os as _os
         from proto.exec.codetools import CodeTools
         doc = self.spine.store.get("config", "projects_root")
+        protected = [self.data_dir / "owner.key", self.data_dir / "proto.env",
+                     self.data_dir / "data", self.data_dir / ".fleet",
+                     self.data_dir / "proto.lock"]
         if doc:
-            return CodeTools(Path(doc["path"]) / self.data_dir.name)
+            return CodeTools(Path(doc["path"]) / self.data_dir.name,
+                             protected_paths=protected)
         env_root = _os.environ.get("PROTO_PROJECTS_ROOT")
         if env_root:
-            return CodeTools(Path(env_root) / self.data_dir.name)
-        return CodeTools(self.data_dir / "workspace")
+            return CodeTools(Path(env_root) / self.data_dir.name,
+                             protected_paths=protected)
+        # 默认根在 data_dir/workspace；protected 只列内部目录/密钥，不列 workspace。
+        return CodeTools(self.data_dir / "workspace", protected_paths=protected)
 
     def projects_root(self):
         return str(self.code_workspace.root)

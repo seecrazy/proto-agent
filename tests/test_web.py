@@ -13,9 +13,18 @@ from proto.web.server import ProtoWebServer
 class ScriptedLLM(LLMClient):
     def __init__(self):
         self.calls = []
+        self.loop_steps = 0
 
     def complete(self, system, user):
         self.calls.append(user)
+        if "独立验收" in system:
+            return json.dumps({"verdict": "pass"})
+        if "最小可检验定义" in system:
+            return json.dumps({"acceptance": "clock 返回当前时间"})
+        if "任务执行循环" in system:
+            self.loop_steps += 1
+            return json.dumps({"tool": "clock", "args": {}} if self.loop_steps == 1
+                              else {"done": True, "summary": "已读取时间"})
         if "归因" in system:
             return json.dumps([{"param": "instincts.social_initiative",
                                 "direction": 1, "strength": 0.6}])
@@ -129,7 +138,8 @@ class TestProposalsAndControls:
         status, data = call(server, "POST", "/api/task",
                             {"text": "看一下时间"}, token=server.token)
         assert status == 200
-        assert data["status"] in ("completed", "no_plan", "paused")
+        assert data["status"] == "verified"
+        assert data["trace"][0]["tool"] == "clock"
 
     def test_evolution_snapshot(self, server):
         status, data = call(server, "GET", "/api/evolution", token=server.token)

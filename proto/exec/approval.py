@@ -23,6 +23,7 @@ class ActionProposal:
     task_id: str
     self_initiated: bool = False
     desire_dim: Optional[str] = None  # 自主动作关联的欲望维度（阻尼控制用）
+    owner_only: bool = False  # 主人明批；超时/自主配额都不得代批
     proposal_id: Optional[str] = None  # 入队时由队列回填，供外部寻址
 
     def to_dict(self) -> dict:
@@ -33,6 +34,7 @@ class ActionProposal:
             "task_id": self.task_id,
             "self_initiated": self.self_initiated,
             "desire_dim": self.desire_dim,
+            "owner_only": self.owner_only,
             "proposal_id": self.proposal_id,
         }
 
@@ -45,6 +47,7 @@ class ActionProposal:
             task_id=raw.get("task_id", ""),
             self_initiated=bool(raw.get("self_initiated", False)),
             desire_dim=raw.get("desire_dim"),
+            owner_only=bool(raw.get("owner_only", False)),
             proposal_id=raw.get("proposal_id"),
         )
 
@@ -173,6 +176,7 @@ class ApprovalQueue:
         proposal.proposal_id = pid
         if (proposal.self_initiated and decision.requires_human
                 and proposal.category is ActionCategory.VISIBLE_WRITE
+                and not proposal.owner_only
                 and self.auto_quota is not None
                 and self.auto_quota.try_consume()):
             record = ApprovalRecord(

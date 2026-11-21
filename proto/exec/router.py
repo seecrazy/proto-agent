@@ -7,6 +7,7 @@ Router 串行调度任务：预算预留 → 逐步执行 → 每步检查点 �
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
@@ -91,6 +92,7 @@ class Router:
         self._cps = checkpoints
         self._tools = tools
         self._cost = step_cost or DEFAULT_STEP_COST
+        self._resume_lock = threading.RLock()
 
     def _pool(self, task: Task) -> str:
         return "owner_tasks" if task.owner_assigned else "self_initiated"
@@ -140,6 +142,10 @@ class Router:
 
     def resume(self, task: Task, human_approved: bool) -> TaskResult:
         """从暂停检查点恢复：批准→继续余下步骤；拒绝→中止（产物留 scratch）。"""
+        with self._resume_lock:
+            return self._resume_locked(task, human_approved)
+
+    def _resume_locked(self, task: Task, human_approved: bool) -> TaskResult:
         record = self._cps.resume(task.id)
         if record is None:
             return TaskResult(task.id, "failed", reason="no_checkpoint")
@@ -147,46 +153,50 @@ class Router:
         proposal_id = state.get("waiting_for")
         if proposal_id is None:
             return TaskResult(task.id, "failed", reason="not_paused")
-        if not human_approved:
-            self._queue.deny(proposal_id, reason="human_denied")
+        try:
+            approval = (self._queue.approve(proposal_id) if human_approved else
+                        self._queue.deny(proposal_id, reason="human_denied"))
+        except KeyError:
+            return TaskResult(task.id, "failed", reason="approval_not_found")
+        claimed = {key: value for key, value in state.items()
+                   if key not in ("waiting_for", "pending_step", "pending_promotion")}
+        claimed["status"] = ("resuming" if human_approved and approval.granted
+                             else "denied")
+        self._cps.put(task.id, claimed, variant_id=record["variant_id"])
+        if not human_approved or not approval.granted:
             return TaskResult(task.id, "denied", step_results=state.get("results", []),
-                              reason="human_denied")
-        approval = self._queue.approve(proposal_id)
-        step = state["step"]
-        # 待晋升的 scratch 产物持真实审批记录晋升
-        pending_path = state.get("pending_promotion")
-        if pending_path:
-            self._ws.promote(pending_path, approval=approval)
-        pending_step = state.get("pending_step")
-        if pending_step and pending_step.get("tool") != "write_file":
-            try:
-                result = self._tools.get(pending_step["tool"])(
-                    **(pending_step.get("args", {}) or {}))
-            except Exception as exc:
-                return TaskResult(
-                    task.id, "failed",
-                    step_results=state.get("results", []) + [
-                        f"工具执行失败: {type(exc).__name__}: {exc}"],
-                    reason=f"{type(exc).__name__}: {exc}", next_step=step)
-            step_results = state.get("results", []) + [result]
-            return self._execute(task, start_step=step + 1,
-                                 step_results=step_results)
-        return self._execute(task, start_step=step + 1,
-                             step_results=state.get("results", []))
+                              reason=approval.reason or "human_denied")
+        spec = state.get("task")
+        if spec:
+            task = Task(task.id, spec["description"], spec["steps"],
+                        owner_assigned=spec.get("owner_assigned", True),
+                        desire_dim=spec.get("desire_dim"))
+        return self._execute(task, start_step=state["step"],
+                             step_results=state.get("results", []),
+                             approved_step=state["step"], approval=approval)
 
-    def _execute(self, task: Task, start_step: int, step_results: list) -> TaskResult:
+    def _execute(self, task: Task, start_step: int, step_results: list,
+                 approved_step: int = None, approval=None) -> TaskResult:
         task_spec = {"description": task.description, "steps": task.steps,
                      "owner_assigned": task.owner_assigned,
                      "desire_dim": task.desire_dim}
         for i in range(start_step, len(task.steps)):
             step = task.steps[i]
+            if not isinstance(step, dict) or not isinstance(step.get("args", {}), dict):
+                step_results.append("参数错误：工具步骤和 args 必须是对象。修正后重试。")
+                continue
+            tool_policy = None
             try:
                 category = self._effective_category(step)
+                tool = step.get("tool")
+                if tool in self._tools.names():
+                    tool_policy = self._tools.policy(tool)
             except (KeyError, ValueError) as exc:
                 return TaskResult(task.id, "failed", step_results,
                                   reason=str(exc), next_step=i)
             self._cps.put(task.id, {
                 "step": i, "results": step_results, "task": task_spec,
+                "status": "resuming" if i == approved_step else "running",
             }, variant_id=VARIANT_ID)
             if step["tool"] == "write_file":
                 args = step.get("args", {}) or {}
@@ -197,18 +207,29 @@ class Router:
                     continue
                 if (category is ActionCategory.WORKSPACE_WRITE
                         and self._workspace is not None):
-                    self._workspace.write_file(
-                        path, step["args"].get("content", ""))
-                    self._tool_exec_audit(step["tool"], category, path)
-                    step_results.append(f"written:{path}")
+                    try:
+                        outcome = self._workspace.write_file(path, args.get("content", ""))
+                        self._tool_exec_audit(step["tool"], category, path)
+                        step_results.append(outcome)
+                    except Exception as exc:
+                        self._tool_exec_audit(step["tool"], category, str(path), str(exc))
+                        step_results.append(f"write_file 执行失败：{type(exc).__name__}: {exc}")
                     continue
-                self._ws.write(path, step["args"].get("content", ""))
-                if category is ActionCategory.VISIBLE_WRITE:
+                try:
+                    self._ws.write(path, args.get("content", ""))
+                except Exception as exc:
+                    self._tool_exec_audit(step["tool"], category, str(path), str(exc))
+                    step_results.append(f"write_file 执行失败：{type(exc).__name__}: {exc}")
+                    continue
+                if i == approved_step:
+                    self._ws.promote(path, approval=approval)
+                elif category in (ActionCategory.VISIBLE_WRITE, ActionCategory.IRREVERSIBLE):
                     sub = self._queue.submit(ActionProposal(
                         category, f"晋升 {path}（{task.description}）",
                         {"path": path}, task_id=task.id,
                         self_initiated=not task.owner_assigned,
-                        desire_dim=task.desire_dim))
+                        desire_dim=task.desire_dim,
+                        owner_only=bool(tool_policy and tool_policy.owner_only)))
                     if sub.rejected:
                         return TaskResult(task.id, "denied", step_results,
                                           reason=sub.reason, next_step=i)
@@ -224,6 +245,7 @@ class Router:
                                           proposal_id=sub.proposal_id, next_step=i)
                     if sub.auto_approved and sub.approval is not None:
                         self._ws.promote(path, approval=sub.approval)
+                self._tool_exec_audit(step["tool"], category, str(path))
                 step_results.append(f"written:{path}")
                 continue
             try:
@@ -231,13 +253,14 @@ class Router:
             except KeyError as exc:
                 return TaskResult(task.id, "failed", step_results,
                                   reason=str(exc), next_step=i)
-            if category in (ActionCategory.VISIBLE_WRITE,
-                            ActionCategory.IRREVERSIBLE):
+            if (i != approved_step and category in (
+                    ActionCategory.VISIBLE_WRITE, ActionCategory.IRREVERSIBLE)):
                 sub = self._queue.submit(ActionProposal(
                     category, f"{step['tool']}（{task.description}）",
                     {"step": step, "step_index": i}, task_id=task.id,
                     self_initiated=not task.owner_assigned,
-                    desire_dim=task.desire_dim))
+                    desire_dim=task.desire_dim,
+                    owner_only=bool(tool_policy and tool_policy.owner_only)))
                 if sub.rejected:
                     return TaskResult(task.id, "denied", step_results,
                                       reason=sub.reason, next_step=i)
@@ -252,7 +275,10 @@ class Router:
             # LLM 常带多余键：只传工具声明的参数（防御性过滤）
             import inspect as _insp
             try:
-                sig_params = set(_insp.signature(fn).parameters)
+                parameters = _insp.signature(fn).parameters
+                sig_params = (None if any(parameter.kind is _insp.Parameter.VAR_KEYWORD
+                                          for parameter in parameters.values())
+                              else set(parameters))
             except (ValueError, TypeError):
                 sig_params = None
             call_args = step.get("args", {}) or {}
@@ -295,6 +321,7 @@ class Router:
                 step_results.append(
                     f"{step['tool']} 执行失败：{type(exc).__name__}: {exc}"
                     "（换一种做法或修正后重试）")
-        self._cps.put(task.id, {"step": len(task.steps), "results": step_results},
+        self._cps.put(task.id, {"step": len(task.steps), "results": step_results,
+                               "status": "completed"},
                       variant_id=VARIANT_ID)
         return TaskResult(task.id, "completed", step_results)

@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import math
 import threading
 from dataclasses import dataclass
 from datetime import date
@@ -33,7 +34,22 @@ def parse_amount(text) -> float:
         value = float(s) * mult
     except ValueError:
         return None
-    return value if value > 0 else None
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def _checked_amounts(amounts: Dict[str, float]) -> Dict[str, float]:
+    checked = {}
+    for unit, amount in amounts.items():
+        if isinstance(amount, bool):
+            raise ValueError(f"invalid_amount:{unit}")
+        try:
+            value = float(amount)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"invalid_amount:{unit}") from exc
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"invalid_amount:{unit}")
+        checked[unit] = value
+    return checked
 
 
 @dataclass
@@ -47,12 +63,13 @@ class BudgetPools:
                  store: DocumentStore = None, doc_id: str = "main"):
         if "global" not in config:
             raise ValueError("必须提供 global 池")
-        self._config = config
+        self._config = {name: _checked_amounts(units)
+                        for name, units in config.items()}
         self._store = store
         self._doc_id = doc_id
         self._cycle_date = date.today().isoformat()
         self._remaining: Dict[str, Dict[str, float]] = {
-            name: dict(units) for name, units in config.items()
+            name: dict(units) for name, units in self._config.items()
         }
         self.breaker_tripped: bool = False
         self.on_trip: Optional[Callable[[str], None]] = None  # 由 Kernel 接线到审计
@@ -69,12 +86,27 @@ class BudgetPools:
         if isinstance(saved_caps, dict):
             for name, units in saved_caps.items():
                 if name in self._config and isinstance(units, dict):
-                    self._config[name].update(units)
+                    for unit, amount in units.items():
+                        if unit in self._config[name]:
+                            try:
+                                self._config[name].update(_checked_amounts({unit: amount}))
+                            except ValueError:
+                                continue
+        self._remaining = {name: dict(units)
+                           for name, units in self._config.items()}
         saved_date = raw.get("cycle_date")
         if saved_date == today and isinstance(raw.get("remaining"), dict):
-            self._remaining = {
-                name: dict(units) for name, units in raw["remaining"].items()
-            }
+            for name, units in self._remaining.items():
+                saved_units = raw["remaining"].get(name, {})
+                if not isinstance(saved_units, dict):
+                    continue
+                for unit in units:
+                    try:
+                        value = float(saved_units.get(unit, units[unit]))
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if math.isfinite(value):
+                        units[unit] = min(value, self._config[name][unit])
             self._cycle_date = saved_date
             self.breaker_tripped = bool(raw.get("breaker_tripped", False))
 
@@ -90,26 +122,39 @@ class BudgetPools:
             })
 
     def remaining_all(self) -> dict:
-        return {name: dict(units) for name, units in self._remaining.items()}
+        with self._lock:
+            self.ensure_cycle()
+            return {name: dict(units) for name, units in self._remaining.items()}
 
     def set_cap(self, pool: str, unit: str, value: float) -> None:
         """M52：主人直改某池某单位上限（持久化）。立即生效语义：
         上调→余量同步补到新上限；下调→余量夹紧到新上限。"""
+        self.set_caps({pool: {unit: value}})
+
+    def set_caps(self, caps: Dict[str, Dict[str, float]]) -> None:
+        """全量校验后原子更新一组上限。"""
+        checked = {pool: _checked_amounts(units) for pool, units in caps.items()}
         with self._lock:
-            if pool not in self._config or unit not in self._config[pool]:
-                raise KeyError(f"unknown_pool_or_unit:{pool}.{unit}")
-            old = self._config[pool][unit]
-            self._config[pool][unit] = float(value)
-            cur = self._remaining.get(pool, {}).get(unit, 0.0)
-            self._remaining.setdefault(pool, {})[unit] = \
-                float(value) if value > old else min(cur, float(value))
+            for pool, units in checked.items():
+                for unit in units:
+                    if pool not in self._config or unit not in self._config[pool]:
+                        raise KeyError(f"unknown_pool_or_unit:{pool}.{unit}")
+            self.ensure_cycle()
+            for pool, units in checked.items():
+                for unit, value in units.items():
+                    old = self._config[pool][unit]
+                    self._config[pool][unit] = value
+                    current = self._remaining[pool].get(unit, 0.0)
+                    self._remaining[pool][unit] = value if value > old else min(current, value)
             self._save()
 
     def refill(self) -> None:
         """主人显式充值：今日各池恢复到配置上限（审计由调用方记）。"""
         with self._lock:
+            self.ensure_cycle()
             self._remaining = {name: dict(units)
                                for name, units in self._config.items()}
+            self.breaker_tripped = False
             self._save()
 
     def ensure_cycle(self) -> None:
@@ -141,6 +186,10 @@ class BudgetPools:
             return BudgetDecision(False, "breaker_tripped")
         if pool not in self._remaining:
             return BudgetDecision(False, f"unknown_pool:{pool}")
+        try:
+            amounts = _checked_amounts(amounts)
+        except (AttributeError, ValueError):
+            return BudgetDecision(False, "invalid_amount")
         for unit in amounts:
             if unit not in self._remaining["global"]:
                 # 配置错误/打错的单位名：拒绝但不熔断（熔断是真实资源耗尽的语义）
@@ -161,24 +210,58 @@ class BudgetPools:
 
     def refund(self, pool: str, amounts: Dict[str, float]) -> None:
         """任务提前暂停/失败时退回未执行步骤的预留预算。"""
-        for unit, amount in amounts.items():
-            if unit in self._remaining["global"]:
-                self._remaining["global"][unit] += amount
-            if pool != "global" and unit in self._remaining.get(pool, {}):
-                self._remaining[pool][unit] += amount
-        self._save()
+        amounts = _checked_amounts(amounts)
+        with self._lock:
+            self.ensure_cycle()
+            self._validate_units(pool, amounts)
+            for name in dict.fromkeys(("global", pool)):
+                for unit, amount in amounts.items():
+                    if unit in self._remaining[name]:
+                        self._remaining[name][unit] = min(
+                            self._config[name][unit], self._remaining[name][unit] + amount)
+            self._save()
+
+    def _validate_units(self, pool: str, amounts: Dict[str, float]) -> None:
+        if pool not in self._remaining:
+            raise KeyError(f"unknown_pool:{pool}")
+        for unit in amounts:
+            if unit not in self._remaining["global"]:
+                raise KeyError(f"unknown_unit:{unit}")
+
+    def settle(self, pool: str, reserved: Dict[str, float],
+               actual: Dict[str, float]) -> None:
+        """结算已发生的用量，超额形成欠额，不因预算不足而漏记。"""
+        reserved, actual = _checked_amounts(reserved), _checked_amounts(actual)
+        units = set(reserved) | set(actual)
+        with self._lock:
+            self.ensure_cycle()
+            self._validate_units(pool, dict.fromkeys(units))
+            for name in dict.fromkeys(("global", pool)):
+                for unit in units:
+                    if unit in self._remaining[name]:
+                        delta = actual.get(unit, 0.0) - reserved.get(unit, 0.0)
+                        self._remaining[name][unit] = min(
+                            self._config[name][unit], self._remaining[name][unit] - delta)
+            if any(value < 0 for value in self._remaining["global"].values()):
+                self._trip("global_actual_usage_exceeded")
+            else:
+                self._save()
 
     def remaining(self, pool: str, unit: str) -> Optional[float]:
-        if pool not in self._remaining:
-            return None
-        return self._remaining[pool].get(unit)
+        with self._lock:
+            self.ensure_cycle()
+            if pool not in self._remaining:
+                return None
+            return self._remaining[pool].get(unit)
 
     def trip(self, reason: str = "manual") -> BudgetDecision:
         """手动熔断（Kernel 公开接口）。"""
-        return self._trip(reason)
+        with self._lock:
+            return self._trip(reason)
 
     def reset_cycle(self) -> None:
-        self._remaining = {name: dict(units) for name, units in self._config.items()}
-        self.breaker_tripped = False
-        self._cycle_date = date.today().isoformat()
-        self._save()
+        with self._lock:
+            self._remaining = {name: dict(units) for name, units in self._config.items()}
+            self.breaker_tripped = False
+            self._cycle_date = date.today().isoformat()
+            self._save()

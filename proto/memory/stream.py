@@ -134,7 +134,7 @@ class MemoryStream:
         return 0.0
 
     def retrieve(self, query: str, k: int = 5, now: float = None,
-                 mood: dict = None) -> List[Memory]:
+                 mood: dict = None, practice: bool = True) -> List[Memory]:
         now = now if now is not None else time.time()
         q = _tokens(query)
         scored = []
@@ -148,7 +148,12 @@ class MemoryStream:
                      + self._mood_boost(m, mood or {}))
             scored.append((score, m))
         scored.sort(key=lambda pair: pair[0], reverse=True)
-        return [m for _s, m in scored[:k]]
+        picked = [m for _s, m in scored[:k]]
+        if practice:
+            # 检索练习效应：被想起的记忆更难忘。写入 last_access/reinforce_count。
+            for m in picked:
+                self.reinforce(m.id, ts=now)
+        return picked
 
     def episodes(self) -> List[Memory]:
         return sorted((m for m in self._memories.values() if m.kind == "episode"),

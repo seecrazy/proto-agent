@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Iterable, List
 
 MAX_READ = 50000
 MAX_EDIT = 1_000_000
@@ -47,9 +47,21 @@ def json_quote(value: str) -> str:
 
 
 class CodeTools:
-    def __init__(self, workspace_root: Path):
+    # 无 shell、数组 argv、只开放本机验证工具链。写/网由平台沙盒约束。
+    COMMAND_ALLOWLIST = {
+        "python", "python3", "pytest", "swift", "swiftc",
+        "xcrun", "xcodebuild", "node", "npm", "npx", "yarn", "pnpm",
+    }
+    XCRUN_TOOLS = {"swift", "swiftc", "xcodebuild", "simctl", "actool"}
+
+    def __init__(self, workspace_root: Path,
+                 protected_paths: Iterable[Path] = ()):
         self.root = Path(workspace_root)
         self.root.mkdir(parents=True, exist_ok=True)
+        self.protected_paths = sorted({
+            str(Path(p).expanduser().resolve(strict=False))
+            for p in protected_paths if str(p).strip()
+        })
 
     def _abs(self, rel_path: str) -> Path:
         target = self.root / _safe_rel(rel_path)
@@ -86,21 +98,30 @@ class CodeTools:
         try:
             offset = max(0, int(offset))
             limit = max(1, min(500, int(limit)))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return "参数错误：offset/limit 需为整数"
-        text = target.read_text(encoding="utf-8", errors="replace")[:MAX_READ]
-        lines = text.splitlines()
-        total = len(lines)
+        chunk = []
+        total, used = 0, 0
+        truncated = False
+        with target.open(encoding="utf-8", errors="replace") as source:
+            for total, line in enumerate(source, 1):
+                if offset < total <= offset + limit and used < MAX_READ:
+                    text = line.rstrip("\r\n")
+                    available = max(0, MAX_READ - used - len(str(total)) - 1)
+                    chunk.append((total, text[:available]))
+                    used += len(str(total)) + 1 + len(text[:available])
+                    truncated = truncated or len(text) > available
         if total == 0:
             return "（空文件）"
-        chunk = lines[offset:offset + limit]
         if not chunk:
             return f"offset={offset} 超出范围：文件共 {total} 行（0~{total-1}）"
-        body = "\n".join(f"{offset + i + 1}\t{ln}"
-                         for i, ln in enumerate(chunk))
-        footer = f"\n〔共 {total} 行，已读第 {offset+1}-{offset+len(chunk)} 行〕"
-        if offset + limit < total:
-            footer += f"；继续读：read_file(path, offset={offset + limit})"
+        body = "\n".join(f"{number}\t{line}" for number, line in chunk)
+        last_line = chunk[-1][0]
+        footer = f"\n〔共 {total} 行，已读第 {offset+1}-{last_line} 行〕"
+        if truncated:
+            footer += "；超长行已按本页字符上限截断"
+        if last_line < total:
+            footer += f"；继续读：read_file(path, offset={last_line})"
         return body + footer
 
     def read_files(self, paths=None):
@@ -191,9 +212,10 @@ class CodeTools:
         rx = re.compile(pattern)
         hits = []
         for file in sorted(self.root.rglob(glob)):
-            if not file.is_file() or file.is_dir():
-                continue
             try:
+                file = self._abs(str(file.relative_to(self.root)))
+                if not file.is_file():
+                    continue
                 for lineno, line in enumerate(
                         file.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
                     if rx.search(line):
@@ -201,7 +223,7 @@ class CodeTools:
                                      "line": lineno, "text": line.strip()[:200]})
                         if len(hits) >= MAX_GREP_HITS:
                             return hits
-            except OSError:
+            except (OSError, ValueError):
                 continue
         return hits
 
@@ -239,11 +261,15 @@ class CodeTools:
         allow_write.extend(sorted(darwin_user_dirs))
         write_rules = "\n".join(
             f"(allow file-write* (subpath {json_quote(p)}))" for p in allow_write)
+        read_denials = "\n".join(
+            f"(deny file-read* (subpath {json_quote(p)}))"
+            for p in self.protected_paths)
         return (
             "(version 1)\n"
             "(allow default)\n"
             "(deny file-write*)\n"
             f"{write_rules}\n"
+            f"{read_denials}\n"
             "(deny network*)\n"
         )
 
@@ -276,7 +302,7 @@ class CodeTools:
                 cmd = [sys.executable, script]
             try:
                 proc = subprocess.run(
-                    cmd, cwd=tmp, timeout=timeout_s,
+                    cmd, cwd=self.root, timeout=timeout_s,
                     capture_output=True,
                     env=env,
                     preexec_fn=_limit_resources)
@@ -287,6 +313,69 @@ class CodeTools:
                             proc.stderr.decode("utf-8", "replace"),
                             head=800, tail=1500),
                         "timeout": False, "backend": backend}
+            except subprocess.TimeoutExpired:
+                return {"exit": -1, "stdout": "", "stderr": "timeout",
+                        "timeout": True, "backend": backend}
+
+    def run_command(self, argv: List[str], cwd: str = "",
+                    timeout_s: int = 120) -> Dict:
+        """在项目工作区运行白名单验证命令（无 shell）。"""
+        if not isinstance(argv, list) or not (1 <= len(argv) <= 32):
+            return {"exit": -1, "stdout": "", "stderr": "invalid_argv",
+                    "timeout": False}
+        if any(not isinstance(a, str) or "\x00" in a for a in argv):
+            return {"exit": -1, "stdout": "", "stderr": "invalid_argv",
+                    "timeout": False}
+        if sum(len(a) for a in argv) > 8000:
+            return {"exit": -1, "stdout": "", "stderr": "argv_too_long",
+                    "timeout": False}
+        name = Path(argv[0]).name
+        if name not in self.COMMAND_ALLOWLIST:
+            return {"exit": -1, "stdout": "", "stderr":
+                    f"command_not_allowed:{name}", "timeout": False}
+        if name == "xcrun" and (len(argv) < 2
+                                or Path(argv[1]).name not in self.XCRUN_TOOLS):
+            return {"exit": -1, "stdout": "", "stderr": "xcrun_tool_not_allowed",
+                    "timeout": False}
+        try:
+            timeout_s = max(1, min(300, int(timeout_s)))
+        except (TypeError, ValueError):
+            return {"exit": -1, "stdout": "", "stderr": "invalid_timeout",
+                    "timeout": False}
+        backend = self.execution_backend()
+        if backend == "none":
+            return {"exit": -1, "stdout": "", "stderr":
+                    ("execution_disabled: 无隔离执行后端；设置 "
+                     "PROTO_EXEC_BACKEND=runsc|sandbox-exec"),
+                    "timeout": False}
+        executable = shutil.which(argv[0])
+        if executable is None:
+            return {"exit": -1, "stdout": "", "stderr":
+                    f"executable_not_found:{argv[0]}", "timeout": False}
+        with tempfile.TemporaryDirectory(prefix="proto-cmd-") as tmp:
+            env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                   "HOME": tmp, "TMPDIR": tmp,
+                   "PROTO_PROJECT_ROOT": str(self.root.resolve())}
+            inner = [executable] + argv[1:]
+            if backend == "runsc":
+                cmd = [shutil.which("runsc") or "runsc", "do"] + inner
+            elif backend == "sandbox-exec":
+                cmd = [shutil.which("sandbox-exec") or "sandbox-exec",
+                       "-p", self._sandbox_exec_profile(tmp)] + inner
+            else:
+                cmd = inner
+            try:
+                proc = subprocess.run(
+                    cmd, cwd=self._abs(cwd), timeout=timeout_s,
+                    capture_output=True, env=env, preexec_fn=_limit_resources)
+                return {"exit": proc.returncode,
+                        "stdout": self._clip_output(
+                            proc.stdout.decode("utf-8", "replace")),
+                        "stderr": self._clip_output(
+                            proc.stderr.decode("utf-8", "replace"),
+                            head=800, tail=1500),
+                        "timeout": False, "backend": backend,
+                        "command": [name] + argv[1:]}
             except subprocess.TimeoutExpired:
                 return {"exit": -1, "stdout": "", "stderr": "timeout",
                         "timeout": True, "backend": backend}
@@ -329,3 +418,9 @@ class CodeTools:
                           category=run_python_category,
                           description="沙盒跑 Python（验证/测试）",
                           owner_only=backend not in ("runsc", "sandbox-exec"))
+        registry.register(
+            "run_command", lambda argv, cwd="", timeout_s=120:
+            self.run_command(argv, cwd, timeout_s),
+            category=run_python_category,
+            description="沙盒跑白名单本机验证命令（数组参数，无 shell）",
+            owner_only=backend not in ("runsc", "sandbox-exec"))

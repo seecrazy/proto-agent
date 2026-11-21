@@ -79,11 +79,15 @@ class TestRuntimePersistence:
 
 class TestEmotionWiring:
     def test_task_success_lifts_pleasure(self, tmp_path):
-        plan = json.dumps([{"tool": "clock", "args": {}, "category": "read_draft"}])
-        agent = ProtoAgent(data_dir=tmp_path, llm=ScriptedLLM([plan]),
+        replies = [json.dumps({"acceptance": "clock 返回当前时间"}),
+                   "调用 clock 后验收",
+                   json.dumps({"tool": "clock", "args": {}}),
+                   json.dumps({"done": True, "summary": "已读取时间"}),
+                   json.dumps({"verdict": "pass"})]
+        agent = ProtoAgent(data_dir=tmp_path, llm=ScriptedLLM(replies),
                            goal_interval_s=10 ** 9)
         before = agent.state.emotion["pleasure"]
-        agent.run_task("看时间")
+        assert agent.run_task("看时间")["status"] == "verified"
         assert agent.state.emotion["pleasure"] > before
 
     def test_denial_drops_pleasure_and_dominance(self, tmp_path):

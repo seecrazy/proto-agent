@@ -56,14 +56,15 @@ class TestGoalTree:
         assert tree2.active_long_term()          # 重启不失
 
     def test_complete_propagates_progress_and_milestone(self, agent):
-        agent.set_priority("深入研究 AI 产业")     # 播种+分解出 2 个 mid
+        agent.set_priority("深入研究 AI 产业")     # 播种+分解出 2 个 mid + 自动交付
         long_id = agent.goal_tree.active_long_term()[0].id
         mids = agent.goal_tree.children_of_level(long_id, "mid")
-        assert len(mids) == 2
+        assert len(mids) == 3
+        assert "交付" in mids[-1].text
         before = agent.state.emotion["pleasure"]
         agent.goal_tree.complete(mids[0].id)
         longs = agent.goal_tree.active_long_term()
-        assert longs[0].progress == pytest.approx(0.5)
+        assert longs[0].progress == pytest.approx(1 / 3, abs=1e-4)
         assert agent.state.emotion["pleasure"] > before      # 里程碑→情绪
         assert any("里程碑" in m.text for m in agent.memory.episodes())
 

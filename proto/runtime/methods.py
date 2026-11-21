@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import time
+import difflib
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -115,8 +116,18 @@ class MethodLibrary:
         description = (description or "").strip()[:200]
         if not name or not description:
             return None
-        if any(m.name == name for m in self.methods):
-            return None                              # 新颖性：同名不重复入库
+        # D3：同名/近似名都视为重复。LLM 常把 mine 写成 mining，
+        # 仅 exact match 会每 15 分钟白烧一次发明调用。
+        new_norm = name.replace("-", "_")
+        for m in self.methods:
+            old_norm = m.name.replace("-", "_")
+            name_sim = difflib.SequenceMatcher(
+                None, new_norm, old_norm).ratio()
+            desc_sim = difflib.SequenceMatcher(
+                None, description, m.description).ratio()
+            if (m.name == name
+                    or (name_sim >= 0.86 and desc_sim >= 0.45)):
+                return None
         spec = MethodSpec(name=name, description=description, source=source,
                           invented_at=self._now())
         self.methods.append(spec)

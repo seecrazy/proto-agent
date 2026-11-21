@@ -11,7 +11,8 @@ from typing import List
 from proto.exec.router import ToolRegistry
 from proto.metacog.attribution import extract_json_array
 
-VALID_CATEGORIES = {"read_draft", "visible_write", "irreversible"}
+VALID_CATEGORIES = {"read_draft", "workspace_write", "visible_write",
+                    "irreversible"}
 
 
 class LLMPlanner:
@@ -23,11 +24,12 @@ class LLMPlanner:
         names = ", ".join(sorted(self._tools.names()))
         return (
             "你是成长型 Agent PROTO 的任务规划器。把任务拆解为工具调用步骤。"
-            f"可用工具：{names}，以及内置 write_file(path, content)（写文件草稿）。\n"
+            f"可用工具：{names}。\n"
             "每步格式：{\"tool\": ..., \"args\": {...}, \"category\": "
-            "\"read_draft|visible_write|irreversible\"}。\n"
-            "只读类动作用 read_draft；会改动可见文件用 visible_write；不可逆动作用 "
-            "irreversible（需人工批准）。只输出 JSON 数组，无法规划就输出 []。"
+            "\"read_draft|workspace_write|visible_write|irreversible\"}。\n"
+            "只读类动作用 read_draft；工作区内写/运行用 workspace_write；"
+            "会改动工作区外可见世界用 visible_write；不可逆动作用 irreversible"
+            "（需人工批准）。只输出 JSON 数组，无法规划就输出 []。"
         )
 
     def plan(self, description: str) -> List[dict]:

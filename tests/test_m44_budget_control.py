@@ -37,7 +37,7 @@ class TestPoolsConfig:
         assert a.kernel.pools._config["self_initiated"]["tokens"] == 1234
         assert a.kernel.pools.remaining_all()["self_initiated"]["tokens"] == 1234
         # 默认字典不被污染
-        assert DEFAULT_POOLS["self_initiated"]["tokens"] == 8000.0
+        assert DEFAULT_POOLS["self_initiated"]["tokens"] == 40000.0
 
 
 class TestBudgetViewCaps:
