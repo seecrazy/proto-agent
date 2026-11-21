@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 from pathlib import Path
 
 
 MAX_INSTRUCTION_BYTES = 16384
 MAX_TOTAL_INSTRUCTION_BYTES = 65536
+INSTRUCTION_NAMES = ("AGENTS.override.md", "AGENTS.md")
 
 
 class ContextError(ValueError):
@@ -39,29 +42,40 @@ def load_instructions(context, relative="", directory=False):
     folder = resolved if directory or resolved.is_dir() else resolved.parent
     folders = list(reversed(folder.relative_to(root).parents))
     folders = [root / ancestor for ancestor in folders] + [folder]
+    instructions = context["instructions"]
+    total = sum(item["bytes"] for item in instructions.values())
     changed = False
     for ancestor in folders:
-        source = ancestor / "AGENTS.md"
-        key = source.relative_to(root).as_posix()
-        if key in context["instructions"]:
+        sources = [(ancestor / name, (ancestor / name).relative_to(root).as_posix())
+                   for name in INSTRUCTION_NAMES]
+        if any(key in instructions for _, key in sources):
             continue
-        if source.is_symlink():
-            raise ContextError(f"instruction_symlink_rejected:{key}")
-        if not source.exists():
-            continue
-        try:
-            with source.open("rb") as stream:
-                payload = stream.read(MAX_INSTRUCTION_BYTES + 1)
-            total = sum(item["bytes"] for item in context["instructions"].values())
+        for source, key in sources:
+            if source.is_symlink():
+                raise ContextError(f"instruction_symlink_rejected:{key}")
+            try:
+                fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                try:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise ContextError(f"instruction_not_regular:{key}")
+                    with os.fdopen(fd, "rb", closefd=False) as stream:
+                        payload = stream.read(MAX_INSTRUCTION_BYTES + 1)
+                finally:
+                    os.close(fd)
+                content = payload.decode("utf-8")
+            except FileNotFoundError:
+                continue
+            except (OSError, UnicodeError) as exc:
+                raise ContextError(f"instruction_unreadable:{key}") from exc
             if len(payload) > MAX_INSTRUCTION_BYTES or total + len(payload) > MAX_TOTAL_INSTRUCTION_BYTES:
                 raise ContextError(f"instruction_too_large:{key}")
-            content = payload.decode("utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise ContextError(f"instruction_unreadable:{key}") from exc
-        context["instructions"][key] = {
-            "text": content, "bytes": len(payload),
-            "sha256": hashlib.sha256(payload).hexdigest()}
-        changed = True
+            if source.name == INSTRUCTION_NAMES[0] and not content.strip():
+                continue
+            instructions[key] = {"text": content, "bytes": len(payload),
+                                 "sha256": hashlib.sha256(payload).hexdigest()}
+            total += len(payload)
+            changed = True
+            break
     return changed
 
 

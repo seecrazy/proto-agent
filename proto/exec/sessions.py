@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 
+from proto.exec.plan_evidence import valid_approved_plan, valid_path, valid_text
 from proto.exec.router import VARIANT_ID
 
 
@@ -61,6 +62,11 @@ class ExecutionSessions:
                 "profile", "owner_priority", "task", "acceptance", "pool", "goal_id", "workspace", "project_dir")):
             return False
         if context["pool"] not in ("owner_tasks", "self_initiated"):
+            return False
+        if "approved_plan" in context and (not valid_approved_plan(context["approved_plan"])
+                or context["pool"] != "owner_tasks" or context["goal_id"]
+                or not valid_text(context["acceptance"], 1000)
+                or (context["project_dir"] and not valid_path(context["project_dir"]))):
             return False
         if "autonomous" in session and type(session["autonomous"]) is not bool:
             return False

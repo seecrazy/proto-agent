@@ -15,6 +15,7 @@ from proto.runtime.coordination import CoordinationDB, CoordinationError, encode
 from proto.runtime.fleet_budget import FleetBudget
 from proto.runtime.projects import ProjectDelivery
 from proto.runtime.runcontext import current_run
+from proto.runtime.task_plans import PLAN_EXEC_KEY, TaskPlans
 from proto.system.instance_lock import InstanceLock
 
 
@@ -75,6 +76,7 @@ class RunCoordinator:
         self.database = CoordinationDB(manager.root)
         self.budget = FleetBudget(self.database)
         self.projects = ProjectDelivery(self)
+        self.task_plans = TaskPlans(self)
         self._instance = InstanceLock(self.database.directory)
         self._stop = threading.Event()
         self._condition = threading.Condition()
@@ -90,7 +92,8 @@ class RunCoordinator:
     def enqueue(self, agent_id, kind, args=None, *, key=None):
         if self.manager.info(agent_id) is None:
             raise CoordinationError("no_such_agent", 404)
-        if key is not None and (not isinstance(key, str) or not _KEY.fullmatch(key)):
+        if key is not None and (not isinstance(key, str) or not _KEY.fullmatch(key)
+                                or key.startswith(PLAN_EXEC_KEY)):
             raise CoordinationError("invalid_idempotency_key", 400)
         with self.database.connect(write=True) as connection:
             record = self.insert(connection, agent_id, kind, args or {}, key=key)
@@ -135,13 +138,16 @@ class RunCoordinator:
             raise CoordinationError("no_such_run", 404)
         return _record(row)
 
-    def list(self, agent_id=None, *, limit=60, before=None, active=False):
+    def list(self, agent_id=None, *, limit=60, before=None, active=False, reviewable=False):
         with self.database.connect() as connection:
             rows = connection.execute("""
                 SELECT * FROM runs WHERE (? IS NULL OR agent_id = ?) AND (? IS NULL OR seq < ?)
                 AND (? = 0 OR status IN ('queued', 'running', 'awaiting_approval', 'needs_reconciliation'))
+                AND (? = 0 OR (kind = 'plan' AND status = 'succeeded' AND NOT EXISTS (
+                    SELECT 1 FROM runs execution WHERE execution.agent_id = runs.agent_id
+                    AND execution.request_key = ? || runs.id)))
                 ORDER BY seq DESC LIMIT ?
-            """, (agent_id, agent_id, before, before, int(active), limit)).fetchall()
+            """, (agent_id, agent_id, before, before, int(active), int(reviewable), PLAN_EXEC_KEY, limit)).fetchall()
         return [dict(_record(row, summary=True), blocked_reason=self.blocked_reason(row)) for row in rows]
 
     def blocked_reason(self, row):
@@ -376,6 +382,8 @@ class RunCoordinator:
             waiting, _, _ = self._evidence(final, agent)
             with self.database.connect(write=True) as connection:
                 final = self._get_locked(connection, run["id"])
+                if run["kind"] == "plan" and final["cancel_requested"]:
+                    result = {"status": "cancelled", "reason": "run_cancelled"}
                 if run["work_id"] and result.get("status") == "completed":
                     policy = agent.autonomy_view()["blocked_reason"]
                     if policy in ("fleet_paused", "muted"):
@@ -397,6 +405,10 @@ class RunCoordinator:
             return {"status": "cancelled" if reason == "run_cancelled" else "blocked", "reason": reason}
         if kind == "task":
             return agent.run_task(args["text"])
+        if kind == "plan":
+            return self.task_plans.generate(run, agent, lease)
+        if kind == "planned_task":
+            return self.task_plans.execute(run, agent)
         if kind in ("resume", "accept", "deny"):
             prior = self.find_link(run["agent_id"], args["identifier"])
             if not prior and kind != "resume":
@@ -503,12 +515,18 @@ class RunCoordinator:
             result = {"status": "paused", **waiting, "session_id": run["session_id"]}
         elif result is not None and run["kind"] not in ("tick", "act"):
             status, reason = self._outcome(result, None, run)
+        elif run["kind"] == "plan":
+            status, reason = "failed", "plan_interrupted"
+            result = {"status": status, "reason": reason}
         else:
             status, reason = "needs_reconciliation", "interrupted_without_final_receipt"
             result = {"status": status, "reason": reason}
         with self.database.connect(write=True) as connection:
             latest = self._get_locked(connection, run["id"])
             if latest["status"] == "running" and latest["generation"] == run["generation"]:
+                if run["kind"] == "plan" and latest["cancel_requested"]:
+                    status, reason = "cancelled", "run_cancelled"
+                    result = {"status": status, "reason": reason}
                 self._save_result(connection, latest, status, reason, dict(result, recovered=True), waiting)
 
     def recover(self):

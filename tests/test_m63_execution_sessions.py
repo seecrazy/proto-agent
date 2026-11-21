@@ -612,7 +612,7 @@ def test_task_ui_keeps_latest_approval_and_verified_result():
     html = (Path(__file__).resolve().parent.parent / "proto/web/index.html").read_text(encoding="utf-8")
     script = re.search(r"let pausedTaskId = null;(.*?)async function addRule", html, re.S).group(1)
     harness = '''
-const elements = Object.fromEntries(["task-result", "task-resume"].map(name => [name, {style: {}, textContent: ""}]));
+const elements = Object.fromEntries(["task-result", "task-resume", "task-plan-review"].map(name => [name, {style: {}, textContent: ""}]));
 globalThis.document = {getElementById: name => elements[name]};
 globalThis.refreshSide = () => {};
 const paths = [];
@@ -627,6 +627,7 @@ let pausedTaskId = null;
   if (pausedTaskId !== "second" || elements["task-resume"].style.display !== "flex") throw Error("lost second approval");
   await resumeTask(true);
   if (pausedTaskId !== null || elements["task-resume"].style.display !== "none") throw Error("terminal approval remains");
+  if (!elements["task-plan-review"].hidden) throw Error("stale plan review remains");
   if (!elements["task-result"].textContent.includes("actual-result")) throw Error("verified result missing");
   console.log(JSON.stringify(paths));
 })().catch(error => { console.error(error); process.exitCode = 1; });

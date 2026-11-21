@@ -190,6 +190,12 @@
   .coord-form textarea { resize: vertical; }
   .coord-row { overflow-wrap: anywhere; }
   .coord-row .btns { flex-wrap: wrap; margin-top: 6px; }
+  .task-plan { margin: 8px 0; }
+  .task-plan summary { color: var(--accent); cursor: pointer; }
+  #task-result { overflow-wrap: anywhere; }
+  #coord-detail[open] { display: flex; flex-direction: column; }
+  #coord-detail > :not(pre) { flex-shrink: 0; }
+  #coord-detail-content { min-height: 0; overflow: auto; }
   @media (max-width: 500px) { #model-panel .model-grid { grid-template-columns: 1fr; } }
 
   /* 额度面板（M44）：点顶栏额度打开 */
@@ -305,6 +311,11 @@
   <form method="dialog"><button>关闭</button></form>
   <h2 id="coord-detail-title"></h2>
   <pre id="coord-detail-content"></pre>
+  <div id="coord-plan-actions" hidden>
+    <p class="empty">批准的只是这一版计划，受限工具仍需单独批准。同一计划只派发一次。</p>
+    <button class="primary" type="button" id="coord-approve-plan">批准此版并执行</button>
+    <output id="coord-plan-message" class="empty" aria-live="polite"></output>
+  </div>
 </dialog>
 
 <main>
@@ -460,7 +471,21 @@
         <input type="text" id="task-input" placeholder="例：看看现在几点">
         <button class="primary" onclick="runTask(this)">执行</button>
       </div>
-      <div id="task-result" class="empty"></div>
+      <details class="task-plan">
+        <summary>先审计划</summary>
+        <form class="coord-form" id="task-plan-form" onsubmit="submitTaskPlan(event)">
+          <div class="empty">使用上方任务内容。规划计入任务额度，不运行工具、不改工作区；经你批准后才执行。</div>
+          <label>项目目录（相对工作区，可留空）
+            <input id="task-plan-project" name="project" maxlength="512" placeholder="例：projects/demo">
+          </label>
+          <label>应新增或改变的文件（相对项目目录，每行一个，最多 4 个）
+            <textarea id="task-plan-outputs" name="outputs" rows="2" maxlength="2051" placeholder="留空表示仅做语义验收"></textarea>
+          </label>
+          <button type="submit">生成只读计划</button>
+        </form>
+      </details>
+      <div id="task-result" class="empty" aria-live="polite"></div>
+      <button id="task-plan-review" type="button" hidden>审阅计划</button>
       <div class="btns" id="task-resume" style="display:none;margin-top:6px">
         <button class="primary" id="task-approve-btn" onclick="resumeTask(true)">批准并继续</button>
         <button class="danger" onclick="resumeTask(false)">拒绝（中止）</button>
@@ -1528,14 +1553,20 @@ async function toggleMute() {
 let pausedTaskId = null;
 let trackedTaskRunId = null;
 function renderTaskResult(result) {
+  const planReview = document.getElementById("task-plan-review");
+  planReview.hidden = true;
+  planReview.onclick = null;
   const verdict = result.verified === true ? "✓独立验证通过（做对了）"
     : result.verified === false ? "✗验证未过：缺少 " + (result.missing || []).join("；")
     : "（未验证：无验收定义或离线）";
-  document.getElementById("task-result").textContent =
+  const detail =
     result.status === "no_plan" ? result.reason
     : result.status === "verified" ? `${verdict} — ${result.summary || ""}`
     : result.status === "failed_verification" ? verdict + "（教训已记录，目标未完成）"
     : `${result.status}: ${result.reason || result.summary || JSON.stringify(result.step_results || result.proposal_id || [])} ${result.verified === undefined ? "" : verdict}`;
+  const evidence = result.output_evidence || [];
+  document.getElementById("task-result").textContent = detail + (evidence.length
+    ? ` · 文件证据 ${evidence.filter(item => item.passed).length}/${evidence.length}` : "");
   const box = document.getElementById("task-resume");
   if (result.status === "paused" && result.task_id) {
     pausedTaskId = result.task_id;
@@ -1555,6 +1586,29 @@ async function runTask(button) {
     addMsg(`〔任务〕${text}`, "owner");
     renderTaskResult({status: "queued", reason: `已入队 #${response.run.slice(0, 8)}`});
     await refreshTrackedTask();
+  } finally { button.disabled = false; }
+}
+async function submitTaskPlan(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const input = document.getElementById("task-input");
+  const text = input.value.trim();
+  if (!text) {
+    renderTaskResult({status: "无法规划", reason: "请先输入任务。"});
+    input.focus();
+    return;
+  }
+  const button = form.querySelector("button");
+  const project_dir = form.elements.project.value.trim();
+  const outputs = form.elements.outputs.value.split(/\r?\n/).map(path => path.trim()).filter(Boolean);
+  button.disabled = true;
+  try {
+    const response = await api("POST", "/api/task/plan", {text, project_dir, outputs}, newRequestKey());
+    trackedTaskRunId = response.run;
+    renderTaskResult({status: "计划已入队", reason: "尚未执行任务。"});
+    await refreshTrackedTask();
+  } catch (error) {
+    renderTaskResult({status: "计划请求失败", reason: error.message});
   } finally { button.disabled = false; }
 }
 async function resumeTask(approved) {
@@ -1793,7 +1847,7 @@ const RUN_STATES = {
   verified: "已验收", rework: "需返工", dropped: "已丢弃",
 };
 const RUN_KINDS = {task: "主人任务", tick: "心跳", act: "立即行动", resume: "恢复", accept: "批准",
-  deny: "拒绝", work: "生产", review: "评审"};
+  deny: "拒绝", work: "生产", review: "评审", plan: "只读计划", planned_task: "按批准计划执行"};
 function newRequestKey() {
   return globalThis.crypto?.randomUUID?.() || `ui-${Date.now()}-${++requestSequence}`;
 }
@@ -1822,11 +1876,55 @@ function coordinationAction(parent, label, action) {
   };
   parent.appendChild(button);
 }
-function showCoordinationDetail(title, value) {
+function showCoordinationDetail(title, value, approval = null) {
   const dialog = document.getElementById("coord-detail");
+  const button = document.getElementById("coord-approve-plan");
+  const message = document.getElementById("coord-plan-message");
   document.getElementById("coord-detail-title").textContent = title;
   document.getElementById("coord-detail-content").textContent = value;
+  document.getElementById("coord-plan-actions").hidden = !approval;
+  button.onclick = null;
+  button.disabled = false;
+  message.textContent = "";
+  if (approval) {
+    const submit = async () => {
+      button.disabled = true;
+      message.textContent = "正在提交批准…";
+      try {
+        const response = await api("POST", `/api/task/plan/${approval.id}/approve`, {sha256: approval.sha256});
+        if (button.onclick === submit && dialog.open) dialog.close();
+        trackedTaskRunId = response.run;
+        renderTaskResult({status: "已批准", reason: `执行记录 #${response.run.slice(0, 8)}`});
+        await Promise.all([refreshTrackedTask(), refreshRuns()]);
+      } catch (error) {
+        if (button.onclick === submit) message.textContent = `批准请求失败：${error.message}`;
+      } finally {
+        if (button.onclick === submit) button.disabled = false;
+      }
+    };
+    button.onclick = submit;
+  }
   if (!dialog.open) dialog.showModal();
+}
+async function showTaskPlan(id) {
+  try {
+    const run = await api("GET", `/api/runs/${id}`);
+    if (run.kind !== "plan" || run.status !== "succeeded" || !run.result?.plan) {
+      throw new Error("只可批准成功生成的计划。");
+    }
+    const {plan, sha256} = run.result;
+    const rules = plan.rules.map(rule => `${rule.path} · ${rule.sha256}`).join("\n") || "（无项目规则）";
+    const outputs = plan.outputs.map(output => `${output.path} · ${output.before_sha256 || "尚不存在"}`).join("\n")
+      || "（未声明文件，仅做语义验收）";
+    const steps = plan.steps.map((step, index) => `${index + 1}. ${step}`).join("\n");
+    showCoordinationDetail("审阅只读计划",
+      `成员：${agentLabel(run.agent_id)} (${run.agent_id})\n工作区：${plan.workspace}\n`
+      + `项目目录：${plan.project_dir || "."}\n\n原任务：${plan.task}\n\n${steps}\n\n语义验收：${plan.acceptance}`
+      + `\n\n适用规则（SHA-256）\n${rules}\n\n文件输出与原摘要\n${outputs}\n\n计划摘要：${sha256}`,
+      {id: run.id, sha256});
+  } catch (error) {
+    showCoordinationDetail("无法审阅计划", error.message);
+  }
 }
 function drawFleetBudget(budget, saved = false) {
   const {cycle, caps, remaining, uncertain, in_flight} = budget;
@@ -1860,20 +1958,27 @@ async function saveFleetBudget(event) {
 }
 async function refreshRuns() {
   if (PANEL.left.cat !== "ov") return;
-  const [budget, active, recent] = await Promise.all([
-    api("GET", "/api/fleet-budget"), api("GET", "/api/runs?active=true"), api("GET", "/api/runs"),
+  const [budget, active, reviews, recent] = await Promise.all([
+    api("GET", "/api/fleet-budget"), api("GET", "/api/runs?active=true"),
+    api("GET", "/api/runs?reviewable=true"), api("GET", "/api/runs"),
   ]);
   drawFleetBudget(budget);
   const list = document.getElementById("run-list");
   list.replaceChildren();
-  const shown = [...active.runs];
+  const shown = [...new Map([...active.runs, ...reviews.runs].map(run => [run.id, run])).values()];
   const seen = new Set(shown.map(run => run.id));
+  const reviewable = new Set(reviews.runs.map(run => run.id));
   shown.push(...recent.runs.filter(run => !seen.has(run.id) && run.kind !== "tick").slice(0, 10));
   if (!shown.length) list.textContent = "暂无运行记录。";
   for (const run of shown) {
     const reason = run.blocked_reason || run.reason;
+    const status = reviewable.has(run.id) ? "待审阅" : run.kind === "plan" && run.status === "succeeded"
+      ? "计划已生成" : (RUN_STATES[run.status] || run.status);
     const {row, actions} = coordinationRow(`${agentLabel(run.agent_id)} · ${RUN_KINDS[run.kind] || run.kind}`,
-      `${RUN_STATES[run.status] || run.status} #${run.id.slice(0, 8)}${reason ? " · " + (AUTONOMY_BLOCKERS[reason] || reason) : ""}`);
+      `${status} #${run.id.slice(0, 8)}${reason ? " · " + (AUTONOMY_BLOCKERS[reason] || reason) : ""}`);
+    if (run.kind === "plan" && run.status === "succeeded") {
+      coordinationAction(actions, "审阅计划", () => showTaskPlan(run.id));
+    }
     coordinationAction(actions, "详情 / 用量", async () => {
       const detail = await api("GET", `/api/runs/${run.id}`);
       showCoordinationDetail("运行详情", JSON.stringify(detail, null, 2));
@@ -1904,10 +2009,17 @@ async function refreshTrackedTask() {
   if (!trackedTaskRunId) return;
   const run = await api("GET", `/api/runs/${trackedTaskRunId}`);
   if (run.id !== trackedTaskRunId) return;
-  if (run.status === "awaiting_approval") {
+  if (run.kind === "plan" && run.status === "succeeded") {
+    renderTaskResult({status: "计划已生成", reason: "审阅并批准后才执行。"});
+    const review = document.getElementById("task-plan-review");
+    review.onclick = () => showTaskPlan(run.id);
+    review.hidden = false;
+    trackedTaskRunId = null;
+  } else if (run.status === "awaiting_approval") {
     renderTaskResult({...run.result, status: "paused", task_id: run.waiting.task_id});
   } else if (["queued", "running"].includes(run.status)) {
-    renderTaskResult({status: RUN_STATES[run.status], reason: run.blocked_reason || `#${run.id.slice(0, 8)}`});
+    renderTaskResult({status: run.kind === "plan" && run.status === "running" ? "只读规划中" : RUN_STATES[run.status],
+      reason: run.blocked_reason || `#${run.id.slice(0, 8)}`});
   } else {
     renderTaskResult(run.result || {status: run.status, reason: run.reason});
     trackedTaskRunId = null;

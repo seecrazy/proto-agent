@@ -18,6 +18,7 @@ from proto.exec.context import (ContextError, create_context, instructions_for_c
                                 render_context)
 from proto.exec.checkpoints import SCHEMA_VERSION
 from proto.exec.contracts import ParameterError
+from proto.exec.plan_evidence import EvidenceError, OutputEvidence
 from proto.exec.router import Task, TaskResult, VARIANT_ID
 from proto.exec.sessions import SESSION_SCHEMA_VERSION, TERMINAL_STATES
 from proto.runtime.runcontext import track_session
@@ -145,12 +146,12 @@ class AgenticLoop:
 
     def run(self, task_text: str, acceptance: str = "",
             feedback: str = "", journal=None, goal_id: str = "",
-            project_dir: str = "") -> Dict:
+            project_dir: str = "", *, frozen_context=None) -> Dict:
         with self._agent.sessions.lock:
             try:
                 self._session = None
                 self._autonomous = bool(goal_id) or self._pool == "self_initiated"
-                return self._run(task_text, acceptance, feedback, journal, goal_id, project_dir)
+                return self._run(task_text, acceptance, feedback, journal, goal_id, project_dir, frozen_context)
             finally:
                 self._agent._current_op = None
 
@@ -298,7 +299,7 @@ class AgenticLoop:
         return result
 
     def _run(self, task_text: str, acceptance: str,
-             feedback: str, journal, goal_id: str = "", project_dir: str = "") -> Dict:
+             feedback: str, journal, goal_id: str = "", project_dir: str = "", frozen_context=None) -> Dict:
         reason = self._autonomy_reason()
         if reason:
             if self._session is not None:
@@ -313,7 +314,8 @@ class AgenticLoop:
             "since": time.time()}
         if self._session is None:
             try:
-                context = create_context(self._agent, task_text, acceptance, self._pool, goal_id, project_dir)
+                context = frozen_context if frozen_context is not None else create_context(
+                    self._agent, task_text, acceptance, self._pool, goal_id, project_dir)
             except ContextError as exc:
                 return {"status": "failed", "reason": f"context_error:{exc}"}
             self._session = {
@@ -330,12 +332,15 @@ class AgenticLoop:
         observations = session["observations"]
         trace = session["trace"]
         task_id = session["id"]
+        approved_plan = session["context"].get("approved_plan")
 
         def _finish(result: Dict) -> Dict:
             """统一出口：无论怎么结束都把接力小结写进日志（M45）。"""
             self._agent._current_op = None      # M51: 活动中心实时状态
             result.update(session_id=task_id, goal_id=session["context"]["goal_id"],
                           project_dir=session["context"]["project_dir"])
+            if approved_plan is not None:
+                result.update(plan_id=approved_plan["id"], plan_sha256=approved_plan["sha256"])
             session["status"] = ("awaiting_approval" if result["status"] == "paused" else result["status"])
             session["result"] = result
             self._save()
@@ -400,11 +405,33 @@ class AgenticLoop:
                 return _finish(self._stop("needs_reconciliation", "workspace_changed"))
             if decision.get("done"):
                 from proto.quality.gate import artifacts_from_trace, verify
+                result = {"summary": decision.get("summary", ""), "observations": observations,
+                          "trace": trace, "acceptance": acceptance, "verified": None}
+                if approved_plan is not None:
+                    try:
+                        evidence = OutputEvidence(self._agent.code_workspace, session["context"]["project_dir"])
+                    except EvidenceError as exc:
+                        return _finish(dict(result, status="awaiting_retry", verified=False,
+                                            reason="plan_evidence_failed", missing=[str(exc)]))
+                    receipts = evidence.verify(approved_plan["outputs"])
+                    result["output_evidence"] = receipts
+                    missing = [f"{item['path']}：{item['reason']}" for item in receipts if not item["passed"]]
+                    reason = self._autonomy_reason()
+                    if reason:
+                        return _finish(self._stop("cancelled", reason))
+                    if missing:
+                        return _finish(dict(result, status="awaiting_retry", verified=False,
+                                            reason="plan_evidence_failed", missing=missing))
                 verdict = verify(task_text, acceptance, trace,
                                  artifacts_from_trace(trace, workspace=self._agent.code_workspace),
                                  self._agent.llm, complete=self._complete)
-                result = {"summary": decision.get("summary", ""), "observations": observations,
-                          "trace": trace, "acceptance": acceptance, "verified": None}
+                if approved_plan is not None:
+                    reason = self._autonomy_reason()
+                    if reason:
+                        return _finish(self._stop("cancelled", reason))
+                    if verdict is None:
+                        return _finish(dict(result, status="awaiting_retry", verified=False,
+                                            reason="plan_semantic_verifier_unavailable", missing=["缺少语义验收结果"]))
                 if verdict is None:
                     result["status"] = "completed"
                 else:
@@ -488,7 +515,14 @@ class AgenticLoop:
                                 + head[:900] + "\n")
         # 计划先行（plan-then-act）+ 工作区现状（避免盲目探索）
         plan_block = ""
-        if self._agent.llm_fast is not None:
+        approved_plan = session["context"].get("approved_plan")
+        if approved_plan is not None:
+            steps = "\n".join(f"- {step}" for step in approved_plan["steps"])
+            outputs = [item["path"] for item in approved_plan["outputs"]]
+            plan_block = (f"\n[主人批准的执行计划]\n{steps}\n"
+                          f"必须新增或实质改变的相对输出：{json.dumps(outputs, ensure_ascii=False)}。"
+                          "输出相对项目范围解析，工具 path 参数仍相对工作区，权限按原规则检查。\n")
+        elif self._agent.llm_fast is not None:
             try:
                 plan = self._complete(
                     self._agent.llm_fast, PLAN_PROMPT,

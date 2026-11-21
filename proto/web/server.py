@@ -57,6 +57,7 @@ _CONTROL_POST_RE = [
 _AUTONOMY_RE = re.compile(r"^/api/agents/([A-Za-z0-9_-]+)/autonomy$")
 _ACT_RE = re.compile(r"^/api/agents/([A-Za-z0-9_-]+)/act$")
 _RESUME_RE = re.compile(r"^/api/task/([A-Za-z0-9_-]+)/resume$")
+_PLAN_APPROVE_RE = re.compile(r"^/api/task/plan/([0-9a-f]{32})/approve$")
 _PROPOSAL_RE = re.compile(r"^/api/proposals/([0-9a-f]+)/(accept|deny)$")
 _RUN_RE = re.compile(r"^/api/runs/([0-9a-f]{32})(?:/(cancel|resume|reconcile))?$")
 _PROJECT_RE = re.compile(r"^/api/projects/([0-9a-f]{32})(/work)?$")
@@ -167,8 +168,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._project_routes(method, path, server.manager.runs.projects)
         agent_id = self.headers.get("X-Proto-Agent") or server.manager.current_id()
         if (path in ("/api/runs", "/api/fleet-budget") or path.startswith(("/api/jobs/", "/api/runs/"))
-                or (method == "POST" and (path in ("/api/task", "/api/tick")
-                    or any(pattern.fullmatch(path) for pattern in (_ACT_RE, _RESUME_RE, _PROPOSAL_RE))))):
+                or (method == "POST" and (path in ("/api/task", "/api/task/plan", "/api/tick")
+                    or any(pattern.fullmatch(path) for pattern in (_ACT_RE, _RESUME_RE, _PROPOSAL_RE, _PLAN_APPROVE_RE))))):
             return self._run_routes(method, path, query, agent_id, server.manager.runs)
         agent = server.manager.get(agent_id)
         if method == "POST" and path == "/api/judge":
@@ -209,7 +210,8 @@ class _Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     raise _HTTPError(400, "invalid_run_cursor")
                 return self._json(200, {"runs": runs.list(query.get("agent", [None])[0], before=before,
-                                                         active=query.get("active") == ["true"])})
+                                                         active=query.get("active") == ["true"],
+                                                         reviewable=query.get("reviewable") == ["true"])})
             body = self._body()
             kind = body.get("kind")
             if kind not in ("task", "act", "tick"):
@@ -259,6 +261,15 @@ class _Handler(BaseHTTPRequestHandler):
             body = self._body()
             run = runs.enqueue(agent_id, "task", self._task_args(body), key=key)
             return self._wait_run(runs, run, asynchronous=body.get("async") is True)
+        if path == "/api/task/plan":
+            body = self._body()
+            run = runs.task_plans.enqueue(agent_id, body.get("text"), body.get("project_dir", ""),
+                                          body.get("outputs", []), key=key)
+            return self._wait_run(runs, run, asynchronous=True)
+        approval = _PLAN_APPROVE_RE.fullmatch(path)
+        if approval:
+            run = runs.task_plans.approve(approval.group(1), self._body().get("sha256"))
+            return self._wait_run(runs, run, asynchronous=True)
         resume, proposal = _RESUME_RE.fullmatch(path), _PROPOSAL_RE.fullmatch(path)
         if resume or proposal:
             body = self._body()

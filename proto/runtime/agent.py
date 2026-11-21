@@ -1734,6 +1734,11 @@ class ProtoAgent:
                     "reason": "无法规划步骤（离线模式或模型未给出计划）"}
         return self.run_task_with_steps(description, steps)
 
+    def run_reviewed_task(self, context):
+        description = context["task"]
+        result = AgenticLoop(self).run(description, acceptance=context["acceptance"], frozen_context=context)
+        return self._finish_owner_result(description, result)
+
     def _finish_owner_result(self, description, result):
         if result["status"] == "verified":
             self.pad.apply_event("task_success")
