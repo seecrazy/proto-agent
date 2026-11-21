@@ -68,12 +68,14 @@ def autonomous_study(agent, goal_text: str) -> Optional[dict]:
     if agent._blocked_dispatch(True):
         return None
     source, material = "", ""
-    repos = _novel_repos(agent.webtools.github_search_repos(topic),
-                         agent.memory)
+    with agent._tool_io("github_search"):
+        found = agent.webtools.github_search_repos(topic)
+    repos = _novel_repos(found, agent.memory)
     if agent._blocked_dispatch(True):
         return None
     if repos:
-        readme = agent.webtools.github_readme(repos[0]["full_name"])
+        with agent._tool_io("github_readme"):
+            readme = agent.webtools.github_readme(repos[0]["full_name"])
         if readme.get("ok"):
             source = f"https://github.com/{repos[0]['full_name']}"
             material = readme["text"][:3500]

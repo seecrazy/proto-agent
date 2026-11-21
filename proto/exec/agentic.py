@@ -185,6 +185,11 @@ class AgenticLoop:
         session["pending_call"] = None
         session["status"] = "running"
         self._save()
+        args = pending["args"]
+        if result.status == "completed" and (
+                (tool == "write_file" and isinstance(observation, str) and observation.startswith("written:"))
+                or (tool == "edit_file" and type(observation) is int and observation > 0 and args["old"] != args["new"])):
+            self._agent.activity_event("file_written", tool=tool, path=args.get("path"))
 
     def resume(self, identifier: str, approved: bool) -> Dict:
         if type(approved) is not bool:
@@ -347,6 +352,10 @@ class AgenticLoop:
             if journal is not None:
                 try:
                     summarize = None
+                    model_blocked = str(result.get("reason", "")).startswith("llm_error:")
+                    if model_blocked:
+                        journal.note_model_block(trace)
+                        return result
                     if self._agent.llm_fast is not None and not self._autonomy_reason():
                         def summarize(prompt, text):
                             return self._complete(self._agent.llm_fast, prompt, text)
@@ -373,6 +382,7 @@ class AgenticLoop:
             if str(self._agent.code_workspace.root.resolve()) != session["context"]["workspace"]:
                 return _finish(self._stop("needs_reconciliation", "workspace_changed"))
             self._save()
+            self._agent._current_op.update(step=step + 1, tool="", detail="")
             feedback_block = (f"\n上一轮独立验证未通过，缺少：{feedback}\n"
                               "本轮必须补齐这些证据。" if feedback else "")
             user = (f"{render_context(session['context'])}\n"
@@ -405,6 +415,7 @@ class AgenticLoop:
                 return _finish(self._stop("needs_reconciliation", "workspace_changed"))
             if decision.get("done"):
                 from proto.quality.gate import artifacts_from_trace, verify
+                self._agent.activity_event("verification")
                 result = {"summary": decision.get("summary", ""), "observations": observations,
                           "trace": trace, "acceptance": acceptance, "verified": None}
                 if approved_plan is not None:
@@ -455,9 +466,7 @@ class AgenticLoop:
                 observations.append(f"参数错误：{tool} {exc}。原动作未执行，修正后重试。")
                 continue
             marker = self._agent._current_op or {}
-            marker.update(step=step + 1, tool=tool,
-                          detail=str(arguments.get("path") or arguments.get("code")
-                                     or arguments.get("pattern") or arguments.get("paths") or "")[:90])
+            marker.update(step=step + 1, tool=tool)
             signature = tool + "|" + json.dumps(arguments, sort_keys=True, ensure_ascii=False)
             if len(last_sigs) >= 2 and signature == last_sigs[-1] == last_sigs[-2]:
                 observations.append(f"拦截：{tool} 重复调用（相同参数连续第 3 次），改变参数、换工具，或 done。")

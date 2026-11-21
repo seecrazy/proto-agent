@@ -76,16 +76,18 @@ class MemoryStream:
 
     def add(self, kind: str, text: str, importance: float = 0.5,
             ts: float = None, source: str = "chat", emotion: dict = None,
-            drives: dict = None) -> Memory:
+            drives: dict = None, memory_id: str = None) -> Memory:
         if kind not in KINDS:
             raise ValueError(f"未知记忆类型: {kind}")
+        if memory_id in self._memories:
+            return self._memories[memory_id]
         now = ts if ts is not None else time.time()
-        memory = Memory(id=uuid.uuid4().hex[:12], kind=kind, text=text[:400],
+        memory = Memory(id=memory_id or uuid.uuid4().hex[:12], kind=kind, text=text[:400],
                         ts=now, importance=max(0.0, min(1.0, importance)),
                         last_access=now, source=source, emotion=emotion,
                         drives=drives)
-        self._memories[memory.id] = memory
         self._store.put(self._collection, memory.id, memory.to_dict())
+        self._memories[memory.id] = memory
         return memory
 
     def find_similar(self, text: str, threshold: float = 0.8) -> Optional[Memory]:
@@ -105,11 +107,12 @@ class MemoryStream:
         self._memories.pop(memory_id, None)
         self._store.delete(self._collection, memory_id)
 
-    def reinforce(self, memory_id: str, ts: float = None) -> None:
+    def reinforce(self, memory_id: str, ts: float = None, *, only_newer=False) -> None:
         m = self._memories.get(memory_id)
-        if m is None:
+        now = ts if ts is not None else time.time()
+        if m is None or (only_newer and now <= m.last_access):
             return
-        m.last_access = ts if ts is not None else time.time()
+        m.last_access = now
         m.reinforce_count = (m.reinforce_count or 0) + 1
         self._store.put(self._collection, m.id, m.to_dict())
 

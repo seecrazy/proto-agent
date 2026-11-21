@@ -265,7 +265,7 @@ def test_m66_database_upgrades_in_place(tmp_path):
     assert fleet.runs.budget.view()["caps"]["tokens"] == 12345
     assert fleet.runs.projects.create("迁移成功")["name"] == "迁移成功"
     with fleet.runs.database.connect() as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_same_budget_solo_and_team_scenario(tmp_path):

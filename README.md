@@ -2,12 +2,12 @@
 
 > **内在状态显式可调制 · 主动行为受授权与预算约束 · 自我进化机制仍在验证中**
 
-[![tests](https://img.shields.io/badge/tests-967%20passed-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-981%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
 [![version](https://img.shields.io/badge/version-0.33.0-orange.svg)]()
 
-PROTO 不假装无能来换取可塑性——第一天就能完整干活；成长发生在**倾向维度**而非能力维度：本能、欲望、性格是显式状态文件中的有界参数，被主人反馈缓慢塑造，被不可变内核锁死边界。当前实现至 M68，定位为**单机多 Agent 原型**，不是经过完整对抗验证的生产隔离环境。
+PROTO 的长期目标是在同等资源与权限下完成通用 AI Agent 能做的有用工作，并让同一个 Agent 以持续的人设、记忆和目标与人相处、主动学习、思考、成长和交付。没有新指令也能行动，但不能自行扩权，产出以可复核的证据为准。当前实现至 M70，仍是**单机多 Agent 原型**。见[核心设计原则](docs/DESIGN.md#core-design-principles)。
 
 ## 文档入口
 
@@ -125,7 +125,7 @@ python3 -m proto.run
 
 协议、状态模型、API 与验收见[总设计第 14.4 节](docs/DESIGN.md#operations)。配置合法不代表端点已真实联网验证；不会因保存接入而自动调用付费模型。
 
-**后台忙时怎么问（M69）：** 单独发送「在干嘛？」或「你现在在做什么？」直接查看当前 Agent 的本地活动，不调用模型、不占额度。也可看左栏「概览 → 它现在在干嘛」。普通聊天仍等候同一 Agent 的写锁；若未能执行，页面会提示忙碌，不会自动重试。见[聊天与活动契约](docs/DESIGN.md#console-activity-chat)。
+**后台忙时怎么问（M70）：** 聊天区顶部的「后台 · 实时活动」显示当前任务、步数、等待原因、工具、文件和验收结果。单独问「在干嘛？」或「你刚才做了什么？」直接读本地记录，不调用模型、不占额度；普通对话也不再等后台模型或工具完成。主模型不可用时仍可查工作记录，自动任务在冷却到期后试探恢复。左栏「概览 → 它现在在干嘛」还显示存量项目文件，文件存在不等于已验收。旧实例用原有数据目录与启动参数重启后启用后端改动。见[设计与故障排查](docs/DESIGN.md#concurrent-dialogue-live-work)。
 
 **第 3 步，体验它"活着"**：
 
@@ -169,7 +169,7 @@ cd proto-agent
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev]'
-python -m pytest -q       # 本机验证：974 passed, 2 skipped（2026-11-21，Python 3.9.2）
+python -m pytest -q       # 本机验证：981 passed, 2 skipped（2026-11-21，Python 3.9.2）
 python3 -m proto.demo     # 12 段全链路演示：锚定→调制→毒化拒收→评估→审批→进化两轨→自驱执行→审计
 ```
 
@@ -221,8 +221,8 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 
 ## 验证
 
-- **974 passed, 2 skipped，101.24s**（2026-11-21，本机 Python 3.9.2，`python3 -m pytest -q`）；未重跑 CI 矩阵、可选依赖组合或 Linux runsc，不宣称覆盖全部安全边界。
-- M69 新增 **7 个用例**：活动问询不争锁、不请求模型、隔离 Agent、鉴权与输入校验、繁忙时页面反馈与防重发。Chrome 临时离线实例验证后台占锁时可查进展，普通聊天显示忙碌。
+- **981 passed, 2 skipped**（2026-11-21，本机 Python 3.9.2，`python3 -m pytest -q`）；未重跑 CI 矩阵、可选依赖组合或 Linux runsc，不宣称覆盖全部安全边界。
+- M70 新增 **7 个用例**：等待模型或工具时可继续对话、双层额度、回执恢复、冷却与半开探测、工具证据与同谱系产物交接。Chrome 用测试模型验证边工作边回复、落盘和验收分开显示、窄屏抽屉与折叠记忆；未调用真实模型。
 - M68 新增 **23 个用例**：只读、范围覆盖、审批幂等、双预算、重启、漂移、文件证据与语义验收。用 Chrome 和离线模型验证重载后审阅、批准前不落产物、批准后生成文件并显示证据；未调用真实模型。
 - M64 新增 **62 个用例**：两种协议的本地 HTTP 接入、活动配置更新、舰队/离线接入、在途请求与用量归属、审批续跑、熔断隔离、持久化/版本冲突/失败保留、鉴权和页面/终端交互。另用真实 Chrome 验证新增、选择、刷新后保持、关闭清密钥，并检查 1280×960 与 390×844 页面；未调用真实模型、未重启真实实例。
 - M63 新增 **70 个用例**：上下文/指令范围、严格参数校验、重启审批续跑、来源/步数保持、并发防重放、未知在途阻塞、HTTP 提案/严格布尔审批入口和 Node 页面交互。M63 当时的浏览器整屏截图受工具审批策略限制未完成，脚本交互不等于可视验收；未调用真实模型。
@@ -255,7 +255,8 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 | M66 调度与预算 | 持久运行入口、公平有界调度、舰队预算与恢复核对 | ✅ 本地实现，[运行契约](docs/DESIGN.md#run-scheduler) |
 | M67 项目协作与验收 | 结构化任务交接、前置依赖、版本化产物与确定性验收 | ✅ 本地实现，[项目契约](docs/DESIGN.md#project-delivery) |
 | M68 先审计划与文件证据 | 分层规则覆盖、只读预案、按摘要批准、文件变化与语义双验收 | ✅ 本地实现，[使用及边界](docs/DESIGN.md#reviewed-task-plans) |
-| M69 聊天与活动问询 | 「在干嘛」本地只读、聊天忙碌与错误可见 | ✅ 本地实现，[设计与验收](docs/DESIGN.md#console-activity-chat) |
+| M69 聊天与活动问询 | 「在干嘛」本地只读与错误可见 | ✅ 历史节点，普通聊天限制由 M70 替代，[设计记录](docs/DESIGN.md#console-activity-chat) |
+| M70 并行对话与实时活动 | 对话和后台等待分离、真实活动与验收、冷却自动恢复、目标间文件接力 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#concurrent-dialogue-live-work) |
 | 后续模型交互 | 原生工具协议、请求级用量、token 压缩与进程级取消 | 待专项，不纳入 M63/M64 |
 
 ## 许可
@@ -353,7 +354,7 @@ PROTO 的长期记忆是完整的记忆流（Generative Agents 架构的零依�
 
 **单人或协作交付：** 右侧「项目 → 新建项目 → 指派交付项」，选择生产 Agent、可选的独立评审 Agent 和前置交付项。例如产物清单填写 `[{"path":"proof.json","json_keys":["proof"]}]`。前置必须已验收，生产先过固定检查，不填评审时自动验收；填了评审则把同一产物版本交给它。可查看正文、摘要和评审意见，未通过可重试并保留旧版。首版只交付文本，不运行产物或任意测试脚本，也不共享私有工作区或记忆；黑板仍只用于交流。
 
-安装和启动方式不变。队列、票据和项目数据在舰队根下 `.coordination/state.sqlite3`；需要冷备份时先退出实例，复制整个数据目录，不要在线只拷贝数据库主文件。[调度 API](docs/DESIGN.md#run-scheduler) · [项目与验收](docs/DESIGN.md#project-delivery) · [实现进展](docs/PROGRESS.md)
+安装和启动方式不变。队列、票据、项目与 Web 对话回执保存在舰队根下 `.coordination/state.sqlite3`。首次启动 M70 会自动迁移到 v3，旧版不读取 v3；如需保留回退能力，先退出实例并冷备份整个数据目录，不要在线只拷贝数据库主文件。[调度 API](docs/DESIGN.md#run-scheduler) · [项目与验收](docs/DESIGN.md#project-delivery) · [实现进展](docs/PROGRESS.md)
 
 ## 没人理它的时候，它在干什么？
 

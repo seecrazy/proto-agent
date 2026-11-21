@@ -118,6 +118,10 @@ class ModelRoleClient(LLMClient):
         self._local = threading.local()
 
     @property
+    def role(self):
+        return self._role
+
+    @property
     def last_usage(self):
         return getattr(self._local, "usage", None)
 

@@ -11,7 +11,9 @@ from uuid import uuid4
 from proto.exec.checkpoints import SCHEMA_VERSION
 from proto.exec.router import VARIANT_ID
 from proto.exec.sessions import TERMINAL_STATES
+from proto.runtime.activity import RunActivity
 from proto.runtime.coordination import CoordinationDB, CoordinationError, encode
+from proto.runtime.dialogue import Dialogue
 from proto.runtime.fleet_budget import FleetBudget
 from proto.runtime.projects import ProjectDelivery
 from proto.runtime.runcontext import current_run
@@ -74,6 +76,8 @@ class RunCoordinator:
     def __init__(self, manager):
         self.manager = manager
         self.database = CoordinationDB(manager.root)
+        self.activity = RunActivity(self.database)
+        self.dialogue = Dialogue(self.database)
         self.budget = FleetBudget(self.database)
         self.projects = ProjectDelivery(self)
         self.task_plans = TaskPlans(self)
@@ -309,9 +313,15 @@ class RunCoordinator:
                         run, agent, lock = picked
                         try:
                             self._execute(run, agent)
+                            self.notify()
+                            if not self._stop.is_set():
+                                with agent.background_write():
+                                    self.dialogue.remember_one(agent)
                         finally:
                             lock.release()
                             self.notify()
+                        continue
+                    if self._remember_dialogue():
                         continue
                 except Exception:
                     logging.exception("Fleet dispatcher iteration failed")
@@ -322,6 +332,23 @@ class RunCoordinator:
                 self._live -= 1
                 if not self._live:
                     self._instance.release()
+
+    def _remember_dialogue(self):
+        for agent_id in self.dialogue.pending_agents():
+            agent = self.manager.get(agent_id)
+            if agent is None:
+                continue
+            lock = self.manager.ops_lock(agent_id)
+            if not lock.acquire(blocking=False):
+                continue
+            try:
+                if not agent.dialogue_closed:
+                    with agent.background_write():
+                        if self.dialogue.remember_one(agent):
+                            return True
+            finally:
+                lock.release()
+        return False
 
     def _pick(self):
         with self.database.connect() as connection:
@@ -382,7 +409,9 @@ class RunCoordinator:
         lease = RunLease(self, run, agent)
         token = current_run.set(lease)
         try:
-            result = self._invoke(run, agent, lease)
+            self.activity.record(lease, "started")
+            with agent.background_write():
+                result = self._invoke(run, agent, lease)
             if lease.stopped and run["kind"] in ("tick", "act") and "status" not in result:
                 result = dict(result, status="cancelled", reason="run_cancelled")
             final = self.get(run["id"])
@@ -397,6 +426,7 @@ class RunCoordinator:
                         result = {"status": "blocked", "reason": policy}
                 status, reason = self._outcome(result, waiting, final)
                 self._save_result(connection, final, status, reason, result, waiting)
+            self.activity.record(lease, status, reason=reason)
         except Exception:
             logging.exception("Run interrupted: %s", run["id"])
             self._recover_run(self.get(run["id"]), agent)
@@ -435,6 +465,8 @@ class RunCoordinator:
             agent._inbox.append(result.get("message") or f"行动未成：{result.get('reason', '')}")
             return result
         if kind == "tick":
+            if not args and agent.model_status()["waiting"]:
+                return {"status": "blocked", "reason": "circuit_breaker_open"}
             proposal = agent.maybe_proactive()
             if isinstance(proposal, str) and proposal not in agent._inbox:
                 agent._inbox.append(proposal)

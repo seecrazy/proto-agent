@@ -82,6 +82,18 @@ CREATE TABLE IF NOT EXISTS artifact_reviews (
 );
 """
 
+_DIALOGUE_SCHEMA = """
+CREATE INDEX IF NOT EXISTS runs_agent_seq ON runs(agent_id, seq);
+CREATE TABLE IF NOT EXISTS dialogue_turns (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL, request_key TEXT, text TEXT NOT NULL, reply TEXT NOT NULL,
+    facts TEXT NOT NULL, remembered INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(agent_id, request_key)
+);
+CREATE INDEX IF NOT EXISTS dialogue_agent ON dialogue_turns(agent_id, seq);
+CREATE INDEX IF NOT EXISTS dialogue_pending ON dialogue_turns(seq) WHERE remembered = 0;
+"""
+
 
 class CoordinationDB:
     def __init__(self, root):
@@ -104,13 +116,14 @@ class CoordinationDB:
             connection = self._connect()
             try:
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version not in (0, 1, 2):
+                if version not in (0, 1, 2, 3):
                     raise CoordinationError("unsupported_coordination_schema")
                 if version == 0:
                     connection.execute("PRAGMA journal_mode = WAL")
-                if version < 2:
-                    schema = (_SCHEMA if version == 0 else "") + _PROJECT_SCHEMA
-                    connection.executescript("BEGIN IMMEDIATE;\n" + schema + "\nPRAGMA user_version = 2; COMMIT;")
+                if version < 3:
+                    schema = (_SCHEMA if version == 0 else "") + (_PROJECT_SCHEMA if version < 2 else "")
+                    connection.executescript("BEGIN IMMEDIATE;\n" + schema + _DIALOGUE_SCHEMA
+                                             + "\nPRAGMA user_version = 3; COMMIT;")
                 self._ready = True
             finally:
                 connection.close()

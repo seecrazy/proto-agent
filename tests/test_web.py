@@ -47,7 +47,7 @@ def server(tmp_path):
     srv.server_close()
 
 
-def call(srv, method, path, body=None, token=None, agent_id=None):
+def call(srv, method, path, body=None, token=None, agent_id=None, request_key=None):
     url = f"http://127.0.0.1:{srv.port}{path}"
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -57,6 +57,8 @@ def call(srv, method, path, body=None, token=None, agent_id=None):
         req.add_header("X-Proto-Token", token)
     if agent_id:
         req.add_header("X-Proto-Agent", agent_id)
+    if request_key:
+        req.add_header("Idempotency-Key", request_key)
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, json.loads(resp.read().decode())
@@ -130,8 +132,6 @@ class TestActivityChat:
             status, data = call(server, "POST", "/api/chat", {"text": "在干嘛"},
                                 token=server.token, agent_id=other)
             assert status == 200 and "没有正在运行" in data["reply"]
-            status, data = call(server, "POST", "/api/chat", {"text": "在干嘛？顺便写个报告"}, token=server.token)
-            assert status == 409 and data["error"] == "agent_busy"
             assert agent._load_history() == history
             assert runs.budget.view() == budget
             assert [row["id"] for row in runs.list(agent.fleet_id)] == [active["id"]]
@@ -173,8 +173,9 @@ let inboxReads = 0;
 let respond;
 function addMsg(text, role) { messages.push({text, role}); }
 function refreshInboxOnce() { inboxReads++; }
-async function api(method, path, body) {
-  calls.push({method, path, body});
+function newRequestKey() { return "chat-" + calls.length; }
+async function api(method, path, body, key) {
+  calls.push({method, path, body, key});
   return respond();
 }
 '''
@@ -187,12 +188,13 @@ async function api(method, path, body) {
   input.value = "别重发";
   await sendChat();
   assert.equal(calls.length, 1);
+  assert.equal(calls[0].key, "chat-0");
   assert.equal(input.value, "别重发");
   finish({reply: "普通回复"});
   await pending;
   assert.equal(inboxReads, 1);
 
-  respond = () => { throw new Error("agent_busy：占锁"); };
+  respond = () => { throw new Error("chat_in_progress"); };
   await sendChat();
   assert.equal(messages.at(-1).role, "system");
   assert.match(messages.at(-1).text, /没有执行/);

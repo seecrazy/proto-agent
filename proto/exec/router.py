@@ -8,6 +8,7 @@ Router 串行调度任务：预算预留 → 逐步执行 → 每步检查点 �
 from __future__ import annotations
 
 import threading
+from contextlib import nullcontext
 import copy
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
@@ -108,7 +109,7 @@ class TaskResult:
 class Router:
     def __init__(self, kernel: Kernel, queue: ApprovalQueue, workspace: ScratchWorkspace,
                  checkpoints: CheckpointStore, tools: ToolRegistry,
-                 step_cost: Dict[str, float] = None, code_workspace=None, autonomy_check=None):
+                 step_cost: Dict[str, float] = None, code_workspace=None, autonomy_check=None, tool_io=None):
         self._kernel = kernel
         self._queue = queue
         self._ws = workspace
@@ -118,6 +119,7 @@ class Router:
         self._cost = step_cost or DEFAULT_STEP_COST
         self._resume_lock = threading.RLock()
         self._autonomy_check = autonomy_check
+        self._tool_io = tool_io or (lambda tool: nullcontext())
 
     def _pool(self, task: Task) -> str:
         return "owner_tasks" if task.owner_assigned else "self_initiated"
@@ -292,7 +294,8 @@ class Router:
                 if (category is ActionCategory.WORKSPACE_WRITE
                         and self._workspace is not None):
                     try:
-                        outcome = self._workspace.write_file(path, args.get("content", ""))
+                        with self._tool_io(step["tool"]):
+                            outcome = self._workspace.write_file(path, args.get("content", ""))
                         self._tool_exec_audit(step["tool"], category, path)
                         step_results.append(outcome)
                     except Exception as exc:
@@ -300,7 +303,8 @@ class Router:
                         step_results.append(f"write_file 执行失败：{type(exc).__name__}: {exc}")
                     continue
                 try:
-                    self._ws.write(path, args.get("content", ""))
+                    with self._tool_io(step["tool"]):
+                        self._ws.write(path, args.get("content", ""))
                 except Exception as exc:
                     self._tool_exec_audit(step["tool"], category, str(path), str(exc))
                     step_results.append(f"write_file 执行失败：{type(exc).__name__}: {exc}")
@@ -371,7 +375,8 @@ class Router:
             if blocked:
                 return blocked
             try:
-                outcome = fn(**call_args)
+                with self._tool_io(step["tool"]):
+                    outcome = fn(**call_args)
                 step_results.append(outcome)
                 self._tool_exec_audit(step["tool"], category, None)
             except TypeError as exc:

@@ -233,11 +233,21 @@ class AgentManager:
             info = next((a for a in reg["agents"] if a["id"] == agent_id), None)
             if info is None:
                 return False
-            reg["agents"] = [a for a in reg["agents"] if a["id"] != agent_id]
-            if reg["current"] == agent_id:
-                reg["current"] = reg["agents"][0]["id"] if reg["agents"] else None
-            self._save_registry(reg)
-        self._cache.pop(agent_id, None)
+            agent = self._cache.get(agent_id)
+            if agent is not None and not agent.dialogue_lock.acquire(blocking=False):
+                raise CoordinationError("chat_in_progress")
+            try:
+                reg["agents"] = [a for a in reg["agents"] if a["id"] != agent_id]
+                if reg["current"] == agent_id:
+                    reg["current"] = reg["agents"][0]["id"] if reg["agents"] else None
+                self._save_registry(reg)
+                if agent is not None:
+                    agent.dialogue_closed = True
+                self._cache.pop(agent_id, None)
+            finally:
+                if agent is not None:
+                    agent.dialogue_lock.release()
+        self.runs.activity.forget(agent_id)
         src = self._dir_for(info)
         if src.exists():
             shutil.move(str(src),
@@ -375,7 +385,8 @@ class AgentManager:
                 continue
             try:
                 agent = self.get(info["id"])
-                if agent is not None and not agent.autonomy_blocker(suggestions=True):
+                if (agent is not None and not agent.autonomy_blocker(suggestions=True)
+                        and not agent.model_status()["waiting"]):
                     self.runs.enqueue(info["id"], "tick")
             except CoordinationError as exc:
                 if exc.status not in (404, 429):

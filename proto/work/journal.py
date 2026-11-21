@@ -46,13 +46,17 @@ class GoalJournal:
             return 0
         count = 0
         for block in reversed(self._round_blocks()):
-            if "产出：无" in block or "产出:" in block.split("产出：")[0]:
-                pass
+            if block.splitlines()[0].endswith("· model_blocked") and "产出：无" in block:
+                continue
             if "产出：无" in block:
                 count += 1
             else:
                 break
         return count
+
+    def note_model_block(self, trace: List[dict]) -> None:
+        self.note_round("model_blocked", ["调用模型受阻；不是实现或验收失败"], self._written_files(trace)[:5],
+                        ["模型恢复后从已有文件继续，不重复生成"])
 
     def latest_round(self) -> Optional[dict]:
         """最近一轮的结构化内容（活动中心用）。"""

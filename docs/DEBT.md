@@ -104,4 +104,4 @@
 
 - **触发条件**：需要多 Agent 接力，或前置阶段失败后目标选择轮转。
 - **偿还**：[M67](DESIGN.md#project-delivery) 用项目 WorkItem 显式分派、硬依赖、定版验收与评审，不把黑板当权威，也不替换 GoalTree 或 ExecutionSession。
-- **边界**：仅明确指派的项目与文本契约；普通 GoalTree 无通用 DAG，未扩展二进制、脚本验收或宿主隔离（D8/D11/D12）。
+- **边界**：硬依赖仅用于明确指派的项目与文本契约。M70 为普通 GoalTree 增加[同谱系文件接力](DESIGN.md#concurrent-dialogue-live-work)，不等同通用 DAG 或自动集成；未扩展二进制、脚本验收或宿主隔离（D8/D11/D12）。

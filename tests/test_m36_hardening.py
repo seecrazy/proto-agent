@@ -409,8 +409,8 @@ class TestBusyLock:
             server.manager.ops_lock(
                 server.manager.current_id()).acquire()
             req = urllib.request.Request(
-                f"http://127.0.0.1:{server.port}/api/chat",
-                data=json.dumps({"text": "hi"}).encode(), method="POST")
+                f"http://127.0.0.1:{server.port}/api/persona",
+                data=json.dumps({"text": "新的设定"}).encode(), method="POST")
             req.add_header("X-Proto-Token", server.token)
             req.add_header("Content-Type", "application/json")
             try:

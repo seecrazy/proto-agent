@@ -112,6 +112,27 @@ class GoalTree:
         return [n for n in self.all_active()
                 if n.parent_id == parent_id and n.level == level]
 
+    def related_goals(self, node_id: str) -> List[GoalNode]:
+        with self._lock:
+            def root_of(node):
+                visited = set()
+                while node.parent_id:
+                    if node.id in visited or node.parent_id not in self._nodes:
+                        return None
+                    visited.add(node.id)
+                    node = self._nodes[node.parent_id]
+                    if node.status == "dropped":
+                        return None
+                return node.id
+
+            current = self._nodes.get(node_id)
+            root = root_of(current) if current else None
+            if root is None:
+                return []
+            return sorted((node for node in self._nodes.values()
+                           if node.id != node_id and node.status in ("active", "done") and root_of(node) == root),
+                          key=lambda node: (node.status != "done", node.created_at))
+
     def _complete_unlocked(self, node_id: str) -> Optional[GoalNode]:
         node = self._nodes.get(node_id)
         if node is None or node.status == "dropped":

@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from proto.runtime.activity import activity_reply
 from proto.runtime.agent import ProtoAgent
 from proto.runtime.coordination import CoordinationError
 
@@ -66,13 +67,17 @@ _WORK_RE = re.compile(r"^/api/projects/([0-9a-f]{32})/work/([0-9a-f]{32})/(retry
 _ACTIVITY_QUESTION = re.compile(
     r"(?:你)?(?:现在|目前)?在(?:干嘛|干吗|干什么|干啥|做什么|做啥|忙什么)[呢啊呀]?[?？]*"
 )
+_PAST_ACTIVITY_QUESTION = re.compile(
+    r"(?:你)?(?:刚才|刚刚|最近|上一轮)(?:都)?"
+    r"(?:做了什么|做了啥|干了什么|完成了什么|产出了什么|有什么产出)[呢啊呀]?[?？]*"
+)
 
 READ_ONLY_GETS = {
     "/api/state", "/api/audit", "/api/proposals", "/api/rules",
     "/api/evolution", "/api/scratch", "/api/memory", "/api/inbox",
     "/api/goaltree", "/api/world", "/api/taste", "/api/agents",
     "/api/summary", "/api/blackboard", "/api/projects-root", "/api/methods",
-    "/api/identity", "/api/activity",
+    "/api/identity", "/api/activity", "/api/activity/live",
 }
 
 
@@ -125,6 +130,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(exc.status, {"error": exc.message})
         except CoordinationError as exc:
             return self._json(exc.status, {"error": str(exc)})
+        except (BrokenPipeError, ConnectionResetError):
+            return None
         except Exception:
             logging.exception("API 路由异常")
             return self._json(500, {"error": "internal"})
@@ -176,16 +183,22 @@ class _Handler(BaseHTTPRequestHandler):
                     or any(pattern.fullmatch(path) for pattern in (_ACT_RE, _RESUME_RE, _PROPOSAL_RE, _PLAN_APPROVE_RE))))):
             return self._run_routes(method, path, query, agent_id, server.manager.runs)
         agent = server.manager.get(agent_id)
-        chat_text = None
         if method == "POST" and path == "/api/chat":
             if agent is None:
                 raise _HTTPError(404, "no_such_agent")
             chat_text = self._body().get("text")
-            if not isinstance(chat_text, str) or not chat_text.strip():
+            if not isinstance(chat_text, str) or not chat_text.strip() or len(chat_text) > 16000:
                 raise _HTTPError(400, "invalid_chat_text")
-            if _ACTIVITY_QUESTION.fullmatch(chat_text.strip()):
-                reply = _activity_reply(agent, server.manager.runs)
+            try:
+                chat_text.encode("utf-8")
+            except UnicodeError:
+                raise _HTTPError(400, "invalid_chat_text") from None
+            question = chat_text.strip()
+            past_activity = _PAST_ACTIVITY_QUESTION.fullmatch(question) is not None
+            if past_activity or _ACTIVITY_QUESTION.fullmatch(question):
+                reply = activity_reply(server.manager.runs.activity.snapshot(agent), detailed=past_activity)
                 return self._json(200, {"reply": reply, "read_only": True})
+            return self._chat(chat_text, agent, server.manager.runs)
         if method == "POST" and path == "/api/judge":
             return self._safely(lambda: self._routes(method, path, query,
                                                     agent, server))
@@ -204,22 +217,19 @@ class _Handler(BaseHTTPRequestHandler):
                                     "hint": "该 agent 自学习或长任务进行中，"
                                             "稍后重试（不影响其他 agent）"})
         try:
-            if chat_text is not None:
-                return self._chat(chat_text, agent, server)
-            return self._routes(method, path, query, agent, server)
+            if agent is None:
+                return self._routes(method, path, query, agent, server)
+            with agent.background_write():
+                return self._routes(method, path, query, agent, server)
         finally:
             lock.release()
 
-    def _chat(self, text, agent, server):
-        reply = agent.chat(text)
-        self._json(200, {"reply": reply})
-        agent.remember_turn(text, reply)
-        if not agent.autonomy_blocker(suggestions=True):
-            try:
-                server.manager.runs.enqueue(agent.fleet_id, "tick")
-            except CoordinationError as exc:
-                if exc.status != 429:
-                    logging.exception("Cannot enqueue post-chat heartbeat")
+    def _chat(self, text, agent, runs):
+        reply = runs.dialogue.reply(
+            agent, text, self.headers.get("Idempotency-Key"),
+            lambda: activity_reply(runs.activity.snapshot(agent), detailed=True))
+        runs.notify()
+        return self._json(200, {"reply": reply})
 
     def _run_routes(self, method, path, query, agent_id, runs):
         if path == "/api/fleet-budget":
@@ -595,6 +605,10 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(200, snap)
         if path == "/api/activity" and method == "GET":
             return self._json(200, _activity_view(agent))
+        if path == "/api/activity/live" and method == "GET":
+            if agent is None:
+                raise _HTTPError(404, "no_such_agent")
+            return self._json(200, server.manager.runs.activity.snapshot(agent))
         if path == "/api/blackboard" and method == "GET":
             return self._json(200, {"notes": agent.read_blackboard()})
         if path == "/api/blackboard" and method == "POST":
@@ -667,21 +681,6 @@ class _Handler(BaseHTTPRequestHandler):
         return self._json(404, {"error": "not_found"})
 
 
-def _activity_reply(agent: ProtoAgent, runs) -> str:
-    current = getattr(agent, "_current_op", None)
-    if current and current.get("goal"):
-        return f"我正在处理：{current['goal'][:80]}。"
-    kind = runs.running_kind(agent.fleet_id)
-    if kind is None:
-        return "我目前没有正在运行的后台任务。可以在「它现在在干嘛」查看最近活动。"
-    label = {
-        "tick": "进行后台自主检查", "act": "执行自主行动", "task": "处理你指派的任务",
-        "plan": "生成只读计划", "planned_task": "执行你批准的计划",
-        "work": "处理项目工作", "review": "评审项目产物",
-    }.get(kind, "处理后台任务")
-    return f"我正在{label}。"
-
-
 def _activity_view(agent: ProtoAgent) -> dict:
     """M51 活动中心：现在在干嘛（链实时标记）+ 每目标接力日志 + 近 24h 落盘。"""
     import time as _t
@@ -705,18 +704,25 @@ def _activity_view(agent: ProtoAgent) -> dict:
                               "rounds": j.round_count(), **lr})
     goals.sort(key=lambda g: -g["rounds"])
     files = []
+    outputs = {}
     proot = agent.code_workspace.root / "projects"
     cutoff = _t.time() - 86400
     if proot.is_dir():
         for f in proot.rglob("*"):
             try:
-                if not f.is_file():
+                relative = f.relative_to(agent.code_workspace.root)
+                if any(part.startswith(("_", ".")) for part in relative.parts) or f.is_symlink() or not f.is_file():
                     continue
                 st = f.stat()
             except OSError:
                 continue
-            if st.st_mtime >= cutoff and "_archived" not in str(f):
-                files.append({"path": str(f.relative_to(agent.code_workspace.root)),
+            if len(relative.parts) > 2:
+                directory = relative.parts[1]
+                row = outputs.setdefault(directory, {"dir": directory, "files": 0, "last_write": 0})
+                row["files"] += 1
+                row["last_write"] = max(row["last_write"], round(st.st_mtime))
+            if st.st_mtime >= cutoff:
+                files.append({"path": str(relative),
                               "mtime": round(st.st_mtime), "size": st.st_size})
         files.sort(key=lambda x: -x["mtime"])
     evs = []
@@ -731,6 +737,7 @@ def _activity_view(agent: ProtoAgent) -> dict:
         evs.append({"ts": e.get("ts"), "type": t, "detail": detail})
     return {"current": cur, "goal_work": goals[:6],
             "recent_files": files[:12], "recent_events": evs[:15],
+            "project_outputs": sorted(outputs.values(), key=lambda row: -row["last_write"])[:8],
             # M59/M61：空闲成因按意义门控暴露；冷却字段已废除，避免旧文案复生。
             "last_act_ts": getattr(agent, "_last_self_act", 0.0),
             "idle_policy": "meaning_gate",

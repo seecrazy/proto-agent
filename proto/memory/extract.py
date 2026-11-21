@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 
 IMPORTANCE_PROMPT = (
@@ -58,10 +59,14 @@ def extract_facts(agent, owner_text: str, reply: str) -> list:
         return []
     facts = []
     for row in rows:
-        if not isinstance(row, dict) or not row.get("text"):
+        if not isinstance(row, dict) or not isinstance(row.get("text"), str) or not row["text"].strip():
             continue
-        facts.append({"text": str(row["text"])[:200],
-                      "importance": max(0.0, min(1.0, float(row.get("importance", 0.6))))})
+        try:
+            importance = float(row.get("importance", 0.6))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(importance):
+            facts.append({"text": row["text"][:200], "importance": max(0.0, min(1.0, importance))})
     return facts
 
 
