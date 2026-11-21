@@ -2,12 +2,12 @@
 
 > **内在状态显式可调制 · 主动行为受授权与预算约束 · 自我进化机制仍在验证中**
 
-[![tests](https://img.shields.io/badge/tests-1021%20passed-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-1033%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
 [![version](https://img.shields.io/badge/version-0.33.0-orange.svg)]()
 
-PROTO 的长期目标是在同等资源与权限下完成通用 AI Agent 能做的有用工作，并让同一个 Agent 以持续的人设、记忆和目标与人相处、主动学习、思考、成长和交付。没有新指令也能行动，但不能自行扩权，产出以可复核的证据为准。框架用独立样例验证，不替 Agent 承做、调试或验收真实项目。当前实现至 M74，仍是**单机多 Agent 原型**。见[核心设计原则](docs/DESIGN.md#core-design-principles)。
+PROTO 的长期目标是在同等资源与权限下完成通用 AI Agent 能做的有用工作，并让同一个 Agent 以持续的人设、记忆和目标与人相处、主动学习、思考、成长和交付。没有新指令也能行动，但不能自行扩权，产出以可复核的证据为准。框架用独立样例验证，不替 Agent 承做、调试或验收真实项目。当前实现至 M75，仍是**单机多 Agent 原型**。见[核心设计原则](docs/DESIGN.md#core-design-principles)。
 
 ## 文档入口
 
@@ -169,7 +169,7 @@ cd proto-agent
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev]'
-python -m pytest -q       # 本机验证：1021 passed, 3 skipped（2026-11-22，Python 3.9.2）
+python -m pytest -q       # 本机验证：1033 passed, 3 skipped（2026-11-22，Python 3.9.2）
 python3 -m proto.demo     # 12 段全链路演示：锚定→调制→毒化拒收→评估→审批→进化两轨→自驱执行→审计
 ```
 
@@ -263,6 +263,7 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 | M72 负载保护与有效交付 | 同一模型接入共享退避、无进展自动暂停、阶段共用工位、真实构建证据 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#evidence-driven-delivery) |
 | M73 Agent ID 与显示名称 | 完整 ID 只读可查，改名不影响身份引用或后台运行 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#agent-display-name) |
 | M74 舰队批量操作 | 全部暂停、恢复与确认归档，显示忙碌跳过和保留数据 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#fleet-bulk-controls) |
+| M75 公司与组织 | 多公司模板、职位任命、汇报关系与定向消息 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#company-organization) |
 | 后续模型交互 | 原生工具协议、请求级用量、token 压缩与进程级取消 | 待专项，不纳入 M63/M64 |
 
 ## 许可
@@ -367,6 +368,8 @@ PROTO 的长期记忆是完整的记忆流（Generative Agents 架构的零依�
 **先审计划再做（M68）：** 在右侧「工作 → 指派任务」写下任务，展开「先审计划」。可填写工作区相对项目目录（如 `demo`）和最多 4 个应新增或改变的相对文本文件（如 `report.md`）。只读规划记入主人任务和舰队额度，不运行工具。检查原任务、范围、规则和验收后点「批准此版并执行」；刷新后可到「舰队额度与运行」打开待审计划。范围或文件基线变化时需生成新计划，受限工具仍需审批。声明了文件就必须非空、有变化，再过语义验收；留空只做语义验收。原「执行」按钮和项目协作路径不变。见[设计与接口](docs/DESIGN.md#reviewed-task-plans)。
 
 **单人或协作交付：** 右侧「项目 → 新建项目 → 指派交付项」，选择生产 Agent、可选的独立评审 Agent 和前置交付项。例如产物清单填写 `[{"path":"proof.json","json_keys":["proof"]}]`。前置必须已验收，生产先过固定检查，不填评审时自动验收；填了评审则把同一产物版本交给它。可查看正文、摘要和评审意见，未通过可重试并保留旧版。首版只交付文本，不运行产物或任意测试脚本，也不共享私有工作区或记忆；黑板仍只用于交流。
+
+**公司与组织：** 在右侧「项目 → 公司与组织 → 管理 / 新建公司」选择扁平协作、职能分层、事业部制或自定义。选中职位可改名称、职责和直属上级，再关联现有 Agent，或从空缺职位新建并任命草稿。每个 Agent 最多任一个职位；聘任不自动启用自治，归档会留下空缺。任职成员改用组织消息：向直属上级汇报、向直属下级指导、与同一上级的同事协作；不允许越级或跨公司。主人可查看和代发，「组织消息」不会触发自动执行，也不改变工具审批或明确指派的项目协作。[组织契约](docs/DESIGN.md#company-organization)
 
 已有控制台需先正常退出旧进程，再用原来的数据目录和启动参数重启；使用默认实例可执行 `bash start-console.sh`。队列、票据、项目、对话回执和模型冷却保存在舰队根下 `.coordination/state.sqlite3`。M72 首次启动自动迁移到 v4；旧版不读取 v4，如需回退能力，先退出实例并冷备份整个数据目录，不要在线只拷贝数据库主文件。[调度 API](docs/DESIGN.md#run-scheduler) · [项目与验收](docs/DESIGN.md#project-delivery) · [实现进展](docs/PROGRESS.md)
 

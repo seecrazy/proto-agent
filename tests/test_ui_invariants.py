@@ -49,7 +49,7 @@ def test_cards_all_categorized():
     cards = re.findall(r'<div data-cat="(\w+)" class="card[^"]*"', HTML)
     from collections import Counter
     assert len(cards) == len(re.findall(r'<div[^>]*class="card[ "]', HTML))
-    assert Counter(cards) == {"ov": 4, "inner": 5, "work": 5, "delivery": 1, "tech": 5}
+    assert Counter(cards) == {"ov": 4, "inner": 5, "work": 5, "delivery": 2, "tech": 5}
 
 
 def test_i6_no_cross_panel_linkage():

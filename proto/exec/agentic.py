@@ -67,7 +67,7 @@ READ_ONLY_TOOLS = {"list_dir", "read_file", "read_files", "grep", "clock",
 # （"确认完整性"每轮都失败）。读文件给足预算并提示出路；跑代码次之。
 OBS_LIMITS = {"read_file": 3000, "read_files": 6000,
               "run_python": 1500, "run_command": 4000, "grep": 1000,
-              "blackboard_read": 1200, "fleet_status": 1200,
+              "blackboard_read": 1200, "fleet_status": 1200, "company_context": 3700, "company_inbox": 3300,
               "github_readme": 3000, "web_fetch": 3000}
 OBS_DEFAULT = 600
 
@@ -436,7 +436,7 @@ class AgenticLoop:
                 history = render_history(observations, trace, min(MAX_HISTORY_BYTES, available))
                 feedback_block = (f"\n上一轮独立验证未通过，缺少：{feedback}\n"
                                   "本轮必须补齐这些证据。" if feedback else "")
-                advisory = clipped(feedback_block + "".join(session["prompt_blocks"]),
+                advisory = clipped(feedback_block + self._agent.company_hint() + "".join(session["prompt_blocks"]),
                                    min(MAX_ADVISORY_BYTES, available - size(history)))
                 session["status"] = "running"
                 self._save()

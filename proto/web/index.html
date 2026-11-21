@@ -217,6 +217,28 @@
   #coord-detail[open] { display: flex; flex-direction: column; }
   #coord-detail > :not(pre) { flex-shrink: 0; }
   #coord-detail-content { min-height: 0; overflow: auto; }
+  #company-panel { width: min(880px, calc(100vw - 24px)); overflow-wrap: anywhere; }
+  #company-panel > form[method=dialog] { float: right; margin-left: 8px; }
+  #company-panel h2 { margin: 0 0 6px; }
+  #company-panel h3 { margin: 0 0 8px; }
+  #company-panel .btns { flex-wrap: wrap; }
+  #company-panel details { margin: 10px 0; }
+  #company-panel summary { cursor: pointer; color: var(--accent); }
+  #company-status:empty { display: none; }
+  #company-status { position: sticky; bottom: 0; z-index: 1; padding: 8px; margin-top: 8px;
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; }
+  .company-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+  .company-section { border: 1px solid var(--border); border-radius: 8px; padding: 12px; min-width: 0; }
+  #company-role-form[hidden], #company-message-form[hidden], #bb-controls[hidden] { display: none; }
+  .company-tree { margin: 4px 0; padding-left: 12px; list-style: none; }
+  .company-tree li { border-left: 1px solid var(--border); padding: 4px 0 4px 7px; }
+  .company-tree button { text-align: left; white-space: normal; max-width: 100%; overflow-wrap: anywhere; }
+  .company-tree [aria-current=true] { border-color: var(--accent); }
+  .company-tree .empty { display: block; padding: 2px 0; }
+  #company-history { padding-left: 24px; }
+  #company-history li { margin-bottom: 8px; }
+  #company-history p { white-space: pre-wrap; margin: 2px 0 0; }
+  @media (max-width: 640px) { .company-grid { grid-template-columns: minmax(0, 1fr); } }
   @media (max-width: 500px) { #model-panel .model-grid { grid-template-columns: 1fr; } }
 
   /* 额度面板（M44）：点顶栏额度打开 */
@@ -336,7 +358,7 @@
   <pre id="agent-create-preview" aria-live="polite">填写后可预览。</pre>
   <div class="btns"><button id="agent-preview-btn" onclick="previewAgent()">预览</button>
     <button id="agent-create-save" class="primary" onclick="saveAgentDraft()" disabled>保存草稿</button>
-    <button onclick="document.getElementById('agent-create-panel').close()">关闭</button></div>
+    <button id="agent-create-cancel" onclick="document.getElementById('agent-create-panel').close()">关闭</button></div>
   <output id="agent-create-message" class="empty" aria-live="polite"></output>
 </dialog>
 
@@ -377,6 +399,61 @@
     <button class="primary" type="button" id="coord-approve-plan">批准此版并执行</button>
     <output id="coord-plan-message" class="empty" aria-live="polite"></output>
   </div>
+</dialog>
+
+<dialog id="company-panel" class="agent-panel" aria-labelledby="company-panel-title">
+  <form method="dialog"><button>关闭</button></form>
+  <h2 id="company-panel-title">公司与组织</h2>
+  <p class="empty">职位决定组织内能联系谁，不改变 Agent 的人设、自治、工具或审批权限。</p>
+  <label><span>查看公司</span><select id="company-pick" onchange="switchCompany(this.value)"></select></label>
+  <button type="button" id="company-refresh" onclick="reloadCompanyPanel()">刷新</button>
+  <details id="company-create-box">
+    <summary>新建公司</summary>
+    <form id="company-create-form" class="coord-form" onsubmit="createCompany(event)">
+      <label>公司名称<input name="name" maxlength="80" required></label>
+      <label>组织架构模板<select name="template" id="company-template" onchange="drawCompanyTemplate()" required></select></label>
+      <div id="company-template-preview" class="empty"></div>
+      <button type="submit" class="primary">创建公司</button>
+    </form>
+  </details>
+  <div id="company-workspace" hidden>
+    <div class="company-grid">
+      <section class="company-section">
+        <h3>组织结构</h3>
+        <p id="company-overview" class="empty"></p>
+        <button type="button" onclick="newCompanyPosition()">添加职位</button>
+        <div id="company-tree"></div>
+      </section>
+      <section class="company-section">
+        <h3 id="company-role-heading">职位与任职</h3>
+        <form id="company-role-form" class="coord-form" onsubmit="saveCompanyPosition(event)" hidden>
+          <label>职位名称<input name="title" maxlength="64" required></label>
+          <label>职责<textarea name="responsibility" rows="2" maxlength="400" placeholder="选填，不授予权限"></textarea></label>
+          <label>直属上级<select name="manager_id"></select></label>
+          <label>任职 Agent<select name="agent_id"></select></label>
+          <p id="company-role-routes" class="empty"></p>
+          <div class="btns">
+            <button type="submit" class="primary">保存职位</button>
+            <button type="button" id="company-role-new-agent" onclick="createCompanyAgent()" hidden>新建 Agent 并任命</button>
+            <button type="button" id="company-role-remove" onclick="removeCompanyPosition(this)" hidden>删除空缺职位</button>
+          </div>
+        </form>
+      </section>
+    </div>
+    <details>
+      <summary>组织消息</summary>
+      <p class="empty">只能向直属上级汇报、向直属下级指导、与同一上级的同事协作。代发会标记为主人；消息不会启动任务。</p>
+      <p id="company-message-empty" class="empty" hidden>暂无已任职且可通信的职位。</p>
+      <form id="company-message-form" class="coord-form" onsubmit="sendCompanyMessage(event)" hidden>
+        <label>代发职位<select name="from_position_id" onchange="drawCompanyRecipients()" required></select></label>
+        <label>收件职位及关系<select name="to_position_id" required></select></label>
+        <label>消息<textarea name="text" rows="2" maxlength="1000" required></textarea></label>
+        <button type="submit">发送组织消息</button>
+      </form>
+      <ol id="company-history" aria-label="最近组织消息"></ol>
+    </details>
+  </div>
+  <output id="company-status" class="empty" role="status"></output>
 </dialog>
 
 <main>
@@ -478,6 +555,12 @@
       </details>
       <div id="runs-err" class="empty" role="status"></div>
       <div id="run-list"></div>
+    </div>
+
+    <div data-cat="delivery" class="card fleet-scope">
+      <h3>公司与组织</h3>
+      <p class="empty">创建公司、安排任职，按汇报关系通信。</p>
+      <button type="button" id="company-open" onclick="openCompanies()">管理 / 新建公司</button>
     </div>
 
     <div data-cat="delivery" class="card fleet-scope">
@@ -624,10 +707,11 @@
     <div data-cat="ov" class="card">
       <h3>Agent 黑板（相互协作）</h3>
       <div id="blackboard" class="empty">（暂无帖子——它们会互相求助与分享）</div>
-      <div class="kv">
+      <div class="kv" id="bb-controls">
         <input type="text" id="bb-input" placeholder="以当前 agent 名义发帖…">
         <button onclick="postBB()">发帖</button>
       </div>
+      <button type="button" id="bb-company" onclick="openCompanies()" hidden>打开公司与组织</button>
     </div>
 
     <div data-cat="tech" class="card tech">
@@ -1591,11 +1675,17 @@ async function archiveAgent(id) {
   location.reload();
 }
 let draftAgent = null;
-function showCreateAgent() {
+let draftAppointment = null;
+function showCreateAgent(appointment = null) {
+  draftAppointment = appointment;
   const template = document.getElementById("agent-create-template");
   template.replaceChildren(new Option("自由描述 / 通用人设", ""),
     ...PERSONA_PRESETS.map(([name, text]) => new Option(name, text)));
   for (const field of ["name", "persona", "priority"]) document.getElementById(`agent-create-${field}`).value = "";
+  document.getElementById("agent-create-heading").textContent = appointment
+    ? `为「${appointment.position.title}」新建 Agent` : "新增 Agent";
+  document.getElementById("agent-create-save").textContent = appointment ? "保存草稿并任命" : "保存草稿";
+  if (appointment) document.getElementById("agent-create-name").value = [...appointment.position.title].slice(0, 40).join("");
   invalidateAgentPreview();
   document.getElementById("agent-create-panel").showModal();
 }
@@ -1614,6 +1704,7 @@ function invalidateAgentPreview() {
   document.getElementById("agent-create-message").textContent = "";
 }
 async function previewAgent() {
+  if (document.getElementById("agent-create-cancel").disabled) return;
   const input = readDraftAgent(), button = document.getElementById("agent-preview-btn");
   const message = document.getElementById("agent-create-message");
   invalidateAgentPreview();
@@ -1638,18 +1729,23 @@ async function previewAgent() {
   finally { button.disabled = false; }
 }
 async function saveAgentDraft() {
-  if (!draftAgent || JSON.stringify(draftAgent) !== JSON.stringify(readDraftAgent())) return;
   const save = document.getElementById("agent-create-save");
-  save.disabled = true;
+  const cancel = document.getElementById("agent-create-cancel"), appointment = draftAppointment;
+  if (cancel.disabled || !draftAgent || JSON.stringify(draftAgent) !== JSON.stringify(readDraftAgent())) return;
+  save.disabled = cancel.disabled = true;
   try {
-    await api("POST", "/api/agents", draftAgent);
+    const {created} = await api("POST", "/api/agents", appointment ? {...draftAgent, select: false} : draftAgent);
     draftAgent = null;
-    location.reload();
+    if (appointment) await appointCreatedDraft(appointment, created);
+    else location.reload();
   } catch (e) {
     document.getElementById("agent-create-message").textContent = "创建失败：" + e.message;
     save.disabled = !draftAgent;
-  }
+  } finally { cancel.disabled = false; }
 }
+document.getElementById("agent-create-panel").oncancel = event => {
+  if (document.getElementById("agent-create-cancel").disabled) event.preventDefault();
+};
 let autonomyEditor = null;
 function renderAutonomy(result) {
   const policy = result.autonomy, scope = result.scope;
@@ -1802,6 +1898,12 @@ async function refreshBlackboard() {
   try {
     const r = await api("GET", "/api/blackboard");
     const box = document.getElementById("blackboard");
+    document.getElementById("bb-controls").hidden = !!r.company_bound;
+    document.getElementById("bb-company").hidden = !r.company_bound;
+    if (r.company_bound) {
+      box.textContent = "该 Agent 已任职，使用定向组织消息，不使用公共黑板。";
+      return;
+    }
     box.innerHTML = r.notes.length ? "" : "（暂无帖子——它们会互相求助与分享）";
     for (const n of r.notes.slice(0, 6)) {
       const d = document.createElement("div");
@@ -1821,8 +1923,8 @@ async function setQuota() {
 async function postBB() {
   const text = document.getElementById("bb-input").value.trim();
   if (!text) return;
-  document.getElementById("bb-input").value = "";
   await api("POST", "/api/blackboard", { text });
+  document.getElementById("bb-input").value = "";
   refreshBlackboard();
 }
 async function refreshProjectsRoot() {
@@ -2388,6 +2490,266 @@ async function refreshTrackedTask() {
 function selectOptions(element, rows, selected) {
   element.replaceChildren(...rows.map(([value, label]) => new Option(label, value, false, selected.includes(value))));
 }
+
+const COMPANY_RELATIONS = {report: "汇报", guidance: "指导", coordination: "协作"};
+let companyTemplates = [], companyState = null, companyPosition = null, companyPending = false;
+
+function companyStatus(message) {
+  document.getElementById("company-status").textContent = message;
+}
+function companyError(error) {
+  return ({stale_company_revision: "组织已变更。请刷新后核对，本次未保存。",
+    agent_already_appointed: "这个 Agent 已在其他职位任职，请先解除原任职。",
+    no_such_agent: "该 Agent 不存在或已归档，请刷新名册。",
+    no_such_position: "该职位已不存在，请刷新组织结构。",
+    invalid_manager_id: "请选择本公司有效的直属上级。",
+    organization_cycle: "不能向自己或自己的下属汇报。",
+    company_position_limit: "一家公司最多可有 40 个职位。",
+    position_not_removable: "只能删除无下属、无在任 Agent 的非根职位。",
+    position_vacant: "发送方或收件职位已空缺，请刷新后重选。",
+    unreachable_position: "当前组织结构不允许这条通信路线。"})[error.message] || error.message;
+}
+async function companyAction(button, action) {
+  if (companyPending) return;
+  companyPending = true;
+  const disabled = button.disabled;
+  button.disabled = true;
+  companyStatus("");
+  try { await action(); }
+  catch (error) { companyStatus(`操作失败：${companyError(error)}`); }
+  finally { companyPending = false; button.disabled = disabled; }
+}
+async function companyAfterWrite(message, reload) {
+  companyStatus(message);
+  try { await reload(); }
+  catch (error) { companyStatus(`${message} 刷新失败：${companyError(error)}`); }
+}
+function drawCompanyTree(positions, editable = false) {
+  const list = document.createElement("ul");
+  list.className = "company-tree";
+  function branch(managerId, depth) {
+    for (const position of positions.filter(role => role.manager_id === managerId)) {
+      const item = document.createElement("li");
+      item.style.marginInlineStart = `${Math.min(depth, 5) * 12}px`;
+      if (editable) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = position.title;
+        button.dataset.positionId = position.id;
+        button.onclick = () => {
+          if (companyPending) return;
+          editCompanyPosition(position);
+          if (matchMedia("(max-width: 640px)").matches) document.getElementById("company-role-heading").scrollIntoView({block: "start"});
+        };
+        const detail = document.createElement("small");
+        detail.className = "empty";
+        const occupant = position.agent_id ? `${position.agent_name} · ${position.agent_id}`
+          : position.archived_agent_id ? `空缺 · 原任已归档 (${position.archived_agent_id})` : "空缺";
+        const manager = positions.find(role => role.id === managerId);
+        detail.textContent = `${manager ? "向「" + manager.title + "」汇报 · " : "根职位 · "}${occupant}`;
+        item.append(button, detail);
+      } else item.textContent = position.title;
+      list.appendChild(item);
+      branch(position.id, depth + 1);
+    }
+  }
+  branch(null, 0);
+  return list;
+}
+function drawCompanyTemplate() {
+  const templateId = document.getElementById("company-template").value;
+  const template = companyTemplates.find(item => item.id === templateId);
+  const preview = document.getElementById("company-template-preview");
+  if (template) preview.replaceChildren(template.description, drawCompanyTree(template.positions));
+}
+async function refreshCompanyPanel(preferred = companyState?.id, positionId = companyPosition?.id) {
+  const {companies, templates} = await api("GET", "/api/companies");
+  const picker = document.getElementById("company-pick"), templateSelect = document.getElementById("company-template");
+  companyTemplates = templates;
+  selectOptions(templateSelect, templates.map(template => [template.id, template.label]), [templateSelect.value]);
+  drawCompanyTemplate();
+  const rows = companies.map(company => [company.id, company.name]);
+  const companyId = companies.some(company => company.id === preferred) ? preferred : companies[0]?.id || "";
+  selectOptions(picker, rows.length ? rows : [["", "暂无公司"]], [companyId]);
+  picker.disabled = !rows.length;
+  if (!companyId) document.getElementById("company-create-box").open = true;
+  await loadCompany(companyId, positionId);
+}
+async function openCompanies() {
+  const dialog = document.getElementById("company-panel");
+  if (dialog.open || companyPending) return;
+  dialog.showModal();
+  await reloadCompanyPanel();
+}
+async function reloadCompanyPanel() {
+  await companyAction(document.getElementById("company-refresh"), () => refreshCompanyPanel());
+}
+async function switchCompany(companyId) {
+  const picker = document.getElementById("company-pick");
+  if (companyPending) { picker.value = companyState?.id || ""; return; }
+  await companyAction(picker, async () => {
+    try { await loadCompany(companyId); }
+    catch (error) { picker.value = companyState?.id || ""; throw error; }
+  });
+}
+async function loadCompany(companyId, positionId) {
+  const next = companyId ? await api("GET", `/api/companies/${companyId}`) : null;
+  companyState = next;
+  document.getElementById("company-workspace").hidden = !next;
+  if (!next) { companyPosition = null; return; }
+  const {positions} = next;
+  const template = companyTemplates.find(item => item.id === next.template);
+  document.getElementById("company-overview").textContent =
+    `${next.name} · 基于${template?.label || "自定义"} · ${positions.filter(role => role.agent_id).length}/${positions.length} 个职位已任命`;
+  document.getElementById("company-tree").replaceChildren(drawCompanyTree(positions, true));
+  editCompanyPosition(positions.find(role => role.id === positionId) || positions[0]);
+  drawCompanyMessages();
+}
+function editCompanyPosition(position, parentId) {
+  if (!companyState) return;
+  companyPosition = position;
+  const positions = companyState.positions, root = position?.manager_id === null;
+  const form = document.getElementById("company-role-form");
+  form.hidden = false;
+  document.getElementById("company-role-heading").textContent = position ? "编辑职位与任职" : "添加职位";
+  form.elements.title.value = position?.title || "";
+  form.elements.responsibility.value = position?.responsibility || "";
+  const eligibleManagers = positions.filter(candidate => {
+    for (let ancestor = candidate; ancestor; ancestor = positions.find(role => role.id === ancestor.manager_id)) {
+      if (ancestor.id === position?.id) return false;
+    }
+    return true;
+  });
+  selectOptions(form.elements.manager_id, root ? [["", "根职位（无上级）"]]
+    : eligibleManagers.map(role => [role.id, role.title]), [position?.manager_id || parentId || ""]);
+  form.elements.manager_id.disabled = root;
+  const agents = [...companyState.available_agents];
+  if (position?.agent_id) agents.unshift({id: position.agent_id, name: position.agent_name});
+  selectOptions(form.elements.agent_id, [["", "空缺 / 解除任职"], ...agents.map(agent => [agent.id, `${agent.name} (${agent.id})`])],
+    [position?.agent_id || ""]);
+  document.getElementById("company-role-new-agent").hidden = !position || !!position.agent_id;
+  document.getElementById("company-role-remove").hidden = !position || root || !!position.agent_id
+    || positions.some(role => role.manager_id === position.id);
+  const routes = position?.routes || [];
+  document.getElementById("company-role-routes").textContent = routes.length
+    ? "可联系：" + routes.map(target => `${target.title}（${COMPANY_RELATIONS[target.kind]}）`).join("、")
+    : position ? "该职位暂无可联系的在任同事。" : "先保存职位，再为它新建 Agent。";
+  for (const button of document.querySelectorAll("#company-tree [data-position-id]")) {
+    button.setAttribute("aria-current", String(button.dataset.positionId === position?.id));
+  }
+}
+function newCompanyPosition() {
+  if (companyPending || !companyState) return;
+  editCompanyPosition(null, companyPosition?.id);
+  document.getElementById("company-role-form").elements.title.focus();
+}
+async function createCompany(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  await companyAction(event.submitter, async () => {
+    const result = await api("POST", "/api/companies", Object.fromEntries(new FormData(form)), newRequestKey());
+    form.elements.name.value = "";
+    document.getElementById("company-create-box").open = false;
+    await companyAfterWrite(`已创建「${result.name}」。请选择职位关联 Agent。`, () => refreshCompanyPanel(result.id));
+  });
+}
+async function saveCompanyPosition(event) {
+  event.preventDefault();
+  const fields = event.currentTarget.elements;
+  if (!companyState) return;
+  const {id, revision} = companyState, positionId = companyPosition?.id;
+  const body = {title: fields.title.value, responsibility: fields.responsibility.value,
+    manager_id: fields.manager_id.value || null, agent_id: fields.agent_id.value || null, revision};
+  await companyAction(event.submitter, async () => {
+    const result = await api("POST", `/api/companies/${id}/positions${positionId ? "/" + positionId : ""}`, body);
+    await companyAfterWrite("已保存职位与任职。组织通信按当前关系生效。", async () => {
+      await loadCompany(id, result.id);
+      await refreshBlackboard();
+    });
+  });
+}
+async function removeCompanyPosition(button) {
+  if (!companyState || !companyPosition || companyPending || !confirm(`删除空缺职位「${companyPosition.title}」？历史消息将保留。`)) return;
+  const {id, revision} = companyState, positionId = companyPosition.id;
+  await companyAction(button, async () => {
+    await api("POST", `/api/companies/${id}/positions/${positionId}/remove`, {revision});
+    await companyAfterWrite("已删除空缺职位，历史消息仍保留。", () => loadCompany(id));
+  });
+}
+function createCompanyAgent() {
+  if (!companyPending && companyState && companyPosition && !companyPosition.agent_id) {
+    showCreateAgent({id: companyState.id, revision: companyState.revision, position: companyPosition});
+  }
+}
+async function appointCreatedDraft(appointment, created) {
+  const {id, revision, position} = appointment;
+  const {title, manager_id, responsibility} = position;
+  let message;
+  try {
+    await api("POST", `/api/companies/${id}/positions/${position.id}`, {title, manager_id, responsibility, revision, agent_id: created.id});
+    message = `已任命「${created.name}」为「${title}」；Agent 仍是未启用自治的草稿。`;
+  } catch (error) {
+    message = `草稿「${created.name}」(${created.id}) 已创建，任命未确认：${companyError(error)} 可将该草稿作为现有 Agent 关联。`;
+  }
+  try {
+    await loadCompany(id, position.id);
+    await refreshFleet();
+    await refreshBlackboard();
+  } catch (error) { message += ` 刷新失败：${companyError(error)}`; }
+  document.getElementById("agent-create-panel").close();
+  companyStatus(message);
+}
+function drawCompanyMessages() {
+  const form = document.getElementById("company-message-form");
+  const senders = companyState.positions.filter(role => role.routes.length);
+  selectOptions(form.elements.from_position_id, senders.map(role => [role.id, `${role.title} · ${role.agent_name}`]),
+    [form.elements.from_position_id.value]);
+  form.hidden = !senders.length;
+  document.getElementById("company-message-empty").hidden = !!senders.length;
+  drawCompanyRecipients();
+  drawCompanyHistory(companyState.messages);
+}
+function drawCompanyRecipients() {
+  if (!companyState) return;
+  const form = document.getElementById("company-message-form");
+  const sender = companyState.positions.find(role => role.id === form.elements.from_position_id.value);
+  const targets = (sender?.routes || []).map(role => [role.id, `${role.title} · ${role.agent_name}（${COMPANY_RELATIONS[role.kind]}）`]);
+  selectOptions(form.elements.to_position_id, targets, [form.elements.to_position_id.value]);
+}
+function drawCompanyHistory(messages) {
+  const list = document.getElementById("company-history");
+  list.replaceChildren();
+  if (!messages.length) {
+    const item = document.createElement("li");
+    item.textContent = "还没有组织消息。";
+    list.appendChild(item);
+  }
+  for (const message of messages) {
+    const item = document.createElement("li"), heading = document.createElement("span"), body = document.createElement("p");
+    heading.className = "empty";
+    heading.textContent = `${fmtTime(message.created_at)} · ${message.from_title} → ${message.to_title} · ${COMPANY_RELATIONS[message.kind]}`
+      + (message.source === "owner" ? " · 主人代发" : "");
+    body.textContent = message.text;
+    item.append(heading, body);
+    list.appendChild(item);
+  }
+}
+async function sendCompanyMessage(event) {
+  event.preventDefault();
+  if (!companyState) return;
+  const form = event.currentTarget, {id, revision} = companyState;
+  const body = {...Object.fromEntries(new FormData(form)), revision};
+  await companyAction(event.submitter, async () => {
+    const receipt = await api("POST", `/api/companies/${id}/messages`, body);
+    form.elements.text.value = "";
+    companyStatus(`已发送「${COMPANY_RELATIONS[receipt.kind]}」消息，不会自动启动任务。`);
+    try {
+      const latest = await api("GET", `/api/companies/${id}`);
+      drawCompanyHistory(latest.messages);
+    } catch (error) { companyStatus(`消息已发送；记录刷新失败：${companyError(error)}`); }
+  });
+}
+
 async function selectDelivery(projectId) {
   chosenProject = projectId;
   document.getElementById("work-requires").replaceChildren();
@@ -2497,7 +2859,7 @@ async function loop() {
     for (const [name, fn] of [["state", refreshState], ["proposals", refreshProposals],
       ["audit", refreshAudit], ["rules", refreshRules], ["evolution", refreshEvolution],
       ["scratch", refreshScratch], ["memory", refreshMemory], ["goaltree", refreshGoalTree],
-      ["world", refreshWorld], ["identity", refreshIdentity], ["activity", refreshActivity],
+      ["world", refreshWorld], ["identity", refreshIdentity], ["activity", refreshActivity], ["blackboard", refreshBlackboard],
       ["buckets", refreshBuckets]]) {
       if (!document.getElementById("agent-select").value) break;
       await SAFE(name, fn)();

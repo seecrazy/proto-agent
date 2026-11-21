@@ -64,6 +64,8 @@ _PROPOSAL_RE = re.compile(r"^/api/proposals/([0-9a-f]+)/(accept|deny)$")
 _RUN_RE = re.compile(r"^/api/runs/([0-9a-f]{32})(?:/(cancel|resume|reconcile))?$")
 _PROJECT_RE = re.compile(r"^/api/projects/([0-9a-f]{32})(/work)?$")
 _WORK_RE = re.compile(r"^/api/projects/([0-9a-f]{32})/work/([0-9a-f]{32})/(retry|drop|artifacts/([1-9][0-9]{0,8}))$")
+_COMPANY_RE = re.compile(r"/api/companies/([0-9a-f]{32})(?:/(positions|messages))?")
+_COMPANY_POSITION_RE = re.compile(r"/api/companies/([0-9a-f]{32})/positions/([0-9a-f]{32})(/remove)?")
 
 _ACTIVITY_QUESTION = re.compile(
     r"(?:你)?(?:现在|目前)?在(?:干嘛|干吗|干什么|干啥|做什么|做啥|忙什么)[呢啊呀]?[?？]*"
@@ -191,6 +193,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(200, {"awake": server.keeper.is_active, "available": server.keeper.available})
         if path == "/api/projects" or path.startswith("/api/projects/"):
             return self._project_routes(method, path, server.manager.runs.projects)
+        if path == "/api/companies" or path.startswith("/api/companies/"):
+            return self._company_routes(method, path, server.manager.runs.companies)
         agent_id = self.headers.get("X-Proto-Agent") or server.manager.current_id()
         if (path in ("/api/runs", "/api/fleet-budget") or path.startswith(("/api/jobs/", "/api/runs/"))
                 or (method == "POST" and (path in ("/api/task", "/api/task/plan", "/api/tick")
@@ -385,17 +389,51 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(200, projects.change(project_id, work_id, self._body().get("revision"), action))
         raise _HTTPError(404, "not_found")
 
+    def _company_routes(self, method, path, directory):
+        if path == "/api/companies":
+            if method == "GET":
+                return self._json(200, {"companies": directory.list(), "templates": directory.templates()})
+            body = self._body()
+            if set(body) - {"name", "template"}:
+                raise _HTTPError(400, "invalid_company_fields")
+            return self._json(201, directory.create(body.get("name"), body.get("template", "custom"),
+                                                    key=self.headers.get("Idempotency-Key")))
+        match = _COMPANY_RE.fullmatch(path)
+        if match:
+            company_id, action = match.groups()
+            if method == "GET" and not action:
+                return self._json(200, directory.view(company_id))
+            if method == "POST" and action == "positions":
+                return self._json(201, directory.save_position(company_id, None, self._body()))
+            if method == "POST" and action == "messages":
+                return self._json(201, directory.send_as_owner(company_id, self._body()))
+        position = _COMPANY_POSITION_RE.fullmatch(path)
+        if method == "POST" and position:
+            company_id, position_id, remove = position.groups()
+            body = self._body()
+            if not remove:
+                return self._json(200, directory.save_position(company_id, position_id, body))
+            if set(body) != {"revision"}:
+                raise _HTTPError(400, "invalid_position_fields")
+            return self._json(200, directory.remove_position(company_id, position_id, body["revision"]))
+        raise _HTTPError(404, "not_found")
+
     def _agent_creation(self, path, manager):
         fields = self._body()
+        preview = path.endswith("/preview")
+        select = fields.pop("select", True) if not preview else True
         if "name" not in fields or set(fields) - {"name", "persona", "priority", "mode"}:
             raise _HTTPError(400, "invalid_agent_fields")
+        if type(select) is not bool:
+            raise _HTTPError(400, "invalid_select")
         try:
-            if path.endswith("/preview"):
+            if preview:
                 return self._json(200, {"preview": manager.preview(**fields)})
             info = manager.create(**fields)
         except ValueError as exc:
             raise _HTTPError(400, str(exc)) from exc
-        manager.set_current(info["id"])
+        if select:
+            manager.set_current(info["id"])
         return self._json(200, {"created": info, "agents": manager.list()})
 
     def _bulk_agents(self, manager):
@@ -659,7 +697,13 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/activity/live" and method == "GET":
             return self._json(200, server.manager.runs.activity.snapshot(agent))
         if path == "/api/blackboard" and method == "GET":
-            return self._json(200, {"notes": agent.read_blackboard()})
+            try:
+                notes = agent.read_blackboard()
+            except CoordinationError as exc:
+                if str(exc) != "company_channel_required":
+                    raise
+                return self._json(200, {"notes": [], "company_bound": True})
+            return self._json(200, {"notes": notes})
         if path == "/api/blackboard" and method == "POST":
             nid = agent.post_to_blackboard(self._body().get("text", ""))
             return self._json(200, {"id": nid})

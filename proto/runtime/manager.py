@@ -195,6 +195,9 @@ class AgentManager:
         reg = self._load_registry()
         return next((a for a in reg["agents"] if a["id"] == agent_id), None)
 
+    def member_names(self) -> Dict[str, str]:
+        return {row["id"]: row["name"] for row in self._load_registry()["agents"]}
+
     def rename(self, agent_id: str, name: str) -> Optional[dict]:
         if not isinstance(name, str):
             raise ValueError("invalid_agent_name")
@@ -394,12 +397,12 @@ class AgentManager:
             return lock
 
     def _fleet_status_for(self, agent_id: str):
-        """M47: 给每个 agent 一份'其他成员在干什么'的只读快照（闭包惰性求值）。"""
+        """给每个 Agent 一份可联系成员的只读活动快照。"""
         def snapshot() -> list:
+            allowed = self.runs.companies.status_scope(agent_id) - {agent_id}
+            members = [row for row in self._load_registry()["agents"] if row["id"] in allowed]
             rows = []
-            for row in self.list():
-                if row.get("id") == agent_id:
-                    continue
+            for row in self._list_members(members):
                 act = row.get("activity") or {}
                 rows.append({
                     "name": row.get("name") or row.get("id"),

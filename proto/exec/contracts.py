@@ -47,6 +47,12 @@ _BUILTINS = {
         "text": {"type": "string", "minLength": 1},
         "kind": {"type": "string", "enum": ["help", "share", "report"], "default": "report"}}, ["text"]),
     "fleet_status": object_schema(),
+    "company_context": object_schema({
+        "offset": {"type": "integer", "minimum": 0, "maximum": 39, "default": 0}}),
+    "company_inbox": object_schema(),
+    "company_send": object_schema({
+        "position_id": {"type": "string", "minLength": 32, "maxLength": 32},
+        "text": {"type": "string", "minLength": 1, "maxLength": 1000}}, ["position_id", "text"]),
     "delegate_coding": object_schema({"task": {"type": "string", "minLength": 1}}, ["task"]),
 }
 _KEYWORDS = {"type", "description", "properties", "required", "additionalProperties",

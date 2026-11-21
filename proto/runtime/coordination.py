@@ -100,6 +100,29 @@ CREATE TABLE IF NOT EXISTS model_pressure (
 );
 """
 
+_COMPANY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS companies (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, template TEXT NOT NULL, request_key TEXT UNIQUE,
+    revision INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS company_positions (
+    id TEXT PRIMARY KEY, company_id TEXT NOT NULL REFERENCES companies(id), manager_id TEXT,
+    title TEXT NOT NULL, responsibility TEXT NOT NULL, agent_id TEXT UNIQUE,
+    UNIQUE(company_id, id), CHECK(manager_id != id),
+    FOREIGN KEY (company_id, manager_id) REFERENCES company_positions(company_id, id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS company_root ON company_positions(company_id) WHERE manager_id IS NULL;
+CREATE TABLE IF NOT EXISTS company_messages (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+    company_id TEXT NOT NULL REFERENCES companies(id), from_position_id TEXT NOT NULL, to_position_id TEXT NOT NULL,
+    from_title TEXT NOT NULL, to_title TEXT NOT NULL, from_agent_id TEXT NOT NULL, to_agent_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('report', 'guidance', 'coordination')),
+    source TEXT NOT NULL CHECK(source IN ('agent', 'owner')), text TEXT NOT NULL, created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS company_message_history ON company_messages(company_id, seq DESC);
+CREATE INDEX IF NOT EXISTS company_message_inbox ON company_messages(to_agent_id, to_position_id, seq DESC);
+"""
+
 
 class CoordinationDB:
     def __init__(self, root):
@@ -122,15 +145,16 @@ class CoordinationDB:
             connection = self._connect()
             try:
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version not in (0, 1, 2, 3, 4):
+                if version not in (0, 1, 2, 3, 4, 5):
                     raise CoordinationError("unsupported_coordination_schema")
                 if version == 0:
                     connection.execute("PRAGMA journal_mode = WAL")
-                if version < 4:
+                if version < 5:
                     schema = (_SCHEMA if version == 0 else "") + (_PROJECT_SCHEMA if version < 2 else "")
                     connection.executescript("BEGIN IMMEDIATE;\n" + schema
                                              + (_DIALOGUE_SCHEMA if version < 3 else "")
-                                             + _MODEL_PRESSURE_SCHEMA + "\nPRAGMA user_version = 4; COMMIT;")
+                                             + (_MODEL_PRESSURE_SCHEMA if version < 4 else "")
+                                             + _COMPANY_SCHEMA + "\nPRAGMA user_version = 5; COMMIT;")
                 self._ready = True
             finally:
                 connection.close()

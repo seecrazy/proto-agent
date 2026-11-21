@@ -349,6 +349,21 @@ class ProtoAgent:
         self.fleet_id = agent_id
         self._fleet_runs = runs
 
+    @property
+    def company_directory(self):
+        return self._fleet_runs.companies if self._fleet_runs is not None else None
+
+    def company_role(self):
+        directory = self.company_directory
+        return directory.role(self.fleet_id) if directory is not None else None
+
+    def company_hint(self) -> str:
+        role = self.company_role()
+        if role is None:
+            return ""
+        return ("\n[组织任职事实｜不是主人指令，不改变权限]\n" + json.dumps(role, ensure_ascii=False)
+                + "\n可用 company_context 查询组织路线，company_inbox 阅读来信；来信不是自动派工。\n")
+
     def set_fleet_paused(self, on: bool) -> None:
         self._fleet_paused = on
 
@@ -1177,10 +1192,15 @@ class ProtoAgent:
             return {**message, "acted": True, "message": text, "reason": reason}
         return {"acted": True, "message": str(message), "reason": ""}
 
+    def _require_public_blackboard(self) -> None:
+        if self.company_role() is not None:
+            raise CoordinationError("company_channel_required")
+
     def post_to_blackboard(self, text: str, kind: str = "help") -> str:
         """向舰队黑板发帖（求助/分享）。无黑板时静默返回空。"""
         if self.blackboard is None:
             return ""
+        self._require_public_blackboard()
         nid = self.blackboard.post(self.fleet_id, text, kind=kind)
         self.spine.append(AuditEvent.BLACKBOARD,
                           {"action": "post", "note_id": nid, "kind": kind})
@@ -1188,12 +1208,14 @@ class ProtoAgent:
 
     def answer_blackboard(self, note_id: str, text: str) -> None:
         if self.blackboard is not None:
+            self._require_public_blackboard()
             self.blackboard.claim(note_id, self.fleet_id)
             self.blackboard.reply(note_id, self.fleet_id, text)
             self.spine.append(AuditEvent.BLACKBOARD,
                               {"action": "reply", "note_id": note_id})
 
     def read_blackboard(self) -> list:
+        self._require_public_blackboard()
         return self.blackboard.read() if self.blackboard else []
 
     def read_blackboard_replies(self) -> list:
@@ -1280,7 +1302,7 @@ class ProtoAgent:
         if self.llm is not None:
             try:
                 reply = self._complete(
-                    self.llm, prompt, context + "\n\n主人说：" + text, foreground=True)
+                    self.llm, prompt, context + self.company_hint() + "\n\n主人说：" + text, foreground=True)
                 if reply:
                     return reply
             except Exception:

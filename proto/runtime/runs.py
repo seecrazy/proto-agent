@@ -13,6 +13,7 @@ from proto.exec.router import VARIANT_ID
 from proto.exec.sessions import SESSION_SCHEMA_VERSION, TERMINAL_STATES
 from proto.llm.breaker import TRANSIENT_MODEL_REASONS
 from proto.runtime.activity import RunActivity
+from proto.runtime.companies import CompanyDirectory
 from proto.runtime.coordination import CoordinationDB, CoordinationError, encode
 from proto.runtime.dialogue import Dialogue
 from proto.runtime.fleet_budget import FleetBudget
@@ -90,6 +91,7 @@ class RunCoordinator:
         self.dialogue = Dialogue(self.database)
         self.budget = FleetBudget(self.database)
         self.model_pressure = ModelPressure(self.database)
+        self.companies = CompanyDirectory(manager, self.database)
         self.projects = ProjectDelivery(self)
         self.task_plans = TaskPlans(self)
         self._instance = InstanceLock(self.database.directory)
