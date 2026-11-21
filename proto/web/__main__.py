@@ -78,6 +78,20 @@ def resolve_token(arg_token: str, data_dir: Path) -> str:
     return strong
 
 
+def _open_fleet(data_root: Path, llm, fast_llm, models):
+    from proto.runtime.manager import AgentManager
+
+    legacy = (data_root / "owner.key").is_file()
+    root = data_root / ".fleet" if legacy else data_root
+    manager = AgentManager(root=root, llm=llm, fast_llm=fast_llm, models=models)
+    if not manager.initialized:
+        if legacy:
+            manager.adopt(ProtoAgent(data_dir=data_root, llm=llm, fast_llm=fast_llm), name="默认")
+        else:
+            manager.create(name="主 Agent")
+    return manager
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="proto.web", description="PROTO Web 控制台")
     parser.add_argument("--port", type=int, default=8420)
@@ -92,9 +106,9 @@ def main() -> int:
     # 部署配置绑定数据目录加载（与启动目录无关——修"部署后仍离线"）
     load_default_env(data_dir=args.data_dir)
 
-    from proto.runtime.manager import AgentManager
     stack = create_llm_stack()
     llm = stack["main"] if stack else None
+    fast_llm = stack["fast"] if stack else None
     data_root = Path(args.data_dir)
     from proto.system.instance_lock import InstanceLock
     instance_lock = InstanceLock(data_root)
@@ -102,20 +116,8 @@ def main() -> int:
         print(f"  数据目录 {data_root} 已有 proto.web 实例在运行；拒绝启动第二个。")
         return 1
     from proto.llm.catalog import ModelCatalog
-    models = ModelCatalog(data_root, llm, stack["fast"] if stack else None)
-    if (data_root / "owner.key").exists():
-        # 旧单 agent 布局：收编为舰队默认成员
-        manager = AgentManager(root=data_root / ".fleet", llm=llm,
-                               fast_llm=stack["fast"] if stack else None, models=models)
-        agent = ProtoAgent(data_dir=data_root, llm=llm,
-                           fast_llm=stack["fast"] if stack else None)
-        manager.adopt(agent, name="默认")
-    else:
-        manager = AgentManager(root=data_root, llm=llm,
-                               fast_llm=stack["fast"] if stack else None, models=models)
-        if not manager.list():
-            manager.create(name="主 Agent")
-        agent = manager.get(manager.current_id())
+    models = ModelCatalog(data_root, llm, fast_llm)
+    manager = _open_fleet(data_root, llm, fast_llm, models)
     from proto.system.keepawake import KeepAwake
     keeper = KeepAwake()
     server = ProtoWebServer(manager=manager, host="127.0.0.1", port=args.port,
@@ -129,7 +131,7 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     url = server.url()
-    llm = agent.llm
+    llm = server.agent.llm if server.agent is not None else llm
     print(f"\n  PROTO Web 控制台已启动")
     print(f"  地址   : {url}")
     print(f"  模型   : {llm.describe() if llm else '离线模式（配置 PROTO_LLM_BASE_URL 启用真实对话）'}")

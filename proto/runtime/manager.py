@@ -3,18 +3,19 @@
 
 一个主人（owner），多个 Agent：各有独立身份（锚定/人设/记忆/目标树/预算），
 共享 LLM 配置。注册表在 root/registry.json；数据在各 agents/<id>/；
-归档不删除（移入 archive/，可恢复）。心跳统一驱动全舰队（暂停者跳过）。
+归档不删除，托管目录移入 archive/，收编目录原地保留。心跳统一驱动全舰队（暂停者跳过）。
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
-import shutil
 import threading
 import time
 import unicodedata
 import uuid
+from contextlib import contextmanager
 from copy import copy
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -49,6 +50,7 @@ class AgentManager:
         self._ops_locks = {}            # M50: per-agent 单写者锁
         self._ops_locks_guard = _th.Lock()
         self._cache: Dict[str, ProtoAgent] = {}
+        self._active_accesses: Dict[str, int] = {}
         self._lock = threading.Lock()
         self._registry_path = self.root / REGISTRY
         self.runs = RunCoordinator(self)
@@ -64,6 +66,10 @@ class AgentManager:
             return self.models
 
     # ---- 注册表 ----
+    @property
+    def initialized(self) -> bool:
+        return self._registry_path.is_file()
+
     def _load_registry(self) -> dict:
         if self._registry_path.exists():
             try:
@@ -95,6 +101,16 @@ class AgentManager:
         except OSError:
             pass
 
+    @staticmethod
+    def _allocate_id(reg: dict, preferred: str = "") -> str:
+        used = {row["id"] for collection in ("agents", "archived") for row in reg.get(collection, [])}
+        if re.fullmatch(r"[A-Za-z0-9_-]+", preferred) and preferred not in used:
+            return preferred
+        while True:
+            candidate = uuid.uuid4().hex[:10]
+            if candidate not in used:
+                return candidate
+
     # ---- 生命周期 ----
     def preview(self, name: str, persona: str = "", priority: str = "", mode: str = "manual") -> dict:
         return self.preview_at(self.root, name, persona, priority, mode)
@@ -122,7 +138,7 @@ class AgentManager:
         draft = self.preview(name, persona, priority, mode)
         with self._lock:
             reg = self._load_registry()
-            info = {"id": uuid.uuid4().hex[:10], "name": draft["name"],
+            info = {"id": self._allocate_id(reg), "name": draft["name"],
                     "created_at": time.time(), "paused": False}
             agent = self._build(info, draft["persona"], AutonomyPolicy(mode=mode))
             if draft["priority"]:
@@ -133,20 +149,22 @@ class AgentManager:
             self._cache[info["id"]] = agent
             return dict(info, autonomy=agent.autonomy_view())
 
-    def adopt(self, agent: ProtoAgent, name: str = "默认") -> dict:
+    def adopt(self, agent: ProtoAgent, name: str = "默认") -> Optional[dict]:
         """收编一个既有 Agent（单 Agent 旧布局兼容，幂等：同一目录只收一次）。"""
         directory = agent.data_dir.resolve()
         with self._lock:
             reg = self._load_registry()
+            if any(self._dir_for(row).resolve() == directory
+                   or (row.get("archive_dir") and (self.root / row["archive_dir"]).resolve() == directory)
+                   for row in reg.get("archived", [])):
+                return None
             existing = next((a for a in reg["agents"]
                              if self._dir_for(a).resolve() == directory), None)
             if existing is not None:
                 agent = self._cache.get(existing["id"], agent)
                 self._cache[existing["id"]] = self._connect(agent, existing)
                 return existing
-            agent_id = directory.name
-            if not re.fullmatch(r"[A-Za-z0-9_-]+", agent_id) or any(row["id"] == agent_id for row in reg["agents"]):
-                agent_id = uuid.uuid4().hex[:10]
+            agent_id = self._allocate_id(reg, directory.name)
             info = {"id": agent_id,
                     "name": name, "created_at": time.time(), "paused": False,
                     "external_dir": str(directory)}
@@ -218,6 +236,21 @@ class AgentManager:
     def agent_for_request(self, agent_id: Optional[str]) -> Optional[ProtoAgent]:
         return self.get(agent_id) if agent_id else self.get(self.current_id())
 
+    @contextmanager
+    def active_access(self, agent: ProtoAgent):
+        agent_id = agent.fleet_id
+        with self._lock:
+            if self._cache.get(agent_id) is not agent:
+                raise CoordinationError("no_such_agent", 404)
+            self._active_accesses[agent_id] = self._active_accesses.get(agent_id, 0) + 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._active_accesses[agent_id] -= 1
+                if not self._active_accesses[agent_id]:
+                    del self._active_accesses[agent_id]
+
     def pause(self, agent_id: str, on: bool = True) -> bool:
         if type(on) is not bool:
             raise ValueError("on_must_be_boolean")
@@ -226,35 +259,86 @@ class AgentManager:
             info = next((row for row in reg["agents"] if row["id"] == agent_id), None)
             if info is None:
                 return False
-            if info.get("paused") is not on:
-                info["paused"] = on
-                self._save_registry(reg)
-            agent = self._cache.get(agent_id)
-            if agent is not None:
-                agent.set_fleet_paused(on)
+            self._set_paused(reg, [info], on)
         self.runs.notify()
         return True
 
+    def pause_all(self, on: bool) -> dict:
+        if type(on) is not bool:
+            raise ValueError("on_must_be_boolean")
+        with self._lock:
+            reg = self._load_registry()
+            rows = reg["agents"]
+            result = {"total": len(rows), "changed": self._set_paused(reg, rows, on)}
+        if result["changed"]:
+            self.runs.notify()
+        return result
+
+    def _set_paused(self, reg: dict, rows: List[dict], on: bool) -> int:
+        changed = 0
+        for info in rows:
+            if bool(info.get("paused")) != on:
+                info["paused"] = on
+                changed += 1
+        if changed:
+            self._save_registry(reg)
+        for info in rows:
+            agent = self._cache.get(info["id"])
+            if agent is not None:
+                agent.set_fleet_paused(on)
+        return changed
+
     def archive(self, agent_id: str) -> bool:
-        """归档（不删除）：数据移入 archive/，可手工恢复。"""
+        return self._try_archive(agent_id) is not None
+
+    def archive_all(self, agent_ids: List[str]) -> dict:
+        targets = self._load_registry()["agents"]
+        if {row["id"] for row in targets} != set(agent_ids):
+            raise CoordinationError("fleet_membership_changed")
+        archived, skipped = [], []
+        for row in targets:
+            try:
+                result = self._try_archive(row["id"])
+                if result is not None:
+                    archived.append(result)
+                    continue
+                error = "no_such_agent"
+            except CoordinationError as exc:
+                error = str(exc)
+            except OSError:
+                logging.exception("Could not save archive registration: %s", row["id"])
+                error = "archive_write_failed"
+            skipped.append({"id": row["id"], "name": row["name"], "error": error})
+        return {"total": len(targets), "archived": archived, "skipped": skipped}
+
+    def _try_archive(self, agent_id: str) -> Optional[dict]:
         lock = self.ops_lock(agent_id)
         if not lock.acquire(blocking=False):
             raise CoordinationError("agent_busy")
         try:
-            return self._archive(agent_id)
+            result = self._archive(agent_id)
         finally:
             lock.release()
+        if result is not None:
+            self.runs.notify()
+        return result
 
-    def _archive(self, agent_id: str) -> bool:
+    def _archive(self, agent_id: str) -> Optional[dict]:
         with self._lock:
             reg = self._load_registry()
             info = next((a for a in reg["agents"] if a["id"] == agent_id), None)
             if info is None:
-                return False
+                return None
             agent = self._cache.get(agent_id)
             if agent is not None and not agent.dialogue_lock.acquire(blocking=False):
                 raise CoordinationError("chat_in_progress")
             try:
+                if self._active_accesses.get(agent_id):
+                    raise CoordinationError("agent_busy")
+                entry = dict(info, archived_at=time.time())
+                if not info.get("external_dir"):
+                    entry["archive_dir"] = f"archive/{agent_id}-{time.time_ns()}"
+                reg.setdefault("archived", []).append(entry)
                 reg["agents"] = [a for a in reg["agents"] if a["id"] != agent_id]
                 if reg["current"] == agent_id:
                     reg["current"] = reg["agents"][0]["id"] if reg["agents"] else None
@@ -266,12 +350,15 @@ class AgentManager:
                 if agent is not None:
                     agent.dialogue_lock.release()
         self.runs.activity.forget(agent_id)
-        src = self._dir_for(info)
-        if src.exists():
-            shutil.move(str(src),
-                        str(self.root / "archive" /
-                            f"{agent_id}-{int(time.time())}"))
-        return True
+        result = {"id": agent_id, "name": info["name"]}
+        if "archive_dir" not in entry:
+            return dict(result, storage="in_place", note="external_directory")
+        try:
+            self._dir_for(info).rename(self.root / entry["archive_dir"])
+        except OSError:
+            logging.exception("Archived but could not move Agent data: %s", agent_id)
+            return dict(result, storage="in_place", note="archive_move_failed")
+        return dict(result, storage="archive")
 
     # ---- 活动观测：它现在在干什么 ----
     ACTIVITY_LABELS = [
@@ -327,25 +414,44 @@ class AgentManager:
 
     # ---- 观测与驱动 ----
     def list(self) -> List[dict]:
-        rows = []
+        return self._list_members(self._load_registry()["agents"])
+
+    def fleet_view(self) -> dict:
         reg = self._load_registry()
-        for info in reg["agents"]:
+        return {"agents": self._list_members(reg["agents"]), "current": reg["current"]}
+
+    def _list_members(self, members: List[dict]) -> List[dict]:
+        rows = []
+        for info in members:
             row = dict(info)
-            agent = self._cache.get(info["id"])
-            if agent is not None:
-                row.update(self.snapshot_of(agent))
-            elif self._dir_for(info).is_dir():
-                store = create_store(self._dir_for(info))
-                profile = store.get("config", "persona") or {}
-                initial = AutonomyPolicy() if AgentProfile.from_doc(profile) is not None else None
-                policy, _ = load_policy(store, initial)
-                row["autonomy"] = dict(policy.to_dict(), blocked_reason=policy.blocker(paused=info.get("paused")))
-                row["persona"] = profile.get("text", "") if isinstance(profile, dict) else ""
-                if info.get("paused"):
-                    row["activity"] = {"status": "已暂停",
-                                       "detail": "暂停中（心跳停止，记忆/目标保留）"}
+            try:
+                agent = self._cache.get(info["id"])
+                if agent is not None:
+                    row.update(self.snapshot_of(agent))
+                else:
+                    row.update(self._stored_view(info))
+            except FileNotFoundError:
+                if self.info(info["id"]) is not None:
+                    raise
             rows.append(row)
         return rows
+
+    def _stored_view(self, info: dict) -> dict:
+        directory = self._dir_for(info)
+        if not directory.is_dir():
+            return {}
+        with self._lock:
+            if self.info(info["id"]) is None:
+                return {}
+            store = create_store(directory)
+        profile = store.get("config", "persona") or {}
+        initial = AutonomyPolicy() if AgentProfile.from_doc(profile) is not None else None
+        policy, _ = load_policy(store, initial)
+        result = {"autonomy": dict(policy.to_dict(), blocked_reason=policy.blocker(paused=info.get("paused"))),
+                  "persona": profile.get("text", "") if isinstance(profile, dict) else ""}
+        if info.get("paused"):
+            result["activity"] = {"status": "已暂停", "detail": "暂停中（心跳停止，记忆/目标保留）"}
+        return result
 
     @staticmethod
     def snapshot_of(agent: ProtoAgent) -> dict:
@@ -387,7 +493,8 @@ class AgentManager:
                 if not lock.acquire(timeout=0.2):
                     continue
                 try:
-                    agent.maybe_proactive()
+                    if not agent.dialogue_closed:
+                        agent.maybe_proactive()
                 finally:
                     lock.release()
             except Exception:
@@ -396,16 +503,16 @@ class AgentManager:
                 logging.exception("heartbeat tick 失败 agent=%s", info.get("id"))
 
     def enqueue_ticks(self) -> None:
-        import logging
-
         for info in self._load_registry()["agents"]:
             if info.get("paused"):
                 continue
             try:
                 agent = self.get(info["id"])
-                if (agent is not None and not agent.autonomy_blocker(suggestions=True)
-                        and agent.heartbeat_ready()):
-                    self.runs.enqueue(info["id"], "tick")
+                if agent is None:
+                    continue
+                with self.active_access(agent):
+                    if not agent.autonomy_blocker(suggestions=True) and agent.heartbeat_ready():
+                        self.runs.enqueue(info["id"], "tick")
             except CoordinationError as exc:
                 if exc.status not in (404, 429):
                     logging.exception("Failed to enqueue heartbeat: %s", info["id"])

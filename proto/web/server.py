@@ -53,8 +53,8 @@ CONTROL_POSTS = {"/api/mute", "/api/awake", "/api/budget/refill",
                  "/api/budget/caps", "/api/priority"}
 _CONTROL_POST_RE = [
     re.compile(r"^/api/goals/[0-9a-f]+/drop$"),
-    re.compile(r"^/api/agents/[A-Za-z0-9_-]+/(pause|select|archive)$"),
 ]
+_FLEET_MEMBER_RE = re.compile(r"^/api/agents/([A-Za-z0-9_-]+)/(select|pause|archive)$")
 _AUTONOMY_RE = re.compile(r"^/api/agents/([A-Za-z0-9_-]+)/autonomy$")
 _AGENT_NAME_RE = re.compile(r"^/api/agents/([A-Za-z0-9_-]+)/name$")
 _ACT_RE = re.compile(r"^/api/agents/([A-Za-z0-9_-]+)/act$")
@@ -76,7 +76,7 @@ _PAST_ACTIVITY_QUESTION = re.compile(
 READ_ONLY_GETS = {
     "/api/state", "/api/audit", "/api/proposals", "/api/rules",
     "/api/evolution", "/api/scratch", "/api/memory", "/api/inbox",
-    "/api/goaltree", "/api/world", "/api/taste", "/api/agents",
+    "/api/goaltree", "/api/world", "/api/taste",
     "/api/summary", "/api/blackboard", "/api/projects-root", "/api/methods",
     "/api/identity", "/api/activity", "/api/activity/live",
 }
@@ -174,11 +174,21 @@ class _Handler(BaseHTTPRequestHandler):
         autonomy = _AUTONOMY_RE.fullmatch(path)
         if autonomy:
             return self._autonomy(method, server.manager, autonomy.group(1))
-        if method == "POST" and path in ("/api/agents/preview", "/api/agents"):
-            return self._agent_creation(path, server.manager)
-        rename = _AGENT_NAME_RE.fullmatch(path)
-        if method == "POST" and rename:
-            return self._agent_rename(server.manager, rename.group(1))
+        if method == "GET" and path == "/api/agents":
+            return self._json(200, server.manager.fleet_view())
+        if method == "POST":
+            if path in ("/api/agents/preview", "/api/agents"):
+                return self._agent_creation(path, server.manager)
+            if path == "/api/agents/bulk":
+                return self._bulk_agents(server.manager)
+            rename = _AGENT_NAME_RE.fullmatch(path)
+            if rename:
+                return self._agent_rename(server.manager, rename.group(1))
+            member = _FLEET_MEMBER_RE.fullmatch(path)
+            if member:
+                return self._fleet_member(server.manager, *member.groups())
+        if method == "GET" and path == "/api/awake":
+            return self._json(200, {"awake": server.keeper.is_active, "available": server.keeper.available})
         if path == "/api/projects" or path.startswith("/api/projects/"):
             return self._project_routes(method, path, server.manager.runs.projects)
         agent_id = self.headers.get("X-Proto-Agent") or server.manager.current_id()
@@ -187,9 +197,15 @@ class _Handler(BaseHTTPRequestHandler):
                     or any(pattern.fullmatch(path) for pattern in (_ACT_RE, _RESUME_RE, _PROPOSAL_RE, _PLAN_APPROVE_RE))))):
             return self._run_routes(method, path, query, agent_id, server.manager.runs)
         agent = server.manager.get(agent_id)
+        if agent is None:
+            if method == "POST" and path == "/api/awake":
+                return self._routes(method, path, query, None, server)
+            raise _HTTPError(404, "no_such_agent")
+        with server.manager.active_access(agent):
+            return self._agent_api(method, path, query, agent, server)
+
+    def _agent_api(self, method, path, query, agent, server):
         if method == "POST" and path == "/api/chat":
-            if agent is None:
-                raise _HTTPError(404, "no_such_agent")
             chat_text = self._body().get("text")
             if not isinstance(chat_text, str) or not chat_text.strip() or len(chat_text) > 16000:
                 raise _HTTPError(400, "invalid_chat_text")
@@ -214,15 +230,12 @@ class _Handler(BaseHTTPRequestHandler):
         if method == "GET" and path in READ_ONLY_GETS:
             return self._routes(method, path, query, agent, server)
         # M50：per-agent 单写者锁——A 的长链只挡 A 的操作，不再挡全舰队
-        lock = (server.manager.ops_lock(agent_id)
-                if agent is not None else server.mut_lock)
+        lock = server.manager.ops_lock(agent.fleet_id)
         if not lock.acquire(timeout=3.0):
             return self._json(409, {"error": "agent_busy",
                                     "hint": "该 agent 自学习或长任务进行中，"
                                             "稍后重试（不影响其他 agent）"})
         try:
-            if agent is None:
-                return self._routes(method, path, query, agent, server)
             with agent.background_write():
                 return self._routes(method, path, query, agent, server)
         finally:
@@ -385,6 +398,35 @@ class _Handler(BaseHTTPRequestHandler):
         manager.set_current(info["id"])
         return self._json(200, {"created": info, "agents": manager.list()})
 
+    def _bulk_agents(self, manager):
+        fields = self._body()
+        action = fields.get("action")
+        if action in ("pause", "resume") and set(fields) == {"action"}:
+            return self._json(200, manager.pause_all(on=action == "pause"))
+        if action != "archive" or set(fields) != {"action", "confirmed", "agent_ids"}:
+            raise _HTTPError(400, "invalid_bulk_agent_fields")
+        if fields["confirmed"] is not True:
+            raise _HTTPError(400, "archive_confirmation_required")
+        agent_ids = fields["agent_ids"]
+        if (not isinstance(agent_ids, list) or any(not isinstance(agent_id, str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]+", agent_id) for agent_id in agent_ids)
+                or len(set(agent_ids)) != len(agent_ids)):
+            raise _HTTPError(400, "invalid_agent_ids")
+        return self._json(200, manager.archive_all(agent_ids))
+
+    def _fleet_member(self, manager, agent_id, action):
+        if action == "select":
+            manager.set_current(agent_id)
+        elif action == "pause":
+            on = self._body().get("on", True)
+            if type(on) is not bool:
+                raise _HTTPError(400, "on_must_be_boolean")
+            if not manager.pause(agent_id, on):
+                raise _HTTPError(404, "no_such_agent")
+        elif not manager.archive(agent_id):
+            raise _HTTPError(404, "no_such_agent")
+        return self._json(200, manager.fleet_view())
+
     def _agent_rename(self, manager, agent_id):
         fields = self._body()
         if set(fields) != {"name"}:
@@ -398,11 +440,15 @@ class _Handler(BaseHTTPRequestHandler):
         return self._json(200, info)
 
     def _autonomy(self, method, manager, agent_id):
-        from proto.runtime.autonomy import AutonomyConflict
         info = manager.info(agent_id)
         agent = manager.get(agent_id)
         if info is None or agent is None:
             raise _HTTPError(404, "no_such_agent")
+        with manager.active_access(agent):
+            return self._agent_autonomy(method, agent, info["name"])
+
+    def _agent_autonomy(self, method, agent, name):
+        from proto.runtime.autonomy import AutonomyConflict
         if method == "POST":
             fields = self._body()
             if (set(fields) - {"enabled", "mode", "expected_revision"}
@@ -417,7 +463,7 @@ class _Handler(BaseHTTPRequestHandler):
                 raise _HTTPError(400, str(exc)) from exc
         else:
             view = agent.autonomy_view()
-        return self._json(200, {"autonomy": view, "name": info["name"],
+        return self._json(200, {"autonomy": view, "name": name,
                                 "scope": {"projects_root": agent.projects_root(),
                                           "budgets": _budget_view(agent),
                                           "tools": sorted(agent.tools.names())}})
@@ -452,26 +498,6 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _routes(self, method: str, path: str, query, agent: ProtoAgent,
                 server: ProtoWebServer):
-        if path == "/api/agents" and method == "GET":
-            return self._json(200, {"agents": server.manager.list(),
-                                    "current": server.manager.current_id()})
-        m4 = re.match(r"^/api/agents/([A-Za-z0-9_-]+)/(select|pause|archive)$", path)
-        if m4 and method == "POST":
-            aid, action = m4.group(1), m4.group(2)
-            if action == "select":
-                server.manager.set_current(aid)
-            elif action == "pause":
-                on = self._body().get("on", True)
-                if type(on) is not bool:
-                    raise _HTTPError(400, "on_must_be_boolean")
-                if not server.manager.pause(aid, on):
-                    raise _HTTPError(404, "no_such_agent")
-            elif action == "archive":
-                if not server.manager.archive(aid):
-                    return self._json(404, {"error": "no_such_agent"})
-            return self._json(200, {"agents": server.manager.list(),
-                                    "current": server.manager.current_id()})
-
         if path == "/api/state" and method == "GET":
             return self._json(200, _state_payload(agent, server))
 
@@ -585,7 +611,8 @@ class _Handler(BaseHTTPRequestHandler):
                 keeper.start()
             else:
                 keeper.stop()
-            agent.spine.append("owner_override", {"action": "keep_awake", "on": on})
+            if agent is not None:
+                agent.spine.append("owner_override", {"action": "keep_awake", "on": on})
             return self._json(200, {"awake": keeper.is_active,
                                     "available": keeper.available})
 
@@ -630,8 +657,6 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/activity" and method == "GET":
             return self._json(200, _activity_view(agent))
         if path == "/api/activity/live" and method == "GET":
-            if agent is None:
-                raise _HTTPError(404, "no_such_agent")
             return self._json(200, server.manager.runs.activity.snapshot(agent))
         if path == "/api/blackboard" and method == "GET":
             return self._json(200, {"notes": agent.read_blackboard()})
@@ -834,7 +859,8 @@ class ProtoWebServer(ThreadingHTTPServer):
             manager = AgentManager(root=agent.data_dir / ".fleet", llm=agent.llm,
                                    fast_llm=agent.llm_fast,
                                    webtools=agent.webtools)
-            manager.adopt(agent)
+            if manager.adopt(agent) is None:
+                agent = None
         self.manager = manager
         manager.enable_model_updates()
         self.agent = agent or manager.get(manager.current_id())  # 遗留引用

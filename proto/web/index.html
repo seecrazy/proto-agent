@@ -186,6 +186,10 @@
   #model { min-width: 0; max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #agent-select { min-width: 0; max-width: 220px; }
   .fleet-agent-id { color: var(--dim); font-size: 11px; overflow-wrap: anywhere; }
+  #fleet-bulk { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  #fleet-bulk button:disabled { opacity: .5; cursor: default; }
+  #fleet-bulk-status { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .fleet-empty #composer, .fleet-empty .card:not(.fleet-scope), .fleet-empty .agent-only { display: none !important; }
   #model-panel h2 { padding-right: 30px; }
   #model-close { position: absolute; top: 12px; right: 12px; }
   #model-panel h3 { margin: 14px 0 8px; }
@@ -267,22 +271,22 @@
 <header>
   <div class="logo">PROTO<span>·</span>console</div>
   <button class="meta" id="model" onclick="openModels()" title="管理模型接入与热切换（舰队共享）">…</button>
-  <div class="meta">审计链 <span class="dot ok" id="chain-dot"></span></div>
-  <div class="meta" id="budget-view" title="预算三分池余量（点击管理：查看/充值）"
+  <div class="meta agent-only">审计链 <span class="dot ok" id="chain-dot"></span></div>
+  <div class="meta agent-only" id="budget-view" title="预算三分池余量（点击管理：查看/充值）"
        role="button" tabindex="0" onclick="toggleBudget()"
        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleBudget()}"></div>
-  <div class="meta" id="tension-view" title="内在张力（人格加权驱力×紧迫+唤醒）">张力…</div>
+  <div class="meta agent-only" id="tension-view" title="内在张力（人格加权驱力×紧迫+唤醒）">张力…</div>
   <div class="fleetdots" id="fleet-dots" title="舰队自治（绿=自动 黄=暂停/静音 灰=其他）"></div>
-  <span class="topbadge" id="pending-badge" title="待审批的主动提议" role="button"
+  <span class="topbadge agent-only" id="pending-badge" title="待审批的主动提议" role="button"
         aria-label="待审批提议" onclick="showCat('work')" style="display:none">待批 0</span>
   <select id="agent-select" onchange="switchAgent(this.value)" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px"></select>
-  <button id="agent-identity-btn" onclick="openAgentIdentity()" title="修改当前 Agent 的显示名称，查看固定 ID" disabled>名称 / ID</button>
+  <button id="agent-identity-btn" class="agent-only" onclick="openAgentIdentity()" title="修改当前 Agent 的显示名称，查看固定 ID" disabled>名称 / ID</button>
   <button onclick="showCreateAgent()" style="font-size:12px">＋Agent</button>
-  <button id="autonomy-btn" onclick="openAutonomy()" title="当前 Agent 的自治设置">自治</button>
+  <button id="autonomy-btn" class="agent-only" onclick="openAutonomy()" title="当前 Agent 的自治设置">自治</button>
   <div class="spacer"></div>
   <button id="view-btn" onclick="toggleView()" aria-label="切换工程/伙伴视角" title="工程视角看仪表，伙伴视角只留相处">🤝伙伴视角</button>
   <button id="awake-btn" onclick="toggleAwake()">☕防休眠</button>
-  <button id="mute-btn" onclick="toggleMute()">静音</button>
+  <button id="mute-btn" class="agent-only" onclick="toggleMute()">静音</button>
 </header>
 
 <div id="budget-panel" role="dialog" aria-label="额度管理">
@@ -448,12 +452,18 @@
       </div>
     </div>
 
-    <div data-cat="ov" class="card">
+    <div data-cat="ov" class="card fleet-scope">
       <h3>Agent 舰队（多自主 Agent 总览）</h3>
+      <div id="fleet-bulk" role="group" aria-label="舰队批量操作">
+        <button id="fleet-bulk-pause" type="button" onclick="changeFleet('pause')" disabled>全部暂停</button>
+        <button id="fleet-bulk-resume" type="button" onclick="changeFleet('resume')" disabled>全部恢复</button>
+        <button id="fleet-bulk-archive" type="button" class="danger" onclick="changeFleet('archive')" disabled>全部归档</button>
+      </div>
+      <p id="fleet-bulk-status" class="empty" role="status"></p>
       <div id="fleet" class="empty">（加载中…）</div>
     </div>
 
-    <div data-cat="ov" class="card">
+    <div data-cat="ov" class="card fleet-scope">
       <h3>舰队额度与运行</h3>
       <div id="fleet-budget-state" class="empty"></div>
       <details>
@@ -470,7 +480,7 @@
       <div id="run-list"></div>
     </div>
 
-    <div data-cat="delivery" class="card">
+    <div data-cat="delivery" class="card fleet-scope">
       <h3>项目 · 交付与验收</h3>
       <p class="empty">项目只交接明确引用的文本产物。可独立自动验收，也可指定另一位 Agent 评审。</p>
       <label for="delivery-select">项目</label>
@@ -917,13 +927,13 @@ function addMsg(text, who) {
 async function sendChat() {
   const input = document.getElementById("chat-input");
   const btn = document.querySelector("#composer button.primary");
-  const text = input.value.trim(); if (!text || btn.disabled) return;
+  const agentId = document.getElementById("agent-select").value;
+  const text = input.value.trim(); if (!text || !agentId || btn.disabled) return;
   input.value = "";
   addMsg(text, "owner");
   btn.disabled = true; btn.textContent = "思考中…";
   try {
-    const data = await api("POST", "/api/chat", { text }, newRequestKey(),
-      document.getElementById("agent-select").value);
+    const data = await api("POST", "/api/chat", { text }, newRequestKey(), agentId);
     addMsg(data.reply, "agent");
     if (!data.read_only) refreshInboxOnce();
   } catch (error) {
@@ -1149,6 +1159,7 @@ function renderLiveWork(data, selected) {
 async function refreshLiveWork() {
   if (document.hidden || liveReading) return;
   const selected = document.getElementById("agent-select").value;
+  if (!selected) return;
   const version = liveVersion;
   liveReading = true;
   try {
@@ -1345,12 +1356,65 @@ async function savePersona() {
   } catch (e) { addMsg("人设保存失败：" + e.message, "system"); }
 }
 let fleetRefresh = 0;
+let fleetBulkPending = false;
+function syncFleetBulk() {
+  document.getElementById("fleet-bulk-pause").disabled = fleetBulkPending || !fleetMembers.some(agent => !agent.paused);
+  document.getElementById("fleet-bulk-resume").disabled = fleetBulkPending || !fleetMembers.some(agent => agent.paused);
+  document.getElementById("fleet-bulk-archive").disabled = fleetBulkPending || !fleetMembers.length;
+}
+
+function fleetBulkSummary(action, result) {
+  if (action === "pause") return `已暂停 ${result.changed} 个 Agent 的自主工作（共 ${result.total} 个）；仍可对话和指派任务。`;
+  if (action === "resume") return `已解除 ${result.changed} 个 Agent 的舰队暂停（共 ${result.total} 个）；自治模式和静音不变。`;
+  const reasons = {
+    agent_busy: "后台工作或控制请求进行中",
+    chat_in_progress: "正在回复主人",
+    no_such_agent: "已不在舰队中",
+    archive_write_failed: "归档登记写入失败",
+  };
+  const lines = [`已归档 ${result.archived.length}/${result.total} 个 Agent，未归档 ${result.skipped.length} 个。`];
+  for (const agent of result.skipped) lines.push(`${agent.name}（${agent.id}）：${reasons[agent.error] || "未归档"}`);
+  const inPlace = result.archived.filter(agent => agent.note === "external_directory").length;
+  if (inPlace) lines.push(`${inPlace} 个收编成员的数据保留在原目录。`);
+  for (const agent of result.archived.filter(agent => agent.note === "archive_move_failed")) {
+    lines.push(`${agent.name}（${agent.id}）：已归档，目录未迁移，请核对原目录。`);
+  }
+  return lines.join("\n");
+}
+
+async function changeFleet(action) {
+  if (fleetBulkPending || !fleetMembers.length || document.getElementById(`fleet-bulk-${action}`).disabled) return;
+  const body = {action};
+  if (action === "archive") {
+    const agentIds = fleetMembers.map(agent => agent.id);
+    if (!confirm(`归档当前 ${agentIds.length} 个 Agent？\n空闲成员将移出舰队，但数据不会删除。正在工作或对话的成员会跳过。`)) return;
+    Object.assign(body, {confirmed: true, agent_ids: agentIds});
+  }
+  const status = document.getElementById("fleet-bulk-status");
+  fleetBulkPending = true;
+  syncFleetBulk();
+  status.textContent = "正在处理…";
+  try {
+    const result = await api("POST", "/api/agents/bulk", body);
+    status.textContent = fleetBulkSummary(action, result);
+  } catch (error) {
+    status.textContent = error.message === "fleet_membership_changed"
+      ? "舰队名单已变更，本次未归档。请核对更新后的名单再确认。"
+      : "未能确认批量操作结果：" + error.message;
+  } finally {
+    try { await refreshFleet(); } catch (error) { status.textContent += "\n名单暂未刷新，请稍后核对。"; }
+    fleetBulkPending = false;
+    syncFleetBulk();
+  }
+}
+
 async function refreshFleet() {
   const refresh = ++fleetRefresh;
   const r = await api("GET", "/api/agents");
   if (refresh !== fleetRefresh) return;
   fleetMembers = r.agents;
   const sel = document.getElementById("agent-select");
+  const previous = sel.value;
   sel.innerHTML = "";
   for (const a of r.agents) {
     const opt = document.createElement("option");
@@ -1358,9 +1422,22 @@ async function refreshFleet() {
     opt.selected = a.id === r.current;
     sel.appendChild(opt);
   }
+  if (!r.agents.length) sel.appendChild(new Option("暂无 Agent", ""));
+  sel.disabled = !sel.value;
+  document.body.classList.toggle("fleet-empty", !sel.value);
   document.getElementById("agent-identity-btn").disabled = !sel.value;
+  if (!sel.value) document.getElementById("model").textContent = "模型接入";
+  if (!sel.value || sel.value !== previous) {
+    liveVersion++;
+    document.getElementById("live-status").textContent = sel.value ? "同步中…" : "舰队暂无 Agent，点「＋Agent」创建。";
+    document.getElementById("live-detail").textContent = "";
+    document.getElementById("live-events").replaceChildren();
+    delete document.getElementById("live-work").dataset.state;
+    if (sel.value) refreshLiveWork();
+  }
+  syncFleetBulk();
   const box = document.getElementById("fleet");
-  box.innerHTML = "";
+  box.textContent = r.agents.length ? "" : "舰队暂无 Agent。可从顶栏点「＋Agent」创建。";
   for (const a of r.agents) {
     const d = document.createElement("div");
     d.style.cssText = "border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:8px;background:var(--panel2)";
@@ -1509,7 +1586,7 @@ async function pauseAgent(id, on, btn) {
 }
 async function archiveAgent(id) {
   if (!confirm("归档后该 Agent 停止运行（数据保留，可重建）。确定归档？")) return;
-  if (!confirm("归档该 Agent？（数据保留在 archive/，可手工恢复）")) return;
+  if (!confirm("归档该 Agent？托管目录将尝试移入 archive/，收编目录原地保留。")) return;
   await api("POST", `/api/agents/${id}/archive`, {});
   location.reload();
 }
@@ -1814,8 +1891,8 @@ async function savePriority() {
   } catch (e) { addMsg("优先级保存失败：" + e.message, "system"); }
 }
 async function toggleAwake() {
-  const s = await api("GET", "/api/state");
-  if (s.awake_available === false) { addMsg("防休眠需要 macOS（caffeinate）。", "system"); return; }
+  const s = await api("GET", "/api/awake");
+  if (!s.available) { addMsg("防休眠需要 macOS（caffeinate）。", "system"); return; }
   const r = await api("POST", "/api/awake", { on: !s.awake });
   document.getElementById("awake-btn").textContent = r.awake ? "☕防休眠中" : "☕防休眠";
   addMsg(r.awake ? "防休眠已开启：它在服务期间系统不会闲置睡眠（合盖除外）。"
@@ -2411,16 +2488,27 @@ const SAFE = (name, fn) => async () => {
   }
 };
 async function loop() {
-  await SAFE("inbox", async () => {
-    const inbox = await api("GET", "/api/inbox");
-    for (const m of inbox.messages) addMsg(m, "agent");
-  })();
-  for (const [name, fn] of [["state", refreshState], ["proposals", refreshProposals],
-    ["audit", refreshAudit], ["rules", refreshRules], ["evolution", refreshEvolution],
-    ["scratch", refreshScratch], ["memory", refreshMemory],
-    ["goaltree", refreshGoalTree], ["world", refreshWorld], ["fleet", refreshFleet],
-    ["identity", refreshIdentity], ["activity", refreshActivity],
-    ["buckets", refreshBuckets], ["runs", refreshRuns], ["delivery", refreshDelivery],
+  await SAFE("fleet", refreshFleet)();
+  if (document.getElementById("agent-select").value) {
+    await SAFE("inbox", async () => {
+      const inbox = await api("GET", "/api/inbox");
+      for (const m of inbox.messages) addMsg(m, "agent");
+    })();
+    for (const [name, fn] of [["state", refreshState], ["proposals", refreshProposals],
+      ["audit", refreshAudit], ["rules", refreshRules], ["evolution", refreshEvolution],
+      ["scratch", refreshScratch], ["memory", refreshMemory], ["goaltree", refreshGoalTree],
+      ["world", refreshWorld], ["identity", refreshIdentity], ["activity", refreshActivity],
+      ["buckets", refreshBuckets]]) {
+      if (!document.getElementById("agent-select").value) break;
+      await SAFE(name, fn)();
+    }
+  } else {
+    await SAFE("awake", async () => {
+      const state = await api("GET", "/api/awake");
+      document.getElementById("awake-btn").textContent = state.awake ? "☕防休眠中" : "☕防休眠";
+    })();
+  }
+  for (const [name, fn] of [["runs", refreshRuns], ["delivery", refreshDelivery],
     ["tracked-task", refreshTrackedTask]]) {
     await SAFE(name, fn)();
   }

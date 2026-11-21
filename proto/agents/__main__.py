@@ -6,7 +6,7 @@
   autonomy <id> [--enable | --disable] [--mode MODE]
   select <id>                 切换当前 Agent（控制台无头时默认）
   pause <id> / resume <id>    暂停/恢复自主行为
-  archive <id> --yes          归档（数据保留 archive/）
+  archive <id> --yes          归档（不删除数据，收编目录原地保留）
 根目录：--root 或 PROTO_FLEET_ROOT，默认 ./proto_data
 """
 from __future__ import annotations
@@ -135,7 +135,7 @@ def _dispatch(args, root, mgr) -> int:
         return 0
     if args.cmd == "archive":
         if not args.yes:
-            print(ui.warn("归档需 --yes 确认（数据保留在 archive/）")); return 1
+            print(ui.warn("归档需 --yes 确认（不删除数据，收编目录原地保留）")); return 1
         ok = mgr.archive(args.id)
         print(ui.ok(f"已归档：{args.id}") if ok else ui.fail(f"不存在：{args.id}"))
         return 0 if ok else 1
