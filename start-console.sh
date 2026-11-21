@@ -8,6 +8,7 @@ cd "$(dirname "$0")"
 PORT=8431
 if lsof -nP -iTCP:$PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
   echo "✓ 控制台已在运行（端口 ${PORT}）——请从启动日志复制带令牌的 URL"
+  echo "  本次未启动新进程。若已更新代码，请先在原启动终端按 Ctrl+C 正常退出，再运行本脚本。"
   exit 0
 fi
 

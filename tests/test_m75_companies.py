@@ -65,7 +65,9 @@ def test_api_on_empty_fleet_and_appointment_without_changing_autonomy(tmp_path):
         assert request(server, company_url, token="bad-token")[0] == 401
         assert request(server, company_url, {"name": "样例", "extra": True})[0] == 400
         assert request(server, company_url, {"name": "样例", "template": []})[0] == 400
-        assert request(server, company_url)[1]["companies"] == []
+        status, catalog = request(server, company_url)
+        assert status == 200 and catalog["companies"] == []
+        assert {template["id"] for template in catalog["templates"]} == {"flat", "functional", "divisional", "custom"}
         status, company = request(server, company_url, {"name": "云间", "template": "custom"}, key="my-company")
         assert status == 201
         assert request(server, company_url, {"name": "另一个名称"}, key="my-company") == (409, {"error": "idempotency_conflict"})

@@ -234,6 +234,9 @@
   #company-panel .btns { flex-wrap: wrap; }
   #company-panel details { margin: 10px 0; }
   #company-panel summary { cursor: pointer; color: var(--accent); }
+  #company-create-fields { border: 0; min-inline-size: 0; padding: 0; }
+  #company-create-fields button:disabled { opacity: .5; cursor: default; }
+  #company-template-preview:empty { display: none; }
   #company-status:empty { display: none; }
   #company-status { position: sticky; bottom: 0; z-index: 1; padding: 8px; margin-top: 8px;
     background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; }
@@ -430,15 +433,17 @@
   <form method="dialog"><button>关闭</button></form>
   <h2 id="company-panel-title">公司与组织</h2>
   <p class="empty">职位决定组织内能联系谁，不改变 Agent 的人设、自治、工具或审批权限。</p>
-  <label><span>查看公司</span><select id="company-pick" onchange="switchCompany(this.value)"></select></label>
+  <label><span>查看公司</span><select id="company-pick" onchange="switchCompany(this.value)" disabled><option value="">正在加载…</option></select></label>
   <button type="button" id="company-refresh" onclick="reloadCompanyPanel()">刷新</button>
   <details id="company-create-box">
     <summary>新建公司</summary>
-    <form id="company-create-form" class="coord-form" onsubmit="createCompany(event)">
-      <label>公司名称<input name="name" maxlength="80" required></label>
-      <label>组织架构模板<select name="template" id="company-template" onchange="drawCompanyTemplate()" required></select></label>
-      <div id="company-template-preview" class="empty"></div>
-      <button type="submit" class="primary">创建公司</button>
+    <form id="company-create-form" onsubmit="createCompany(event)">
+      <fieldset id="company-create-fields" class="coord-form" disabled>
+        <label>公司名称<input name="name" maxlength="80" required></label>
+        <label>组织架构模板<select name="template" id="company-template" onchange="drawCompanyTemplate()" required></select></label>
+        <div id="company-template-preview" class="empty"></div>
+        <button type="submit" class="primary">创建公司</button>
+      </fieldset>
     </form>
   </details>
   <div id="company-workspace" hidden>
@@ -924,7 +929,7 @@ async function api(method, path, body, requestKey, agentId) {
     let detail = `HTTP ${resp.status}`;
     try { const j = await resp.json();
       detail = j.error ? (j.hint ? `${j.error}：${j.hint}` : j.error) : detail; } catch (e) {}
-    throw new Error(detail);
+    throw Object.assign(new Error(detail), {status: resp.status});
   }
   return resp.json();
 }
@@ -2592,7 +2597,12 @@ function companyStatus(message) {
   document.getElementById("company-status").textContent = message;
 }
 function companyError(error) {
-  return ({stale_company_revision: "组织已变更。请刷新后核对，本次未保存。",
+  return ({company_api_unavailable: "当前控制台后端未加载公司与组织功能。请正常退出旧进程，按原数据目录和启动方式重启；仅刷新页面无效。",
+    company_catalog_load_failed: "组织架构模板加载失败，请点击「刷新」重试。",
+    invalid_company_catalog: "控制台未返回可用的组织架构模板，请确认已启动当前版本后刷新。",
+    unauthorized: "令牌失效，请用启动终端里的完整 URL 重新打开。",
+    no_such_company: "该公司已不可用，请刷新公司列表。",
+    stale_company_revision: "组织已变更。请刷新后核对，本次未保存。",
     agent_already_appointed: "这个 Agent 已在其他职位任职，请先解除原任职。",
     no_such_agent: "该 Agent 不存在或已归档，请刷新名册。",
     no_such_position: "该职位已不存在，请刷新组织结构。",
@@ -2657,11 +2667,34 @@ function drawCompanyTemplate() {
   if (template) preview.replaceChildren(template.description, drawCompanyTree(template.positions));
 }
 async function refreshCompanyPanel(preferred = companyState?.id, positionId = companyPosition?.id) {
-  const {companies, templates} = await api("GET", "/api/companies");
   const picker = document.getElementById("company-pick"), templateSelect = document.getElementById("company-template");
+  const fields = document.getElementById("company-create-fields"), preview = document.getElementById("company-template-preview");
+  const selectedTemplate = templateSelect.value;
+  fields.disabled = true;
+  picker.disabled = true;
+  selectOptions(picker, [["", "正在加载…"]], [""]);
+  preview.textContent = "正在加载组织架构模板…";
+  let catalog;
+  try {
+    catalog = await api("GET", "/api/companies");
+    if (!Array.isArray(catalog?.companies) || !Array.isArray(catalog?.templates) || !catalog.templates.length) {
+      throw new Error("invalid_company_catalog");
+    }
+  } catch (error) {
+    companyTemplates = [];
+    selectOptions(picker, [["", "公司列表不可用"]], [""]);
+    selectOptions(templateSelect, [["", "模板不可用"]], [""]);
+    preview.replaceChildren();
+    document.getElementById("company-workspace").hidden = true;
+    if (error.status === 404) throw new Error("company_api_unavailable");
+    if (["unauthorized", "invalid_company_catalog"].includes(error.message)) throw error;
+    throw new Error("company_catalog_load_failed");
+  }
+  const {companies, templates} = catalog;
   companyTemplates = templates;
-  selectOptions(templateSelect, templates.map(template => [template.id, template.label]), [templateSelect.value]);
+  selectOptions(templateSelect, templates.map(template => [template.id, template.label]), [selectedTemplate]);
   drawCompanyTemplate();
+  fields.disabled = false;
   const rows = companies.map(company => [company.id, company.name]);
   const companyId = companies.some(company => company.id === preferred) ? preferred : companies[0]?.id || "";
   selectOptions(picker, rows.length ? rows : [["", "暂无公司"]], [companyId]);
@@ -2739,6 +2772,7 @@ function newCompanyPosition() {
 }
 async function createCompany(event) {
   event.preventDefault();
+  if (document.getElementById("company-create-fields").disabled) return;
   const form = event.currentTarget;
   await companyAction(event.submitter, async () => {
     const result = await api("POST", "/api/companies", Object.fromEntries(new FormData(form)), newRequestKey());

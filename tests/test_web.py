@@ -11,7 +11,10 @@ from pathlib import Path
 import pytest
 
 from proto.llm.client import LLMClient
+from proto.runtime.manager import AgentManager
+from proto.web import server as web_server
 from proto.web.server import ProtoWebServer
+from tests.test_m66_fleet_runs import console
 
 
 class ScriptedLLM(LLMClient):
@@ -79,6 +82,22 @@ class TestAuth:
         with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/", timeout=5) as r:
             html = r.read().decode()
         assert "PROTO" in html and "内在状态" in html
+
+
+def test_console_serves_startup_html_until_restart(tmp_path, monkeypatch):
+    asset = tmp_path / "index.html"
+    initial, updated = b"initial console", b"updated console"
+    asset.write_bytes(initial)
+    monkeypatch.setattr(web_server, "INDEX_PATH", asset)
+    fleet_root = tmp_path / "fleet"
+    with console(AgentManager(fleet_root)) as running:
+        asset.write_bytes(updated)
+        for route in ("/", "/index.html"):
+            with urllib.request.urlopen(f"http://127.0.0.1:{running.port}{route}", timeout=5) as response:
+                assert response.read() == initial
+    with console(AgentManager(fleet_root)) as restarted:
+        with urllib.request.urlopen(f"http://127.0.0.1:{restarted.port}/", timeout=5) as response:
+            assert response.read() == updated
 
 
 class TestStateAndChat:
@@ -216,6 +235,69 @@ async function api(method, path, body, key) {
 })().catch(error => { console.error(error); process.exitCode = 1; });
 '''
     subprocess.run([node], input=harness + script + assertions, text=True, check=True, timeout=10)
+
+
+def test_company_panel_disables_creation_until_catalog_is_available():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is not installed")
+    html = web_server.INDEX_PATH.read_text(encoding="utf-8")
+    transport = re.search(r"async function api\(.*?(?=let modelCatalog)", html, re.S).group()
+    panel = re.search(r"function selectOptions\(.*?(?=function editCompanyPosition)", html, re.S).group()
+    harness = r'''
+const assert = require("node:assert/strict");
+const TOKEN = "test";
+const controls = new Map();
+function control(id) {
+  if (!controls.has(id)) controls.set(id, {disabled: false, replaceChildren(...children) {
+    this.value = children.find(child => child.selected)?.value ?? children[0]?.value ?? "";
+  }});
+  return controls.get(id);
+}
+const document = {getElementById: control, createElement: () => ({})};
+function Option(label, value, defaultSelected, selected) { return {label, value, selected}; }
+function addMsg() {}
+let respond;
+function fetch(path, options) {
+  assert.equal(path, "/api/companies");
+  assert.equal(options.method, "GET");
+  return respond();
+}
+function reply(status, body) { return {status, ok: status === 200, json: async () => body}; }
+'''
+    assertions = r'''
+(async () => {
+  const fields = control("company-create-fields"), status = control("company-status");
+  let finish;
+  respond = () => new Promise(resolve => { finish = resolve; });
+  const pending = reloadCompanyPanel();
+  assert.equal(fields.disabled, true);
+  assert.match(control("company-template-preview").textContent, /正在加载/);
+  finish(reply(404, {error: "not_found"}));
+  await pending;
+  assert.match(status.textContent, /退出旧进程.*重启/);
+  assert.equal(fields.disabled, true);
+  for (const [code, payload, message] of [
+    [200, {companies: [], templates: []}, /未返回可用/],
+    [401, {error: "unauthorized"}, /令牌失效/],
+    [503, {error: "internal"}, /刷新.*重试/],
+  ]) {
+    respond = () => reply(code, payload);
+    await reloadCompanyPanel();
+    assert.match(status.textContent, message);
+    assert.equal(fields.disabled, true);
+  }
+  respond = () => reply(200, {companies: [], templates: [{
+    id: "custom", label: "自定义", description: "从根职位开始", positions: [],
+  }]});
+  await reloadCompanyPanel();
+  assert.equal(status.textContent, "");
+  assert.equal(control("company-template").value, "custom");
+  assert.equal(fields.disabled, false);
+  assert.equal(control("company-create-box").open, true);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+'''
+    subprocess.run([node], input=harness + transport + panel + assertions, text=True, check=True, timeout=10)
 
 
 class TestProposalsAndControls:

@@ -2,6 +2,11 @@
 
 > 当前完整方案统一阅读 [DESIGN.md](DESIGN.md)。本文件只记录里程碑、实现状态与验证证据，不作为第二份设计。
 
+## M75 补丁 · 公司模板加载与控制台版本一致性（2026-11-22，本地交付）
+
+- **根因与修复**：运行中的旧实例从工作树读到了新 HTML，但 `GET /api/companies` 返回 404，并非缺少模板。页面改为随服务启动加载；公司目录未就绪时禁用创建，旧路由提示正常重启，暂时失败可刷新。详见[组织契约](DESIGN.md#company-organization)及 [ADR 0012](adr/0012-company-organization-and-messaging.md)。
+- **验证**：新增 2 项回归；`python3 -m pytest -q` 为 **1067 passed, 3 skipped**。临时 Chrome 桌面及 390px 验证旧接口提示、刷新保留名称，以及空舰队加载四种模板并创建；未重启正在运行的实例、写入实际舰队数据或调用真实模型。现有实例须按原启动方式重启后使用公司功能。
+
 ## M76 · 模型组与自动切换（2026-11-22，本地交付）
 
 - **已采纳**：[模型组交互与验收契约](DESIGN.md#model-groups)、[ADR 0013](adr/0013-model-group-failover.md)。

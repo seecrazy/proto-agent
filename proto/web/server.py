@@ -143,7 +143,7 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path in ("/", "/index.html"):
-            data = INDEX_PATH.read_bytes()
+            data = self.server.index_html
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Security-Policy", INDEX_CSP)
@@ -900,6 +900,7 @@ class ProtoWebServer(ThreadingHTTPServer):
                  port: int = 8420, token: str = None, heartbeat_s: float = 30.0,
                  keep_awake=None, manager=None, workers: int = 2):
         from proto.runtime.manager import AgentManager
+        self.index_html = INDEX_PATH.read_bytes()
         if manager is None:
             assert agent is not None, "需要 agent 或 manager 之一"
             # 单 agent 收编：registry 放 agent 自家 .fleet/，与兄弟实例隔离
