@@ -6,5 +6,7 @@ data/
 dist/
 *.egg-info/
 proto_data/
+llm_models.json
+.llm-models-*
 .venv/
 

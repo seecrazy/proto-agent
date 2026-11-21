@@ -163,6 +163,22 @@
   }
   input:focus { border-color: var(--accent); }
   .empty { color: var(--dim); font-size: 12px; padding: 6px 0; }
+  #model-panel { margin: auto; width: min(680px, calc(100vw - 24px)); max-height: 85vh;
+    overflow: auto; background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; }
+  #model-panel::backdrop { background: rgba(0,0,0,.6); }
+  #model { min-width: 0; max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #model-panel h2 { padding-right: 30px; }
+  #model-close { position: absolute; top: 12px; right: 12px; }
+  #model-panel h3 { margin: 14px 0 8px; }
+  #model-panel label { display: block; margin: 10px 0; }
+  #model-panel label > span { display: block; color: var(--dim); margin-bottom: 5px; }
+  #model-panel select, #model-panel input:not([type=checkbox]) { width: 100%; min-width: 0;
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px; }
+  #model-panel .model-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+  #model-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+  @media (max-width: 500px) { #model-panel .model-grid { grid-template-columns: 1fr; } }
 
   /* 额度面板（M44）：点顶栏额度打开 */
   #budget-view { cursor: pointer; user-select: none; white-space: nowrap; }
@@ -189,7 +205,7 @@
 <body>
 <header>
   <div class="logo">PROTO<span>·</span>console</div>
-  <div class="meta" id="model">…</div>
+  <button class="meta" id="model" onclick="openModels()" title="管理模型接入与热切换（舰队共享）">…</button>
   <div class="meta">审计链 <span class="dot ok" id="chain-dot"></span></div>
   <div class="meta" id="budget-view" title="预算三分池余量（点击管理：查看/充值）"
        role="button" tabindex="0" onclick="toggleBudget()"
@@ -217,6 +233,31 @@
     <b>点击上限数字即可修改</b>（支持 8k / 16万 / 1.2M / 裸数字），立即生效并持久化；
     也可在 proto.env 配 PROTO_BUDGET_*_TOKENS（重启生效）。</div>
 </div>
+
+<dialog id="model-panel" aria-labelledby="model-heading" onclose="clearModelSecret()">
+  <button id="model-close" onclick="closeModels()" aria-label="关闭模型管理">×</button>
+  <h2 id="model-heading">模型接入与热切换</h2>
+  <p class="empty">舰队共享配置；新接入保存后即可选用，无需重启。在途请求不中断，下一次调用生效。</p>
+  <div class="model-grid">
+    <label><span>主模型</span><select id="model-main" aria-label="主模型"></select></label>
+    <label><span>快模型</span><select id="model-fast" aria-label="快模型"></select></label>
+  </div>
+  <div class="btns"><button class="primary" onclick="selectModels()">应用选择</button>
+    <button onclick="refreshModels()">刷新目录</button><button onclick="reloadModels()">从磁盘重载</button></div>
+  <h3>新增 / 编辑接入</h3>
+  <label><span>接入配置（保存不会自动切换）</span><select id="model-profile" onchange="fillModelProfile()"></select></label>
+  <div class="model-grid">
+    <label><span>显示名称</span><input id="model-name" autocomplete="off" placeholder="例如：本地编码模型"></label>
+    <label><span>协议</span><select id="model-style"><option value="openai">OpenAI compatible</option><option value="anthropic">Anthropic compatible</option></select></label>
+  </div>
+  <label><span>Base URL（不含密钥、查询参数或片段）</span><input id="model-base" type="url" placeholder="http://localhost:11434/v1"></label>
+  <label><span>模型名 / Endpoint ID</span><input id="model-id" autocomplete="off" placeholder="供应商支持的模型标识"></label>
+  <label><span id="model-key-label">API Key（本地模型可留空）</span><input id="model-key" type="password" autocomplete="new-password"></label>
+  <label><input id="model-clear-key" type="checkbox"> 显式清除已有密钥（否则编辑留空保留原密钥）</label>
+  <div class="btns"><button class="primary" onclick="saveModelProfile()">保存接入</button>
+    <button onclick="closeModels()">关闭</button></div>
+  <p class="empty" id="model-message" role="status" aria-live="polite"></p>
+</dialog>
 
 <main>
   <aside class="side-panel" id="side-left" aria-label="左侧卡片栏">
@@ -559,6 +600,93 @@ async function api(method, path, body) {
   return resp.json();
 }
 
+let modelCatalog = null;
+let modelBusy = false;
+function clearModelSecret() {
+  document.getElementById("model-key").value = "";
+  document.getElementById("model-clear-key").checked = false;
+}
+function closeModels() {
+  clearModelSecret();
+  document.getElementById("model-panel").close();
+}
+async function openModels() {
+  document.getElementById("model-panel").showModal();
+  await refreshModels();
+}
+function fillModelProfile() {
+  const identity = document.getElementById("model-profile").value;
+  const profile = modelCatalog?.profiles.find(row => row.id === identity);
+  document.getElementById("model-name").value = profile?.name || "";
+  document.getElementById("model-style").value = profile?.api_style || "openai";
+  document.getElementById("model-base").value = profile?.base_url || "";
+  document.getElementById("model-id").value = profile?.model || "";
+  document.getElementById("model-key-label").textContent = profile?.has_api_key
+    ? "API Key（已有密钥；留空保留，不会回显）" : "API Key（本地模型可留空）";
+  clearModelSecret();
+}
+function renderModels(state) {
+  const previous = state.saved_id || document.getElementById("model-profile").value;
+  modelCatalog = state;
+  const options = state.profiles.map(row => `<option value="${row.id}">${esc(row.name)} · ${esc(row.model)}</option>`).join("");
+  document.getElementById("model-main").innerHTML = '<option value="">请选择主模型</option>' + options;
+  document.getElementById("model-fast").innerHTML = '<option value="">跟随主模型</option>' + options;
+  document.getElementById("model-profile").innerHTML = '<option value="">＋新增接入</option>' + options;
+  document.getElementById("model-main").value = state.selection.main || "";
+  document.getElementById("model-fast").value = state.selection.fast || "";
+  document.getElementById("model-profile").value = state.profiles.some(row => row.id === previous) ? previous : "";
+  fillModelProfile();
+}
+async function modelAction(action, message) {
+  if (modelBusy) return;
+  modelBusy = true;
+  const controls = document.getElementById("model-panel").querySelectorAll("button,input,select");
+  controls.forEach(control => control.disabled = true);
+  document.getElementById("model-message").textContent = "处理中…";
+  try {
+    const state = await action();
+    renderModels(state);
+    document.getElementById("model-message").textContent = `${message}（目录版本 ${state.revision}）`;
+    try { await refreshState(); } catch (error) {
+      document.getElementById("model-message").textContent += "；顶栏刷新失败，请稍后刷新核对。";
+    }
+  } catch (error) {
+    document.getElementById("model-message").textContent = `操作未确认，请刷新目录核对后重试：${error.message}`;
+  } finally {
+    clearModelSecret();
+    controls.forEach(control => control.disabled = false);
+    modelBusy = false;
+  }
+}
+async function refreshModels() {
+  await modelAction(() => api("GET", "/api/models"), "已刷新；保存接入和应用选择均不需要重启");
+}
+async function saveModelProfile() {
+  if (!modelCatalog) return;
+  const identity = document.getElementById("model-profile").value;
+  const profile = {
+    name: document.getElementById("model-name").value,
+    api_style: document.getElementById("model-style").value,
+    base_url: document.getElementById("model-base").value,
+    model: document.getElementById("model-id").value,
+    api_key: document.getElementById("model-key").value,
+    clear_api_key: document.getElementById("model-clear-key").checked,
+    ...(identity ? {id: identity} : {}),
+  };
+  await modelAction(() => api("POST", "/api/models", {expected_revision: modelCatalog.revision, profile}), "接入已保存；活动接入的修改下一次调用生效，新接入选择后应用");
+}
+async function selectModels() {
+  if (!modelCatalog) return;
+  const body = {expected_revision: modelCatalog.revision,
+    main: document.getElementById("model-main").value,
+    fast: document.getElementById("model-fast").value || null};
+  await modelAction(() => api("POST", "/api/models/select", body), "选择已应用，下一次调用生效");
+}
+async function reloadModels() {
+  if (!modelCatalog) return;
+  await modelAction(() => api("POST", "/api/models/reload", {expected_revision: modelCatalog.revision}), "已从 llm_models.json 重载，下一次调用生效");
+}
+
 function addMsg(text, who) {
   const box = document.getElementById("messages");
   const div = document.createElement("div");
@@ -750,6 +878,7 @@ async function refreshActivity() {
 async function refreshState() {
   const s = await api("GET", "/api/state");
   document.getElementById("model").textContent = s.model;
+  document.getElementById("model").title = `${s.model} — 点击管理接入与热切换（舰队共享）`;
   document.getElementById("chain-dot").className = "dot " + (s.chain_ok ? "ok" : "bad");
   document.getElementById("mute-btn").textContent = s.muted ? "解除静音" : "静音";
   document.getElementById("awake-btn").textContent = s.awake ? "☕防休眠中" : "☕防休眠";

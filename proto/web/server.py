@@ -146,6 +146,8 @@ class _Handler(BaseHTTPRequestHandler):
     # ---- 路由入口（锁分离） ----
     def _api(self, method: str, parsed):
         server: ProtoWebServer = self.server
+        if parsed.path in {"/api/models", "/api/models/select", "/api/models/reload"}:
+            return self._models(method, parsed.path, server)
         agent = server.manager.agent_for_request(
             self.headers.get("X-Proto-Agent"))
         path, query = parsed.path, parse_qs(parsed.query)
@@ -182,6 +184,34 @@ class _Handler(BaseHTTPRequestHandler):
             return self._routes(method, path, query, agent, server)
         finally:
             lock.release()
+
+    def _models(self, method, path, server):
+        from proto.llm.catalog import ModelConfigError, ModelRevisionConflict
+        catalog = server.manager.models
+        if method == "GET" and path == "/api/models":
+            return self._json(200, catalog.view())
+        if method != "POST":
+            return self._json(405, {"error": "method_not_allowed"})
+        body = self._body()
+        expected = body.get("expected_revision")
+        try:
+            if path == "/api/models":
+                if set(body) != {"expected_revision", "profile"}:
+                    raise ModelConfigError("invalid_model_request")
+                result = catalog.save_profile(body["profile"], expected)
+            elif path == "/api/models/select":
+                if set(body) != {"expected_revision", "main", "fast"}:
+                    raise ModelConfigError("invalid_model_request")
+                result = catalog.select(body["main"], body["fast"], expected)
+            else:
+                if set(body) != {"expected_revision"}:
+                    raise ModelConfigError("invalid_model_request")
+                result = catalog.reload(expected)
+        except ModelRevisionConflict as exc:
+            return self._json(409, {"error": str(exc)})
+        except ModelConfigError as exc:
+            return self._json(400, {"error": str(exc)})
+        return self._json(200, result)
 
     def _routes(self, method: str, path: str, query, agent: ProtoAgent,
                 server: ProtoWebServer):
@@ -608,6 +638,7 @@ class ProtoWebServer(ThreadingHTTPServer):
                                    webtools=agent.webtools)
             manager.adopt(agent)
         self.manager = manager
+        manager.enable_model_updates()
         self.agent = agent or manager.get(manager.current_id())  # 遗留引用
         self.token = token or secrets.token_urlsafe(16)
         from proto.system.keepawake import KeepAwake

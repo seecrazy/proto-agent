@@ -23,8 +23,10 @@ def _manager(root: str):
     from proto.llm.client import create_llm_stack
     from proto.runtime.manager import AgentManager
     stack = create_llm_stack()
-    return AgentManager(root=Path(root), llm=stack["main"] if stack else None,
-                        fast_llm=stack["fast"] if stack else None)
+    manager = AgentManager(root=Path(root), llm=stack["main"] if stack else None,
+                           fast_llm=stack["fast"] if stack else None)
+    manager.enable_model_updates()
+    return manager
 
 
 def main(argv=None) -> int:

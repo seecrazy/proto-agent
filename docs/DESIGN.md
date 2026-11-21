@@ -2,7 +2,7 @@
 
 > **当前设计的唯一入口与正文。** 阅读本文件即可理解产品、架构、内在机制、自主工作、模型交互、工具授权、数据、进化治理、控制台和运行部署，不需要按日期拼接旧设计。
 >
-> 更新日期：2026-11-21。实现基线：`0.33.0`，M61 + M62（提交 `aa0db1e`）及本地 M63 改动，尚未发布新版本。M63 先记录设计与验收，再实现上下文、参数契约和会话恢复；剩余能力仍明确标为待实现。
+> 更新日期：2026-11-21。实现基线：`0.33.0`，累计 M61–M64；M63 提交 `cf045da`，M64 本地交付，尚未发布新版本。M63/M64 均先记录设计与验收，再实现和验证；剩余能力仍明确标为待实现。
 
 ## 阅读与维护约定
 
@@ -311,7 +311,7 @@ GoalNode 具有 `id/text/level/parent_id/status/progress/source/created_at/accep
 
 ### 7.1 当前客户端协议
 
-`LLMClient.complete(system, user) -> str` 是当前统一接口，usage 放在可变的 `last_usage` 上。主模型负责对话与较重推理，快速模型负责归因、规划、提取、摘要等辅助工作；模型名称可配置，不能把某个供应商默认当成内核依赖。
+`LLMClient.complete(system, user) -> str` 是当前统一接口，基础客户端的 usage 仍放在可变的 `last_usage` 上。主模型负责对话、归因、执行决策与语义验收，快模型负责规划、提取、摘要等辅助工作。M64 的目录角色代理按调用固定客户端与回执，支持热切换，见第 14.4 节；未将所有旧调用点改为不可变响应协议，不整体关闭 D9。模型名称可配置，不能把某个供应商默认当成内核依赖。
 
 | 适配器 | 当前请求与响应 | 尚未具备 |
 |---|---|---|
@@ -501,7 +501,7 @@ CodingBridge 自动探测 `claude/codex/zcode`，可用 `PROTO_BRIDGE_CLI` 指�
 
 ```text
 ┌──────────────────────────────────────────────────────────────────┐
-│ 顶栏：模型·审计·额度·张力·舰队·待批·Agent选择/新增·视角·防休眠·静音 │
+│ 顶栏：模型(点击管理/切换)·审计·额度·张力·舰队·待批·Agent选择/新增·视角·防休眠·静音 │
 ├────────────────┬──────────────────────────┬──────────────────────┤
 │ 左栏 340px      │ 对话 1fr                 │ 右栏 380px           │
 │ 概览 / 内在     │ 消息流、输入、任务反馈    │ 工作 / 工程          │
@@ -546,6 +546,8 @@ API 默认绑定 `127.0.0.1:8420`，使用强令牌与恒定时间比较；限�
 
 活动、待批和预算及时反馈；时/天/周/月/年汇总接入 8 秒轮询。所有 refresh 函数需有真实调用点；失败展示错误，不让空 catch 永远显示加载中。执行 dict 结果要序列化成人可读文本，不出现 `[object Object]`。主动未行动原因要区分无模型、无目标、预算、暂停与失败保护。
 
+M64 模型管理由顶栏 `#model` 打开独立 `#model-panel` 对话框，不增加侧栏卡片，不修改原有 localStorage 键。顶栏模型按钮单行截断，完整配置保留在提示；对话框内部滚动、窄屏表单单列，顶部 `model-close` 和底部关闭按钮/Escape 均可退出。面板包含主/快模型选择、新增/编辑接入（名称、协议、URL、模型名、密钥）、刷新目录与从磁盘重新加载；保存接入和应用选择分开，避免新增即意外切换。密钥输入为 password，编辑默认留空表示保留，显式清除另设选项；不回填、缓存或回显密钥。`model-main/model-fast/model-profile/model-name/model-style/model-base/model-id/model-key/model-clear-key/model-message` 是表单与反馈邻接点。外部文字转义，失败可见；切换后刷新顶栏，表单提交期间禁用操作，关闭时清空密钥。
+
 <a id="operations"></a>
 ## 14. 配置、部署与运维
 
@@ -565,7 +567,7 @@ python3 -m proto.web
 
 | 类别 | 配置入口 |
 |---|---|
-| 模型 | `PROTO_LLM_PROVIDER/BASE_URL/API_KEY/MODEL/FAST_MODEL`；不同 provider 的兼容协议不同 |
+| 模型 | 首次启动使用 `PROTO_LLM_PROVIDER/BASE_URL/API_KEY/MODEL/FAST_MODEL`；已有 `llm_models.json` 优先，控制台/REPL 可热切换；协议差异见第 14.4 节 |
 | 控制台 | `PROTO_WEB_TOKEN`、端口/数据目录命令行参数；不弱化令牌以方便部署 |
 | 预算 | `PROTO_BUDGET_GLOBAL_TOKENS/OWNER_TOKENS/SELF_TOKENS/CALLS`；已保存控制台上限优先 |
 | 项目与执行 | `PROTO_PROJECTS_ROOT`、`PROTO_EXEC_BACKEND`；候选进化后端显式构造，环境回退限制见第 8.3 节 |
@@ -583,6 +585,34 @@ python3 -m proto.web
 Python 包版本保持 0.33.0，文档整理不自行发布、推送或重启真实实例。`LICENSE` 为 AGPLv3 而包元数据为 MIT，目前不一致；须由权利人确认后统一，不能由 Agent 擅改授权（D10）。
 
 CI 配置覆盖 Ubuntu Python 3.9–3.12，并有 mongo/graph 可选依赖作业；配置存在不等于本次运行已通过，CI 也未安装 runsc 证明隔离。构建、测试、真实模型探针和平台隔离验证要分别记录。
+
+### 14.4 M64：模型接入与热切换（已实现并通过回归）
+
+**目标与非目标。** 已接入模型直接切换；新接入模型保存后即可选用，离线启动也可在线接入，无须重启 Web、Agent 或任务。主模型与快模型独立选择，快模型可跟随主模型；同一舰队共用配置，已加载、新建和后续懒加载的 Agent 一致。不自动探测供应商模型目录，不安装新协议代码、不测试真实付费端点，不改变预算/审批/会话验收，不承诺外部进程修改环境变量能改变运行进程。
+
+**用户流程。** 打开顶栏模型管理 → 新增或编辑 OpenAI-compatible / Anthropic-compatible 接入 → 保存（不改变选择）→ 选择主/快模型并应用 → 下一次模型调用使用新配置；可直接选已有接入。直接修改 `llm_models.json` 后显式重新加载；终端 `/models`、`/model <main-id> [fast-id|main]`、`/models reload` 提供同一机制。失败保留原配置，已运行任务和待审批会话继续保留原上下文。
+
+**数据与优先级。** 启动数据根下 `llm_models.json` 保存 `schema_version=1/revision/profiles/selection`，profiles 包含稳定 id、名称、api_style、base_url、model、api_key；selection 为 main 与可空 fast（空=跟随）。最多 64 个接入、文件最多 1 MiB；密钥仅本机 0600 文件，GET 只给 `has_api_key`。已有持久目录优先于启动 env；首次无目录时从原主/快客户端引导，现有启动参数和 proto.env 不改写。自定义注入客户端保持兼容但不伪造可持久接入。
+
+**关键交互与状态。** 共享模型目录使用短锁发布不可变快照，稳定角色代理消除规划器/归因器的陈旧客户端引用；每个调用入口固定本次客户端与身份，主/快选择成对原子发布。在途请求仍由旧客户端完成，下一次调用（包括自主循环、验收和审批恢复）使用新模型；不重放旧请求，不重置执行上下文、步数或预算。熔断按 Agent 和接入配置隔离，旧端点故障不封锁新模型，切回相同配置不借切换清空熔断。用量回执绑定本次固定客户端，不读取切换后的客户端。
+
+**边界与错误。** 所有模型 API 仍需控制台令牌；目录为舰队级资源，不等候 Agent 长操作锁。`GET /api/models` 返回脱敏目录，`POST /api/models` 新增/编辑，`POST /api/models/select` 切换，`POST /api/models/reload` 显式重读磁盘。修改必须带 expected_revision，冲突 409；坏协议/类型/空模型/非法 URL/未知接入/损坏文件返回安全错误，不输出密钥。URL 仅 http(s)，拒绝 userinfo、查询、片段和控制字符。先校验并构造候选、原子落盘成功后再发布；写盘失败、读盘失败或版本不支持均保持旧客户端与目录。重载不执行网络请求，配置合法不等于端点真实可用。绑定默认离线 Agent 时必须同时启用对话、归因与规划；不得靠替换 `agent.llm` 一项冒充完成。
+
+写入请求体为：新增/编辑 `{expected_revision, profile}`，profile 新增时要求 `name/api_style/base_url/model`，id 可省略自动生成；编辑按 id 合并，空密钥保留、`clear_api_key:true` 清除。切换 `{expected_revision, main, fast}`，fast 为接入 id 或 null；重载仅 `{expected_revision}`。拒绝额外字段，返回新 revision 与脱敏目录。环境变量不被热修改，已有目录不会被启动 env 反向覆盖。
+
+**验收清单（已逐项核验）。**
+- [x] H1：同进程从模型 A 切到已接入 B；新增 C 后不重启即可使用；主/快模型及跟随模式正确。
+- [x] H2：更新活动接入的 URL/协议/模型/密钥后下一调用生效，未选接入保存不意外切换。
+- [x] H3：已有/新建/懒加载/收编的 Agent、归因和规划均走新配置；离线启动接入后无需重建 Agent。
+- [x] H4：阻塞中的旧请求完成后仍返回旧结果与回执；切换接口不等候其锁，后续调用走新端点，不重放副作用。
+- [x] H5：主/快选择原子切换；失败或过期 revision 不改变磁盘和运行态，损坏重载保留可用配置。
+- [x] H6：重建运行时保留接入与选择；文件 0600；GET/错误/页面/日志不泄露密钥；空白编辑保留、显式清除生效。
+- [x] H7：目录 API 全部鉴权，非当前 Agent 也不能绕过；严格校验协议、URL、类型、版本、数量与未知选择。
+- [x] H8：新模型不继承旧端点熔断；切回同配置仍守原熔断；不改变预算和审批状态。
+- [x] H9：真实本地 HTTP 假端点验证两种协议、切换、在途调用、页面脚本与终端命令；不把脚本当整屏截图。
+- [x] H10：完整回归、Python/页面 JS 静态检查、设计/README/进度同步，验证后本地提交，不推送。
+
+实现入口为 `proto/llm/catalog.py`、`proto/runtime/agent.py`、`proto/runtime/manager.py` 与 Web/REPL/舰队 CLI；验证证据见第 16.3 节。新代码启用后，后续新增与切换不需重启；本轮未重启或更新正在运行的真实实例。
 
 <a id="roadmap"></a>
 ## 15. 模型交互演进与已知边界
@@ -713,10 +743,13 @@ CI 配置覆盖 Ubuntu Python 3.9–3.12，并有 mongo/graph 可选依赖作业
 | 审批、恢复、预算、工作区 | `test_router.py`、`test_m36_hardening.py`、`test_m38_timeout.py`、`test_m44_budget_control.py`、`test_m52_budget_config.py` |
 | 自主性与运行时不变量 | `test_m45_momentum.py`、`test_m59_continuous.py`、`test_m61_autonomy.py`、`test_m62_runtime_invariants.py` |
 | 上下文、工具契约与执行会话 | `test_m63_execution_sessions.py`（70 项，含重启/审批/在途核对/HTTP/页面脚本交互） |
+| 模型热接入、切换与持久配置 | `test_m64_live_models.py`（62 项，含双协议/在途请求/舰队/审批续跑/并发/鉴权/页面/终端） |
 | 并发、UI 与舰队 | `test_m43_audit_concurrency.py`、`test_m49_control_routes.py`、`test_m50_per_agent_locks.py`、`test_ui_invariants.py` |
 | 进化与可选适配 | `test_stage7.py`、`test_stage8.py`、`test_integrations.py` |
 
-以上文件均位于 `tests/`。M63 完整验证：2026-11-21、Python 3.9.2，`python3 -m pytest -q --tb=short`，**806 passed, 2 skipped，64.80s**。Python 编译、页面 JS 语法、diff、文档链接与覆盖检查通过。涉及本地 HTTP 和系统沙箱子进程的测试在本机授权环境重跑；未调用真实模型、未重跑 CI/可选依赖组合/Linux runsc。浏览器工具受审批策略限制，未完成整屏截图；Node 隔离脚本与真实 HTTP 回归不等于可视验收。
+以上文件均位于 `tests/`。M63 完整验证：2026-11-21、Python 3.9.2，`python3 -m pytest -q --tb=short`，**806 passed, 2 skipped，64.80s**。Python 编译、页面 JS 语法、diff、文档链接与覆盖检查通过。涉及本地 HTTP 和系统沙箱子进程的测试在本机授权环境重跑；未调用真实模型、未重跑 CI/可选依赖组合/Linux runsc。M63 当时浏览器工具受审批策略限制，未完成整屏截图；Node 隔离脚本与真实 HTTP 回归不等于可视验收。
+
+M64 最终完整验证：同日同环境，**868 passed, 2 skipped，76.97s**；新增 62 项定向测试单独通过（11.92s）。Python 编译、页面 JS 语法、diff、66 个本地链接、17 个显式锚点与 16 份相关文档覆盖检查通过。临时实例真实 Chrome 完成新增接入、主/快切换、刷新保持、Escape 退出清密钥及 1280×960/390×844 页面可视检查，控制台无新增 JS 错误；临时服务和页面已关闭。未调用真实模型、未重启真实实例、未重跑 CI/可选依赖组合/Linux runsc。
 
 <a id="traceability"></a>
 ## 17. 设计决策与原文覆盖表
@@ -752,7 +785,7 @@ ADR 保留“为什么这样选”和当时替代方案；本文件给出累计�
 
 ### 17.3 所有原设计与相关文档的覆盖
 
-本文件覆盖 `docs/` 原有全部 14 份 Markdown：6 份专项规格、2 份历史计划、3 份 ADR、UI 规格、进度和债务；M63 新增 ADR 0004 后共有 15 份相关文档。保留原文件以免旧链接、评审证据和历史决策丢失；它们不是继续分叉的当前设计。
+本文件覆盖 `docs/` 原有全部 14 份 Markdown：6 份专项规格、2 份历史计划、3 份 ADR、UI 规格、进度和债务；M63/M64 新增 ADR 0004/0005 后共有 16 份相关文档。保留原文件以免旧链接、评审证据和历史决策丢失；它们不是继续分叉的当前设计。
 
 | 原文 | 本文件覆盖范围 | 原文保留用途 |
 |---|---|---|
@@ -769,6 +802,7 @@ ADR 保留“为什么这样选”和当时替代方案；本文件给出累计�
 | [ADR 0002](adr/0002-goal-forge-and-local-verification.md) | 第 3、6、8、9 节 | 已采纳决策理由 |
 | [ADR 0003](adr/0003-runtime-invariants-and-usage-settlement.md) | 第 4、7、8、11 节 | 已采纳决策理由 |
 | [ADR 0004](adr/0004-execution-context-contracts-and-sessions.md) | 第 3、7、11、13、15.2 节 | M63 设计先行与恢复取舍 |
+| [ADR 0005](adr/0005-live-model-catalog.md) | 第 13、14.4 节 | M64 模型接入与热切换取舍 |
 | [项目进度](PROGRESS.md) | 各节实现状态、第 15、16 节 | 里程碑和每次真实验证，仍单独维护 |
 | [结构债账本](DEBT.md) | 相关章节边界、第 15.3 节 | 风险触发条件、偿还方案与状态，仍单独维护 |
 

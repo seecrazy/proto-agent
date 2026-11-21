@@ -125,6 +125,9 @@ class ProtoAgent:
         self.llm = llm
         self.llm_fast = fast_llm if fast_llm is not None else llm  # 高频低风险调用用快模型
         self._breaker = CircuitBreaker()
+        self._model_breakers = {}
+        import threading
+        self._model_breakers_lock = threading.Lock()
         self._praise_times = []   # 享乐适应：近期夸奖时间戳
 
         store = create_store(self.data_dir)   # 文件默认；PROTO_STORE=mongo 切换
@@ -262,6 +265,55 @@ class ProtoAgent:
         self.pad = PAD(self.state.emotion)
         self._last_owner_ts = self._now()
 
+    @property
+    def llm(self):
+        catalog = getattr(self, "_model_catalog", None)
+        return catalog.client("main") if catalog is not None else self._llm
+
+    @llm.setter
+    def llm(self, value):
+        self._model_catalog = None
+        self._llm = value
+
+    @property
+    def llm_fast(self):
+        catalog = getattr(self, "_model_catalog", None)
+        if catalog is not None and catalog.uses_injected_clients:
+            return self._llm_fast
+        return catalog.client("fast") if catalog is not None else self._llm_fast
+
+    @llm_fast.setter
+    def llm_fast(self, value):
+        self._model_catalog = None
+        self._llm_fast = value
+
+    @property
+    def attributor(self):
+        if self._model_catalog is not None and not self._model_catalog.uses_injected_clients:
+            return self._live_attributor if self.llm is not None else self._offline_attributor
+        return self._attributor
+
+    @attributor.setter
+    def attributor(self, value):
+        self._attributor = value
+
+    @property
+    def planner(self):
+        if self._model_catalog is not None and not self._model_catalog.uses_injected_clients:
+            return self._live_planner if self.llm_fast is not None else None
+        return self._planner
+
+    @planner.setter
+    def planner(self, value):
+        self._planner = value
+
+    def bind_model_catalog(self, catalog) -> None:
+        from proto.llm.catalog import ModelRoleClient
+        self._offline_attributor = HeuristicAttributor()
+        self._live_attributor = LLMAttributor(_GuardedClient(self, ModelRoleClient(catalog, "main")))
+        self._live_planner = LLMPlanner(ModelRoleClient(catalog, "fast"), self.tools)
+        self._model_catalog = catalog
+
     def _on_task_completed(self, result) -> None:
         self.distiller.distill(result, domain="chat")
         if result.status == "completed":
@@ -347,7 +399,13 @@ class ProtoAgent:
                   pool: str = "owner_tasks") -> str:
         """熔断 + 预算守卫的 LLM 调用。"""
         from proto.llm.client import LLMError
-        if not self._breaker.allow():
+        from proto.llm.catalog import ModelRoleClient
+        breaker = self._breaker
+        if isinstance(client, ModelRoleClient):
+            client = client.pin()
+            with self._model_breakers_lock:
+                breaker = self._model_breakers.setdefault(client.binding_key, CircuitBreaker())
+        if not breaker.allow():
             raise LLMError("circuit_breaker_open")
         estimated_in = max(1, (len(system) + len(user)) // 4)
         reserved = self.kernel.pools.try_consume(
@@ -358,15 +416,15 @@ class ProtoAgent:
         try:
             reply = client.complete(system, user)
         except Exception:
-            self._breaker.record_failure()
+            breaker.record_failure()
             self.kernel.pools.settle(
                 pool, {}, {"wallclock_s": max(0.0, time.time() - started)})
-            if (self._breaker.state == "open"
+            if (breaker.state == "open"
                     and not self.spine.find(lambda d: d["event_type"] == "llm_breaker_trip")):
                 self.spine.append("llm_breaker_trip",
-                                  {"fails": self._breaker._fails})
+                                  {"fails": breaker._fails})
             raise
-        self._breaker.record_success()
+        breaker.record_success()
         # M48 真实用量计费：API 回执的 usage（含 thinking token）优先；
         # 协议无 usage 回退字符估算。修复"预算烧得比账面快"的失真。
         usage = getattr(client, "last_usage", None)

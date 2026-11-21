@@ -101,10 +101,12 @@ def main() -> int:
     if not instance_lock.acquire():
         print(f"  数据目录 {data_root} 已有 proto.web 实例在运行；拒绝启动第二个。")
         return 1
+    from proto.llm.catalog import ModelCatalog
+    models = ModelCatalog(data_root, llm, stack["fast"] if stack else None)
     if (data_root / "owner.key").exists():
         # 旧单 agent 布局：收编为舰队默认成员
         manager = AgentManager(root=data_root / ".fleet", llm=llm,
-                               fast_llm=stack["fast"] if stack else None)
+                               fast_llm=stack["fast"] if stack else None, models=models)
         agent = ProtoAgent(data_dir=data_root, llm=llm,
                            fast_llm=stack["fast"] if stack else None)
         info = manager.adopt(agent, name="默认")
@@ -112,7 +114,7 @@ def main() -> int:
             agent.kernel.set_mute(True)   # 恢复 registry 记录的暂停态
     else:
         manager = AgentManager(root=data_root, llm=llm,
-                               fast_llm=stack["fast"] if stack else None)
+                               fast_llm=stack["fast"] if stack else None, models=models)
         if not manager.list():
             manager.create(name="主 Agent")
         agent = manager.get(manager.current_id())
@@ -129,6 +131,7 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     url = server.url()
+    llm = agent.llm
     print(f"\n  PROTO Web 控制台已启动")
     print(f"  地址   : {url}")
     print(f"  模型   : {llm.describe() if llm else '离线模式（配置 PROTO_LLM_BASE_URL 启用真实对话）'}")

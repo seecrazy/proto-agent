@@ -25,7 +25,7 @@ REGISTRY = "registry.json"
 
 class AgentManager:
     def __init__(self, root: Path, llm=None, fast_llm=None, webtools=None,
-                 blackboard=None):
+                 blackboard=None, models=None):
         self.root = Path(root)
         try:
             self.root.chmod(0o700)
@@ -35,6 +35,7 @@ class AgentManager:
         (self.root / "archive").mkdir(parents=True, exist_ok=True)
         self._llm = llm
         self._fast = fast_llm if fast_llm is not None else llm
+        self.models = models
         self._webtools = webtools
         self.blackboard = blackboard or Blackboard(create_store(self.root))
         import threading as _th
@@ -43,6 +44,16 @@ class AgentManager:
         self._cache: Dict[str, ProtoAgent] = {}
         self._lock = threading.Lock()
         self._registry_path = self.root / REGISTRY
+
+    def enable_model_updates(self):
+        from proto.llm.catalog import ModelCatalog
+        with self._lock:
+            if self.models is None:
+                root = self.root.parent if self.root.name == ".fleet" else self.root
+                self.models = ModelCatalog(root, self._llm, self._fast)
+                for agent in self._cache.values():
+                    agent.bind_model_catalog(self.models)
+            return self.models
 
     # ---- 注册表 ----
     def _load_registry(self) -> dict:
@@ -90,6 +101,8 @@ class AgentManager:
 
     def adopt(self, agent: ProtoAgent, name: str = "默认") -> dict:
         """收编一个既有 Agent（单 Agent 旧布局兼容，幂等：同一目录只收一次）。"""
+        if self.models is not None:
+            agent.bind_model_catalog(self.models)
         with self._lock:
             reg = self._load_registry()
             existing = next((a for a in reg["agents"]
@@ -116,6 +129,8 @@ class AgentManager:
                            persona=persona or None,
                            blackboard=self.blackboard,
                            fleet_status=self._fleet_status_for(agent_id))
+        if self.models is not None:
+            agent.bind_model_catalog(self.models)
         if priority:
             agent.set_priority(priority)
         if info.get("paused"):
