@@ -184,6 +184,8 @@
     border-radius: 12px; padding: 20px; }
   #model-panel::backdrop, .agent-panel::backdrop { background: rgba(0,0,0,.6); }
   #model { min-width: 0; max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #agent-select { min-width: 0; max-width: 220px; }
+  .fleet-agent-id { color: var(--dim); font-size: 11px; overflow-wrap: anywhere; }
   #model-panel h2 { padding-right: 30px; }
   #model-close { position: absolute; top: 12px; right: 12px; }
   #model-panel h3 { margin: 14px 0 8px; }
@@ -274,6 +276,7 @@
   <span class="topbadge" id="pending-badge" title="待审批的主动提议" role="button"
         aria-label="待审批提议" onclick="showCat('work')" style="display:none">待批 0</span>
   <select id="agent-select" onchange="switchAgent(this.value)" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px"></select>
+  <button id="agent-identity-btn" onclick="openAgentIdentity()" title="修改当前 Agent 的显示名称，查看固定 ID" disabled>名称 / ID</button>
   <button onclick="showCreateAgent()" style="font-size:12px">＋Agent</button>
   <button id="autonomy-btn" onclick="openAutonomy()" title="当前 Agent 的自治设置">自治</button>
   <div class="spacer"></div>
@@ -331,6 +334,19 @@
     <button id="agent-create-save" class="primary" onclick="saveAgentDraft()" disabled>保存草稿</button>
     <button onclick="document.getElementById('agent-create-panel').close()">关闭</button></div>
   <output id="agent-create-message" class="empty" aria-live="polite"></output>
+</dialog>
+
+<dialog id="agent-identity-panel" class="agent-panel" aria-labelledby="agent-identity-heading">
+  <h2 id="agent-identity-heading">名称与 ID</h2>
+  <p class="empty">Agent ID 不可修改。改名不影响人设、任务或数据。</p>
+  <form onsubmit="saveAgentName(event)">
+    <label><span>Agent ID</span><input id="agent-identity-id" dir="ltr" readonly></label>
+    <label><span>显示名称</span><input id="agent-identity-name" required aria-describedby="agent-identity-hint"></label>
+    <p id="agent-identity-hint" class="empty">去掉首尾空白后，需为 1–40 个字符。</p>
+    <div class="btns"><button id="agent-identity-save" class="primary" type="submit">保存名称</button>
+      <button type="button" onclick="document.getElementById('agent-identity-panel').close()">关闭</button></div>
+    <output id="agent-identity-message" class="empty" aria-live="polite"></output>
+  </form>
 </dialog>
 
 <dialog id="autonomy-panel" class="agent-panel" aria-labelledby="autonomy-heading" onclose="autonomyEditor = null">
@@ -1328,8 +1344,11 @@ async function savePersona() {
     addMsg(`人设已设为：「${r.persona}」。${profileLabel(r.profile)}`, "system");
   } catch (e) { addMsg("人设保存失败：" + e.message, "system"); }
 }
+let fleetRefresh = 0;
 async function refreshFleet() {
+  const refresh = ++fleetRefresh;
   const r = await api("GET", "/api/agents");
+  if (refresh !== fleetRefresh) return;
   fleetMembers = r.agents;
   const sel = document.getElementById("agent-select");
   sel.innerHTML = "";
@@ -1339,6 +1358,7 @@ async function refreshFleet() {
     opt.selected = a.id === r.current;
     sel.appendChild(opt);
   }
+  document.getElementById("agent-identity-btn").disabled = !sel.value;
   const box = document.getElementById("fleet");
   box.innerHTML = "";
   for (const a of r.agents) {
@@ -1354,6 +1374,7 @@ async function refreshFleet() {
       ` <span class="badge">${esc((a.persona || "").slice(0, 12))}</span>` +
       ` <span class="badge hot">${esc(act.status || "?")}</span>` +
       (act.at ? ` <span style="color:var(--dim);font-size:10px">@${esc(fmtTime(act.at))}</span>` : "") + `</div>` +
+      `<div class="fleet-agent-id">ID: <code>${esc(a.id)}</code></div>` +
       `<div id="act-${a.id}" style="font-size:11px;color:var(--dim);margin:4px 0"></div>` +
       `<div style="font-size:11px;color:var(--dim)">${des} · P${(e.pleasure ?? 0).toFixed(1)} A${(e.arousal ?? 0).toFixed(1)} · 记忆${a.memory_total ?? 0} · 待批${a.pending_proposals ?? 0} · 目标${a.goals_active ?? 0}(${Math.round((a.goals_progress ?? 0) * 100)}%)</div>` +
       `<div class="btns" style="margin-top:6px">` +
@@ -1362,10 +1383,15 @@ async function refreshFleet() {
       `<button style="font-size:11px" onclick="forceAct('${a.id}', this)">立即行动</button>` +
       `<button style="font-size:11px" onclick="toggleActivity('${a.id}')">活动</button>` +
       `<button class="danger" style="font-size:11px" onclick="archiveAgent('${a.id}')">归档</button></div>`;
+    const actions = d.querySelector(".btns");
+    const identity = document.createElement("button");
+    identity.textContent = "名称 / ID";
+    identity.onclick = () => openAgentIdentity(a.id);
+    actions.appendChild(identity);
     const settings = document.createElement("button");
     settings.textContent = "自治设置";
     settings.onclick = () => openAutonomy(a.id);
-    d.querySelector(".btns").appendChild(settings);
+    actions.appendChild(settings);
     d.dataset.events = JSON.stringify(a.last_events || []);
     box.appendChild(d);
   }
@@ -1373,6 +1399,53 @@ async function refreshFleet() {
   dots.innerHTML = r.agents.filter(a => !a.id.includes("proto_data"))
     .map(a => `<i class="${a.paused || a.muted ? "paused" : a.autonomy?.blocked_reason === "" ? "run" : "idle"}" title="${esc(a.name)}（${esc(a.paused ? "暂停" : autonomyLabel(a.autonomy))}）"></i>`).join("");
 }
+
+let agentIdentityEditor = null;
+function openAgentIdentity(id = document.getElementById("agent-select").value) {
+  const member = fleetMembers.find(agent => agent.id === id);
+  if (!member) return;
+  const panel = document.getElementById("agent-identity-panel");
+  const name = document.getElementById("agent-identity-name");
+  agentIdentityEditor = {id};
+  document.getElementById("agent-identity-id").value = id;
+  document.getElementById("agent-identity-message").textContent = "";
+  document.getElementById("agent-identity-save").disabled = false;
+  name.value = member.name;
+  name.disabled = false;
+  if (!panel.open) panel.showModal();
+}
+
+async function saveAgentName(event) {
+  event.preventDefault();
+  const editor = agentIdentityEditor;
+  const panel = document.getElementById("agent-identity-panel");
+  const save = document.getElementById("agent-identity-save");
+  if (!editor || !panel.open || save.disabled) return;
+  const name = document.getElementById("agent-identity-name");
+  const message = document.getElementById("agent-identity-message");
+  const editing = () => agentIdentityEditor === editor && panel.open;
+  save.disabled = name.disabled = true;
+  message.textContent = "保存中…";
+  try {
+    const result = await api("POST", `/api/agents/${encodeURIComponent(editor.id)}/name`, {name: name.value});
+    const member = fleetMembers.find(agent => agent.id === result.id);
+    if (member) member.name = result.name;
+    if (editing()) {
+      name.value = result.name;
+      message.textContent = "名称已保存。";
+    }
+    try { await refreshFleet(); } catch (e) {
+      if (editing()) message.textContent = "名称已保存，舰队名单暂未刷新。";
+    }
+  } catch (e) {
+    if (editing()) message.textContent = e.message === "invalid_agent_name"
+      ? "请输入 1–40 个字符的单行名称。"
+      : e.message === "no_such_agent" ? "该 Agent 已归档或不存在。" : "保存失败：" + e.message;
+  } finally {
+    if (editing()) save.disabled = name.disabled = false;
+  }
+}
+
 function toggleActivity(id) {
   const el = document.getElementById("act-" + id);
   if (!el) return;

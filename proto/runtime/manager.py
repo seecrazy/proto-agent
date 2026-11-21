@@ -13,6 +13,7 @@ import re
 import shutil
 import threading
 import time
+import unicodedata
 import uuid
 from copy import copy
 from pathlib import Path
@@ -175,6 +176,23 @@ class AgentManager:
     def info(self, agent_id: str) -> Optional[dict]:
         reg = self._load_registry()
         return next((a for a in reg["agents"] if a["id"] == agent_id), None)
+
+    def rename(self, agent_id: str, name: str) -> Optional[dict]:
+        if not isinstance(name, str):
+            raise ValueError("invalid_agent_name")
+        name = name.strip()
+        if not 1 <= len(name) <= 40 or any(unicodedata.category(char) in {"Cc", "Cs", "Zl", "Zp"}
+                                          for char in name):
+            raise ValueError("invalid_agent_name")
+        with self._lock:
+            reg = self._load_registry()
+            info = next((row for row in reg["agents"] if row["id"] == agent_id), None)
+            if info is None:
+                return None
+            if info["name"] != name:
+                info["name"] = name
+                self._save_registry(reg)
+            return {"id": info["id"], "name": info["name"]}
 
     def get(self, agent_id: str) -> Optional[ProtoAgent]:
         with self._lock:

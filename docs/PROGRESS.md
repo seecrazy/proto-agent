@@ -2,6 +2,12 @@
 
 > 当前完整方案统一阅读 [DESIGN.md](DESIGN.md)。本文件只记录里程碑、实现状态与验证证据，不作为第二份设计。
 
+## M73 · Agent ID 与显示名称（2026-11-22，本地交付）
+
+- **已实现**：顶栏及舰队卡片打开「名称 / ID」，卡片展示完整 ID。主人改名只写既有注册表的名称，保留选择、工作目录、人设和原运行，不等待 Agent 的执行或对话锁。见[设计与验收](DESIGN.md#agent-display-name)及 [ADR 0006](adr/0006-agent-lifecycle-and-work-coordination.md)。
+- **验证**：`python3 -m pytest -q` 为 **1010 passed, 3 skipped**；覆盖 ID 字段拒绝、未授权拒绝、后台锁占用、收编成员重启与待运行记录保留。独立 Chrome 控制台验证桌面和 390px 窄屏，只读 ID 可选中复制，两处入口改名不清空聊天草稿，刷新后仍显示新名称及原 ID。
+- **交付边界**：无数据迁移，未重启现有实例或触碰 Agent 的实际工作区。
+
 ## M72 · 负载保护与可验收交付（2026-11-22，本地交付）
 
 - **已定位/采纳**：1,801 条验证/交付记录含 1,780 条无产出失败；存在实际供应商 429，也存在大量未发送的本地熔断。主/快模型共享路由，App 各阶段分离且无真实应用构建。见[设计与验收](DESIGN.md#evidence-driven-delivery)及 [ADR 0011](adr/0011-model-pressure-and-evidence-delivery.md)。

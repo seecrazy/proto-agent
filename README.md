@@ -2,12 +2,12 @@
 
 > **内在状态显式可调制 · 主动行为受授权与预算约束 · 自我进化机制仍在验证中**
 
-[![tests](https://img.shields.io/badge/tests-996%20passed-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-1010%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
 [![version](https://img.shields.io/badge/version-0.33.0-orange.svg)]()
 
-PROTO 的长期目标是在同等资源与权限下完成通用 AI Agent 能做的有用工作，并让同一个 Agent 以持续的人设、记忆和目标与人相处、主动学习、思考、成长和交付。没有新指令也能行动，但不能自行扩权，产出以可复核的证据为准。框架用独立样例验证，不替 Agent 承做、调试或验收真实项目。当前实现至 M72，仍是**单机多 Agent 原型**。见[核心设计原则](docs/DESIGN.md#core-design-principles)。
+PROTO 的长期目标是在同等资源与权限下完成通用 AI Agent 能做的有用工作，并让同一个 Agent 以持续的人设、记忆和目标与人相处、主动学习、思考、成长和交付。没有新指令也能行动，但不能自行扩权，产出以可复核的证据为准。框架用独立样例验证，不替 Agent 承做、调试或验收真实项目。当前实现至 M73，仍是**单机多 Agent 原型**。见[核心设计原则](docs/DESIGN.md#core-design-principles)。
 
 ## 文档入口
 
@@ -169,7 +169,7 @@ cd proto-agent
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev]'
-python -m pytest -q       # 本机验证：996 passed, 2 skipped（2026-11-21，Python 3.9.2）
+python -m pytest -q       # 本机验证：1010 passed, 3 skipped（2026-11-22，Python 3.9.2）
 python3 -m proto.demo     # 12 段全链路演示：锚定→调制→毒化拒收→评估→审批→进化两轨→自驱执行→审计
 ```
 
@@ -261,6 +261,7 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 | M70 并行对话与实时活动 | 对话和后台等待分离、真实活动与验收、冷却自动恢复、目标间文件接力 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#concurrent-dialogue-live-work) |
 | M71 有界上下文与断点续作 | 观察按字节限额、旧进度回执、重启安全续接和失败退避 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#durable-work-continuity) |
 | M72 负载保护与有效交付 | 同一模型接入共享退避、无进展自动暂停、阶段共用工位、真实构建证据 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#evidence-driven-delivery) |
+| M73 Agent ID 与显示名称 | 完整 ID 只读可查，改名不影响身份引用或后台运行 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#agent-display-name) |
 | 后续模型交互 | 原生工具协议、请求级用量、token 压缩与进程级取消 | 待专项，不纳入 M63/M64 |
 
 ## 许可
@@ -347,6 +348,8 @@ PROTO 的长期记忆是完整的记忆流（Generative Agents 架构的零依�
 ## 多 Agent：养一支舰队
 
 一个主人可管理多个 Agent，各自保有锚定身份、人设、记忆流、目标树和预算池。控制台操作：**`＋Agent` → 预览 → 保存草稿 → `自治` → 选择模式并确认启用**。未启用和「仅指派」不派发自主工作；「仅建议」只根据已有目标或优先级提示；「自动执行」仍受原工作区、额度与审批限制。保存内置预设立即应用参数和目标，保留主人覆盖、锁定和学习；自由文本可重新保存并尝试应用模型推荐。旧成员保留已有授权，收编后接入同一舰队黑板。
+
+**查看 ID 或改名：** 在顶栏点「名称 / ID」管理当前成员，或在「概览 → Agent 舰队」直接查看完整 ID、从成员卡片打开同一入口。ID 固定不可修改；「保存名称」只改显示名称，不影响人设、后台任务、工作目录或当前对话。[接口与边界](docs/DESIGN.md#agent-display-name)
 
 舰队暂停会持久化，不能用解除临时静音绕过；不挡主人对话、普通单任务指派或拒绝待批动作，也不强制终止已经启动的工具。项目生产和评审在参与者暂停时等待。脚本可用 `python3 -m proto.agents preview --name 评审员` 查看草稿配置，`create --name 评审员` 保存，再用 `autonomy <id> --enable --mode suggest` 启用建议模式，均可在子命令前指定 `--root`。
 

@@ -56,6 +56,7 @@ _CONTROL_POST_RE = [
     re.compile(r"^/api/agents/[A-Za-z0-9_-]+/(pause|select|archive)$"),
 ]
 _AUTONOMY_RE = re.compile(r"^/api/agents/([A-Za-z0-9_-]+)/autonomy$")
+_AGENT_NAME_RE = re.compile(r"^/api/agents/([A-Za-z0-9_-]+)/name$")
 _ACT_RE = re.compile(r"^/api/agents/([A-Za-z0-9_-]+)/act$")
 _RESUME_RE = re.compile(r"^/api/task/([A-Za-z0-9_-]+)/resume$")
 _PLAN_APPROVE_RE = re.compile(r"^/api/task/plan/([0-9a-f]{32})/approve$")
@@ -175,6 +176,9 @@ class _Handler(BaseHTTPRequestHandler):
             return self._autonomy(method, server.manager, autonomy.group(1))
         if method == "POST" and path in ("/api/agents/preview", "/api/agents"):
             return self._agent_creation(path, server.manager)
+        rename = _AGENT_NAME_RE.fullmatch(path)
+        if method == "POST" and rename:
+            return self._agent_rename(server.manager, rename.group(1))
         if path == "/api/projects" or path.startswith("/api/projects/"):
             return self._project_routes(method, path, server.manager.runs.projects)
         agent_id = self.headers.get("X-Proto-Agent") or server.manager.current_id()
@@ -380,6 +384,18 @@ class _Handler(BaseHTTPRequestHandler):
             raise _HTTPError(400, str(exc)) from exc
         manager.set_current(info["id"])
         return self._json(200, {"created": info, "agents": manager.list()})
+
+    def _agent_rename(self, manager, agent_id):
+        fields = self._body()
+        if set(fields) != {"name"}:
+            raise _HTTPError(400, "invalid_agent_fields")
+        try:
+            info = manager.rename(agent_id, fields["name"])
+        except ValueError as exc:
+            raise _HTTPError(400, str(exc)) from exc
+        if info is None:
+            raise _HTTPError(404, "no_such_agent")
+        return self._json(200, info)
 
     def _autonomy(self, method, manager, agent_id):
         from proto.runtime.autonomy import AutonomyConflict

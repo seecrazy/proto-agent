@@ -161,6 +161,37 @@ def test_legacy_migration_and_repeated_adoption_share_fleet_tools(tmp_path, mana
     assert len(restored.goal_tree.active_long_term()) == 1
 
 
+def test_rename_preserves_adopted_identity_and_pending_work_on_restart(tmp_path, manager, monkeypatch):
+    existing = ProtoAgent(tmp_path / "legacy workspace", persona=SOFTWARE)
+    selected = manager.create("同名")["id"]
+    registered = manager.adopt(existing, "旧名称")
+    agent_id = registered["id"]
+    assert manager.pause(agent_id)
+    run = manager.runs.enqueue(agent_id, "task", {"text": "仍由原成员处理"})
+    registry = manager.root / "registry.json"
+    expected = json.loads(registry.read_text())
+    next(row for row in expected["agents"] if row["id"] == agent_id)["name"] = "同名"
+
+    result = {"id": agent_id, "name": "同名"}
+    assert manager.rename(agent_id, "  同名  ") == result
+    assert json.loads(registry.read_text()) == expected
+    assert manager.get(agent_id) is existing
+    monkeypatch.setattr(manager, "_save_registry", lambda _: pytest.fail("unchanged name rewrote registry"))
+    assert manager.rename(agent_id, "同名") == result
+
+    reopened = AgentManager(manager.root)
+    assert reopened.current_id() == selected
+    assert reopened.info(agent_id)["name"] == reopened.info(selected)["name"] == "同名"
+    assert reopened.runs.get(run["id"]) == run
+    loaded = reopened.get(agent_id)
+    assert loaded.fleet_id == agent_id
+    assert loaded.data_dir == existing.data_dir
+    assert loaded.fingerprint == existing.fingerprint
+    assert loaded.profile == existing.profile
+    assert loaded.autonomy_blocker() == "fleet_paused"
+    assert manager._llm.calls == []
+
+
 @pytest.mark.parametrize("recommendation", [
     "no-json", '{"params":{"desires.curiosity_gap":0.9},"seed_goal":"坏目标"}',
     '{"params":{"personality.rigor":true},"seed_goal":"坏目标"}',
@@ -387,6 +418,41 @@ def test_http_preview_and_scoped_policy_updates_are_strict_and_fast(manager, mon
             thread.join(timeout=5)
 
 
+def test_http_agent_rename_is_strict_and_does_not_wait_for_agent_locks(manager, monkeypatch):
+    from proto.web.server import ProtoWebServer
+    target = member(manager, persona=SOFTWARE)
+    other = member(manager)
+    target_id = target.fleet_id
+    path = f"/api/agents/{target_id}/name"
+    original = manager.info(target_id)
+    with ProtoWebServer(manager=manager, port=0, heartbeat_s=0) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            assert call(server, path, {"name": "越权"}, token=False) == (401, {"error": "unauthorized"})
+            for fields in ({}, {"name": "试图改 ID", "id": other.fleet_id}):
+                assert call(server, path, fields) == (400, {"error": "invalid_agent_fields"})
+            for name in (None, [], True, " \t ", "长" * 41, "换\n行", "空\0字", "分\u2028隔", "\ud800"):
+                assert call(server, path, {"name": name}) == (400, {"error": "invalid_agent_name"})
+            assert manager.info(target_id) == original
+
+            with manager.ops_lock(target_id), target.dialogue_lock, monkeypatch.context() as patched:
+                patched.setattr(manager, "get", lambda _: pytest.fail("rename loaded an Agent"))
+                assert call(server, path, {"name": "  iPhone 开发组 🧠  "}, agent_id=other.fleet_id) == (
+                    200, {"id": target_id, "name": "iPhone 开发组 🧠"})
+            code, fleet = call(server, "/api/agents")
+            assert code == 200 and fleet["current"] == target_id
+            assert {agent["id"]: agent["name"] for agent in fleet["agents"]} == {
+                target_id: "iPhone 开发组 🧠", other.fleet_id: "成员"}
+            assert manager.archive(other.fleet_id)
+            assert call(server, f"/api/agents/{other.fleet_id}/name", {"name": "新名"}) == (
+                404, {"error": "no_such_agent"})
+            assert manager._llm.calls == []
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+
 def test_cli_preview_and_explicit_enable_use_existing_instance_lock(tmp_path, capsys):
     from proto.agents.__main__ import main
     from proto.system.instance_lock import InstanceLock
@@ -457,4 +523,65 @@ async function refreshState() {}
 '''
     result = subprocess.run([node, "-e", harness + "const AUTONOMY_LABELS = " + labels
                              + "let draftAgent = null;" + controls + checks], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_console_name_editor_binds_request_to_opened_agent_and_keeps_failed_input():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is not installed")
+    html = (Path(__file__).resolve().parents[1] / "proto/web/index.html").read_text()
+    assert "readonly" in html.split('id="agent-identity-id"', 1)[1].split(">", 1)[0]
+    marker = "let agentIdentityEditor = null;"
+    script = marker + html.split(marker, 1)[1].split("function toggleActivity", 1)[0]
+    harness = '''
+const assert = require('node:assert/strict');
+const fields = new Map();
+function get(id) {
+  if (!fields.has(id)) fields.set(id, {showModal() { this.open = true; }});
+  return fields.get(id);
+}
+const document = {getElementById: get};
+const fleetMembers = [{id: 'selected', name: '当前成员'}, {id: 'other-agent', name: '其他成员'}];
+const calls = [];
+let respond;
+function api(method, path, body) {
+  calls.push([method, path, body]);
+  return new Promise((resolve, reject) => { respond = {resolve, reject}; });
+}
+let refreshed = 0;
+async function refreshFleet() { refreshed++; }
+'''
+    checks = '''
+(async () => {
+  get('agent-select').value = 'selected';
+  openAgentIdentity('other-agent');
+  const id = get('agent-identity-id'), name = get('agent-identity-name');
+  const submit = () => saveAgentName({preventDefault() {}});
+  assert.equal(id.value, 'other-agent');
+  name.value = '   ';
+  const invalid = submit();
+  respond.reject(new Error('invalid_agent_name'));
+  await invalid;
+  assert.equal(name.value, '   ');
+  assert.match(get('agent-identity-message').textContent, /单行名称/);
+  assert.equal(get('agent-identity-save').disabled, false);
+  name.value = '新名称';
+  const pending = submit();
+  const duplicate = submit();
+  assert.equal(calls.length, 2);
+  await duplicate;
+  assert.deepEqual(calls[1], ['POST', '/api/agents/other-agent/name', {name: '新名称'}]);
+  get('agent-identity-panel').open = false;
+  openAgentIdentity();
+  respond.resolve({id: 'other-agent', name: '新名称'});
+  await pending;
+  assert.equal(id.value, 'selected');
+  assert.equal(name.value, '当前成员');
+  assert.equal(fleetMembers[1].name, '新名称');
+  assert.equal(get('agent-select').value, 'selected');
+  assert.equal(refreshed, 1);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+'''
+    result = subprocess.run([node, "-e", harness + script + checks], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stderr
