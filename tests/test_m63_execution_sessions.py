@@ -563,7 +563,12 @@ def test_verification_retry_returns_its_new_approval_session(agent, source):
         node = agent.goal_tree.add("验收重试可能暂停", "task", source="self")
         result = agent.work_on_goal(node)
         assert agent.goal_tree.get(node.id).status == "active"
-    assert result["status"] == "paused" and result["retried"] is True
+        assert result["status"] == "awaiting_retry"
+        assert agent.llm.decisions == [decision("external", value="retry-approval")]
+        assert not agent.queue.pending()
+        result = agent.work_on_goal(node)
+    assert result["status"] == "paused"
+    assert bool(result.get("retried")) is (source == "owner")
     assert result["task_id"] == agent.queue.pending()[0].task_id
     assert agent.sessions.lookup(result["session_id"])["status"] == "awaiting_approval"
     assert not calls

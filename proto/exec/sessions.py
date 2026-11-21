@@ -104,6 +104,11 @@ class ExecutionSessions:
                 or len(session["prompt_blocks"]) != 4
                 or any(not isinstance(block, str) for block in session["prompt_blocks"])):
             return False
+        delivery = session.get("delivery")
+        if delivery is not None and (not isinstance(delivery, dict)
+                or delivery.get("stage") not in ("", "design", "build", "verify")
+                or "start" not in delivery or not (delivery["start"] is None or isinstance(delivery["start"], str))):
+            return False
         pending = session.get("pending_call")
         decision = session.get("pending_decision")
         if session.get("schema_version") == SESSION_SCHEMA_VERSION and "pending_decision" not in session:

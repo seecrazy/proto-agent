@@ -57,12 +57,15 @@ from proto.storage.store import FileSystemStore
 from proto.runtime.autonomy import (
     AutonomyConflict, AutonomyPolicy, autonomous_entry, autonomous_origin, load_policy, validate_mode,
 )
-from proto.runtime.coordination import CoordinationError
+from proto.runtime.coordination import CoordinationDB, CoordinationError
+from proto.runtime.model_pressure import ModelPressure
 from proto.runtime.personas import (
     AgentProfile, DEFAULT_PERSONA, LLM_PERSONA_PROMPT, PERSONA_DEFAULTS,
     normalize_persona, parse_recommendation,
 )
 from proto.runtime.runcontext import current_run
+from proto.work.delivery import (MAX_STALLED_SLICES, MAX_UNVERIFIED_SLICES, ios_stage,
+                                 main_project, project_files, stage_waiters, valid_ios_evidence)
 
 SYSTEM_PROMPT = (
     "你是 PROTO，一个能力完整、内在状态可被主人塑造的成长型 Agent。"
@@ -130,6 +133,7 @@ class ProtoAgent:
         self._fleet_runs = None
         self._fleet_status_fn = fleet_status   # M47: manager 注入的舰队快照
         self.data_dir = Path(data_dir)
+        self._local_model_pressure = ModelPressure(CoordinationDB(self.data_dir))
         self.fleet_id = self.data_dir.resolve().name
         self.data_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -537,10 +541,25 @@ class ProtoAgent:
         if client is None:
             return {"state": "offline", "waiting": False, "retry_at": None,
                     "reason": "model_not_configured"}
-        return breaker.snapshot()
+        local = breaker.snapshot()
+        shared = self._pressure().snapshot(getattr(client, "pressure_key", None))
+        if shared and (not local["waiting"] or (shared["retry_at"] or 0) > (local["retry_at"] or 0)):
+            return shared
+        return local
+
+    def _pressure(self):
+        return self._fleet_runs.model_pressure if self._fleet_runs is not None else self._local_model_pressure
+
+    def _scoped_model(self):
+        from proto.llm.client import LLMError
+        try:
+            client, _breaker = self._model_binding(self.llm)
+            return bool(getattr(client, "pressure_key", None))
+        except LLMError:
+            return False
 
     def _complete(self, client, system: str, user: str,
-                  pool: str = "owner_tasks") -> str:
+                  pool: str = "owner_tasks", *, foreground=False) -> str:
         """熔断 + 预算守卫的 LLM 调用。"""
         from proto.llm.client import LLMError
         reason = self._blocked_dispatch(False)
@@ -549,6 +568,16 @@ class ProtoAgent:
         client, breaker = self._model_binding(client)
         if breaker.snapshot()["waiting"]:
             raise LLMError("circuit_breaker_open")
+        pressure = self._pressure()
+        route = getattr(client, "pressure_key", None)
+        with pressure.admit(route, foreground=foreground):
+            return self._model_request(client, breaker, pressure, route, system, user, pool)
+
+    def _model_request(self, client, breaker, pressure, route, system, user, pool):
+        from proto.llm.client import LLMError
+        blocked = self._blocked_dispatch(False)
+        if blocked or breaker.snapshot()["waiting"]:
+            raise LLMError(blocked or "circuit_breaker_open")
         estimated_in = max(1, (len(system) + len(user)) // 4)
         fleet_budget = self._fleet_runs.budget if self._fleet_runs is not None else None
         ticket = None
@@ -588,21 +617,32 @@ class ProtoAgent:
                 total = max(1, (len(system) + len(user) + len(reply)) // 4)
         except Exception as exc:
             incident = model_failure(exc)
-            breaker.record_failure(incident, permit=permit)
+            limited = None
+            if route and incident == "model_rate_limited":
+                limited = pressure.limited(route, exc)
+                breaker.record_success(permit=permit)
+            else:
+                breaker.record_failure(incident, permit=permit,
+                                       immediate=bool(route and incident in ("model_unauthorized", "model_forbidden")))
             self.activity_event("model_failed", reason=incident)
             if ticket is not None:
                 fleet_budget.settle(ticket.id)
             self.kernel.pools.finish_model(request_id, elapsed=time.monotonic() - started)
+            if limited is not None:
+                self.spine.append("model_rate_limited", {"retry_at": limited.retry_at})
             if (breaker.state == "open"
                     and not self.spine.find(lambda d: d["event_type"] == "llm_breaker_trip")):
                 self.spine.append("llm_breaker_trip",
                                   {"fails": breaker._fails})
+            if limited is not None:
+                raise limited from exc
             raise
         breaker.record_success(permit=permit)
         self.activity_event("model_returned")
         if ticket is not None:
             fleet_budget.settle(ticket.id, tokens=total)
         self.kernel.pools.finish_model(request_id, tokens=total, elapsed=time.monotonic() - started)
+        pressure.succeeded(route)
         return reply
 
     def _system_prompt(self) -> str:
@@ -732,7 +772,7 @@ class ProtoAgent:
         return _re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "-",
                        text.strip()).strip("-")[:18]
 
-    def _project_dir_for(self, node) -> str:
+    def _project_dir_for(self, node, *, migrate_legacy=True) -> str:
         """M53：goal→项目目录 持久映射——slug 算法再变，既有目标不换目录；
         首次映射时若存在旧式中文目录则原地改名（保住已有进度）。"""
         store = create_store(self.data_dir)
@@ -741,7 +781,7 @@ class ProtoAgent:
             return mapped["dir"]
         new_dir = f"projects/{self._goal_slug(node.text, node.id)}"
         new_path = self.code_workspace.root / new_dir
-        if not new_path.exists():
+        if migrate_legacy and not new_path.exists():
             root = self.code_workspace.root / "projects"
             if root.is_dir():
                 legacy = self._legacy_slug(node.text)
@@ -769,19 +809,25 @@ class ProtoAgent:
         for d in sorted(root.iterdir()):
             if not d.is_dir() or d.name.startswith("_"):
                 continue
-            files = [f for f in d.rglob("*") if f.is_file()]
-            last = max((f.stat().st_mtime for f in files), default=0)
+            files, last = 0, 0
+            for path in project_files(d):
+                try:
+                    last = max(last, path.stat().st_mtime)
+                    files += 1
+                except OSError:
+                    continue
             def _claims(n):
-                mapped = store.get("project_dirs", n.id) or {}
-                if mapped.get("dir") == f"projects/{d.name}":
-                    return True
+                for collection in ("project_dirs", "delivery_projects"):
+                    mapped = store.get(collection, n.id) or {}
+                    if mapped.get("dir") == f"projects/{d.name}":
+                        return True
                 legacy = self._legacy_slug(n.text)
                 return (legacy[:8] and (legacy.startswith(d.name[:8])
                         or d.name.startswith(legacy[:8])))
             owner = next((n for n in active.values() if _claims(n)), None)
             status = (f"目标[{owner.text[:20]}…] 进行中" if owner
                       else "无活跃目标（待归档或已交付）")
-            lines.append(f"- **{d.name}/** — {len(files)} 文件，"
+            lines.append(f"- **{d.name}/** — {files} 文件，"
                          f"最后写入 { _time.strftime('%m-%d %H:%M', _time.localtime(last)) if last else '无'}，{status}")
         strays = [f for f in root.iterdir() if f.is_file()]
         if strays:
@@ -801,6 +847,7 @@ class ProtoAgent:
         """M41：drop 目标时级联归档其项目目录（谱系全灭才归档）。"""
         node = self.goal_tree._nodes.get(node_id)
         text = node.text if node else ""
+        lineage = self.goal_tree.root_for(node) if node else None
         self.goal_tree.drop(node_id)
         if not text:
             return
@@ -808,6 +855,8 @@ class ProtoAgent:
         if not root.is_dir():
             return          # 全新 agent 尚无 projects 目录（快通道暴露的潜伏 500）
         store = create_store(self.data_dir)
+        if lineage and store.get("delivery_projects", lineage.id):
+            return
         mapped = store.get("project_dirs", node_id)
         if mapped and mapped.get("dir"):
             target = self.code_workspace.root / mapped["dir"]
@@ -888,6 +937,11 @@ class ProtoAgent:
                 return {"status": "blocked", "reason": reason, "goal_id": node.id}
             if node.status != "active":
                 return {"status": "cancelled", "goal_id": node.id}
+            held = self.delivery_state(node.id)
+            if held.get("blocked"):
+                return {"status": "blocked", "reason": held["reason"], "goal_id": node.id}
+            if node.id in stage_waiters(self.goal_tree, self.goal_tree.all_active()):
+                return {"status": "blocked", "reason": "delivery_predecessor_pending", "goal_id": node.id}
             pending = self.sessions.pending_for_goal(node.id)
             if pending:
                 if (self.sessions.compatible(pending) and self.sessions.valid(pending)
@@ -909,8 +963,9 @@ class ProtoAgent:
         from proto.quality.gate import generate_acceptance
         from proto.work.handoff import lineage_handoff
         from proto.work.journal import GoalJournal
-        if self.model_status()["waiting"]:
-            return {"status": "blocked", "reason": "circuit_breaker_open", "goal_id": node.id}
+        model = self.model_status()
+        if model["waiting"]:
+            return {"status": "blocked", "reason": model["reason"], "goal_id": node.id}
         pool = ("self_initiated" if node.source == "self" else "owner_tasks")
         # M45/M61 预算地板：对应池见底时不起必死链（半路烧干=白烧），
         # 记审计+收件箱留言等充值/次日重置，零 LLM 消耗。
@@ -929,7 +984,8 @@ class ProtoAgent:
             return {"status": "budget_floor_wait",
                     "reason": f"{pool} 低于 2000 tokens",
                     "goal": node.text}
-        project_dir = self._project_dir_for(node)
+        project_dir = main_project(self, node)
+        stage = ios_stage(self.goal_tree.root_for(node) or node, node)
         acceptance = node.acceptance
         if not acceptance:
             acceptance = generate_acceptance(
@@ -939,6 +995,9 @@ class ProtoAgent:
             reason = self.autonomy_blocker()
             if reason:
                 return {"status": "blocked", "reason": reason, "goal_id": node.id}
+            model = self.model_status()
+            if not acceptance and model["waiting"]:
+                return {"status": "blocked", "reason": model["reason"], "goal_id": node.id}
             if not acceptance:
                 # 快模型解析失败也不允许标准漂移：用确定性最低证据门。
                 acceptance = (
@@ -954,18 +1013,16 @@ class ProtoAgent:
         # 放 agent 数据目录而非工作区——内部机制不占交付区。
         journal = GoalJournal(
             Path(self.data_dir) / "work" / node.id / "JOURNAL.md")
-        escalation = _escalation_prefix(journal.consecutive_no_output())
-        if getattr(self, "_force_approach_change", None) == node.id:
-            self._force_approach_change = None
-            escalation += ("【换打法】此前同一思路已连续失败——禁止再用相同"
-                           "路径。先重新规划：换一种根本不同的实现/验证方法"
-                           "（或先做最小可验证切片），再动手。\n")
-        # M37：方法菜单注入（多元+自发明，主人限定才收窄）
-        menu = self._curate_methods(node.text, pool=pool)
-        # 项目目录约定注入任务描述
-        task = (f"{escalation}{node.text}。产出必须写入项目目录 {project_dir}/ "
-                f"（write_file 的 path 以 {project_dir}/ 开头）。"
+        menu = self.methods_lib.menu_block(self.persona, node.text)
+        task = (f"{node.text}。本轮推进一个最小可验收增量，复用已有文件。"
+                f"产出必须写入主工位 {project_dir}/（工具 path 相对工作区）。"
                 + (f"\n{menu}" if menu else "") + lineage_handoff(self, node, project_dir))
+        if stage in ("build", "verify"):
+            task += ("\n先确保真正的应用 target 而非 Swift 库。使用 run_command，cwd 指定主工位，"
+                     "执行 xcodebuild -project <App.xcodeproj> -scheme <App> -destination "
+                     "'generic/platform=iOS Simulator' -derivedDataPath .proto-build-01 build "
+                     "CODE_SIGNING_ALLOWED=NO（使用一个尚不存在的 .proto-build-* 路径）。"
+                     "如验收要求 XCTest，用具体模拟器目的地执行 test。不要更改权限或尝试上架。")
         # M59 跨轮失败反馈：上轮验证缺什么/下一步是什么，本轮开局就知道
         # ——换打法靠信息传递，不靠冷却。
         cross_feedback = ""
@@ -975,20 +1032,55 @@ class ProtoAgent:
                                 last_round.get("next")) if b]
             if bits:
                 cross_feedback = "；".join(bits)[:300]
-        run_feedback = cross_feedback
+        if self.delivery_state(node.id).get("stalled"):
+            cross_feedback += "；上一工作片没有实质增量，改变做法或缩小到一个能验证的改动。"
         result = AgenticLoop(self, max_steps=24, pool=pool).run(
             task, acceptance=acceptance, journal=journal,
-            feedback=run_feedback, goal_id=node.id, project_dir=project_dir)
-        if result.get("status") == "awaiting_retry":
-            retry = AgenticLoop(self, max_steps=12, pool=pool).run(
-                task, acceptance=acceptance, journal=journal,
-                feedback="；".join(result.get("missing", []))
-                or cross_feedback, goal_id=node.id, project_dir=project_dir)
-            result = retry
-            result["retried"] = True
-            if result.get("verified") is False:
-                result["status"] = "failed_verification"
+            feedback=cross_feedback, goal_id=node.id, project_dir=project_dir, delivery_stage=stage)
         return self._finish_goal_result(node, result, project_dir)
+
+    def saved_ios_build(self, project_dir):
+        record = self.spine.store.get("delivery_builds", hashlib.sha256(project_dir.encode()).hexdigest())
+        return record.get("build") if record else None
+
+    def delivery_state(self, goal_id):
+        return self.spine.store.get("goal_delivery", goal_id) or {}
+
+    def retry_delivery(self, goal_id):
+        node = self.goal_tree.get(goal_id)
+        if node is None or node.status != "active":
+            raise CoordinationError("no_active_goal", 404)
+        if not self.delivery_state(goal_id).get("blocked") or self.sessions.pending_for_goal(goal_id):
+            raise CoordinationError("delivery_not_retryable")
+        self.spine.store.put("goal_delivery", goal_id, {"slices": 0, "stalled": 0})
+        self.spine.append(AuditEvent.OWNER_OVERRIDE, {"action": "retry_delivery", "goal_id": goal_id})
+
+    def _record_delivery(self, node, result, project_dir):
+        if "delivery_progress" not in result and not str(result.get("reason", "")).startswith("context_error:"):
+            return
+        prior = self.delivery_state(node.id)
+        token = result.get("session_id")
+        if token and prior.get("session_id") == token:
+            if prior.get("blocked"):
+                result.update(status="blocked", reason=prior["reason"])
+            return
+        build = result.get("ios_build")
+        if build and valid_ios_evidence(self.code_workspace, project_dir, build):
+            previous = self.saved_ios_build(project_dir)
+            if build.get("tested") or not valid_ios_evidence(self.code_workspace, project_dir, previous):
+                self.spine.store.put("delivery_builds", hashlib.sha256(project_dir.encode()).hexdigest(), {"build": build})
+        passed = result.get("verified") is True
+        slices = 0 if passed else prior.get("slices", 0) + 1
+        stalled = 0 if passed or result.get("delivery_progress") else prior.get("stalled", 0) + 1
+        reason = ("delivery_no_progress" if stalled >= MAX_STALLED_SLICES else
+                  "delivery_not_verified" if slices >= MAX_UNVERIFIED_SLICES else "")
+        self.spine.store.put("goal_delivery", node.id, {"slices": slices, "stalled": stalled,
+                             "session_id": token, "reason": reason, "blocked": bool(reason), "verified": passed})
+        if reason:
+            self.spine.append("goal_delivery_hold", {"goal_id": node.id, "reason": reason, "slices": slices})
+            self._inbox.append(f"〔交付暂停〕{node.text[:60]}未形成可验证成果；保留原工位和验收。"
+                               "补齐缺失条件后，可在活动中心恢复该目标。")
+            result.update(status="blocked", reason=reason)
 
     def _finish_goal_result(self, node, result, project_dir):
         result["project_dir"] = project_dir
@@ -1018,6 +1110,7 @@ class ProtoAgent:
         elif result.get("verified") is True and getattr(node, "fail_streak", 0):
             node.fail_streak = 0
             self.goal_tree._store.put("goaltree", node.id, node.to_dict())
+        self._record_delivery(node, result, project_dir)
         if result.get("verified") is True:
             self.goal_tree.complete(node.id)     # 里程碑回调自动触发
         self.scheduler.on_task_completed(
@@ -1187,7 +1280,7 @@ class ProtoAgent:
         if self.llm is not None:
             try:
                 reply = self._complete(
-                    self.llm, prompt, context + "\n\n主人说：" + text)
+                    self.llm, prompt, context + "\n\n主人说：" + text, foreground=True)
                 if reply:
                     return reply
             except Exception:
@@ -1366,64 +1459,10 @@ class ProtoAgent:
         return min(1.0, total / 1.6 + 0.12 * arousal)
 
     def _may_start_chain(self) -> bool:
-        """M59 意义门控：只拦真停机原因，不拦勤奋。
-
-        - 秒败熔断：上一条链 <15s 前以 llm_error/failed 崩溃 → 等一拍
-          （防打转烧钱，不是休息）；failed_verification/正常结束不拦。
-        - 全败 hold：所有 mid 目标 fail_streak≥3 → 停止硬撞（换思路/
-          问主人），work_hold 审计+收件箱留言各限频一次。
-        """
-        import os as _os
+        """短失败节流；工作片是否暂停以持久化的逐目标状态为准。"""
         last = getattr(self, "_last_chain", None)
-        if last and last.get("status") in ("failed", "no_llm", "llm_error"):
-            if self._now() - last.get("ended", 0) < 15.0:
-                return False
-        mids = [n for n in self.goal_tree.all_active()
-                if n.level in ("mid", "short", "task")]
-        if mids and all(getattr(n, "fail_streak", 0) >= 3 for n in mids):
-            # M59b：全败≠死停。先自主换打法（重置失败计数+强制根本不同
-            # 思路重试）；同一目标换过 2 轮打法仍全败，才是真 hold 问主人。
-            store = create_store(self.data_dir)
-            resets = {n.id: (store.get("approach_resets", n.id) or {})
-                      .get("resets", 0) for n in mids}
-            pivotable = [n for n in mids if resets[n.id] < 2]
-            if pivotable:
-                target = min(pivotable,
-                             key=lambda n: (resets[n.id], -n.progress))
-                store.put("approach_resets", target.id,
-                          {"resets": resets[target.id] + 1,
-                           "text": target.text[:80],
-                           "at": self._now()})
-                target.fail_streak = 0
-                self.goal_tree._store.put("goaltree", target.id,
-                                          target.to_dict())
-                self._force_approach_change = target.id
-                self.spine.append("approach_reset", {
-                    "goal": target.text[:60],
-                    "attempt": resets[target.id] + 1})
-                self._inbox.append(
-                    f"〔换打法〕「{target.text[:36]}…」连续验证失败，"
-                    "我将用根本不同的思路重试（第 "
-                    f"{resets[target.id] + 1} 次自主换法）。")
-                return True
-            now_ts = self._now()
-            if now_ts - getattr(self, "_last_hold_ts", 0.0) >= 3600:
-                self._last_hold_ts = now_ts
-                self.spine.append("work_hold", {
-                    "reason": "所有目标换过 2 轮打法仍连续失败——自主思路"
-                              "已尽，需主人输入", "goals": len(mids)})
-                self._inbox.append(
-                    "〔工作暂停〕所有目标各换过 2 轮打法仍失败。我在黑板"
-                    "发了求助帖/需要你的新指示（看目标树失败原因）。")
-                try:
-                    if self.blackboard is not None:
-                        self.post_to_blackboard(
-                            "各目标换过 2 轮打法仍连续失败，请求思路指点"
-                            "或主人指示", kind="help")
-                except Exception:
-                    pass
-            return False
-        return True
+        return not (last and last.get("status") in ("failed", "no_llm", "llm_error")
+                    and self._now() - last.get("ended", 0) < 15.0)
 
     def _suggest_autonomy(self) -> Optional[str]:
         goal = self.goal_tree.select_executable(self.state.owner_priority)
@@ -1448,6 +1487,29 @@ class ProtoAgent:
                 node = self.goal_tree.get(node.parent_id)
         return deferred
 
+    def _available_work(self):
+        active = self.goal_tree.all_active()
+        excluded = self._goals_with_live_sessions() | stage_waiters(self.goal_tree, active)
+        excluded.update(node.id for node in active if self.delivery_state(node.id).get("blocked"))
+        selected = self.goal_tree.select_executable(self.state.owner_priority or "", excluded=excluded)
+        return selected, bool(excluded)
+
+    def heartbeat_ready(self):
+        if self.model_status()["waiting"]:
+            return False
+        selected, has_unavailable = self._available_work()
+        if selected is None:
+            return not has_unavailable or self._priority_seed_dirty
+        pool = "self_initiated" if selected.source == "self" else "owner_tasks"
+        remaining = self.kernel.pools.remaining_all()
+        if remaining["global"].get("calls", 0) <= 0 or min(
+                remaining["global"].get("tokens", 0), remaining[pool].get("tokens", 0)) < 2000:
+            return False
+        if self._fleet_runs is not None:
+            fleet = self._fleet_runs.budget.view()["remaining"]
+            return fleet["calls"] > 0 and fleet["tokens"] >= 2000
+        return True
+
     @autonomous_entry
     def maybe_proactive(self) -> Optional[str]:
         """无人交互时的生活（服务端心跳驱动，浏览器开不开都活着）：
@@ -1461,12 +1523,17 @@ class ProtoAgent:
             self.seed_priority_goals()
         if self._blocked_dispatch(True):
             return None
+        selected, has_unavailable = self._available_work()
+        if selected is None and has_unavailable:
+            return None
         self.desires.evolve(self._now(), self._last_owner_ts)
         self.pad.tick(1)                       # 情绪随时间向设定点衰减
         self.mgr.save()
         fired = self.scheduler.tick()
         if "deep_review" in fired:
             self._deep_review()
+            if selected is not None:
+                self._curate_methods(selected.text, pool="self_initiated")
         self.maybe_reflect()
         self._review_predictions()          # L3：预测误差闭环
         self._morning_brief()               # 专家习惯：每日晨间领域扫描
@@ -1478,9 +1545,8 @@ class ProtoAgent:
         # 是常态，此时有 active 目标就必须继续推进（用户核心诉求：自主做事）。
         # M39：统一张力信号（人格加权 Σ 驱力×紧迫 + 唤醒项）作为"想动"的
         # 内生来源；张力越阈投递内在事件，低于阈值但已积蓄时显式记录 wait。
-        deferred = self._goals_with_live_sessions()
-        selected = self.goal_tree.select_executable(self.state.owner_priority or "", excluded=deferred)
-        if selected is None and deferred:
+        selected, has_unavailable = self._available_work()
+        if selected is None and has_unavailable:
             return None
         has_work = selected is not None
         tension = self.tension()
@@ -1503,7 +1569,7 @@ class ProtoAgent:
         if selected is None and gap_ready:
             created = self._run_goal_forge("drive")
             if created is not None:
-                selected = self.goal_tree.select_executable(self.state.owner_priority or "", excluded=deferred)
+                selected, _unavailable = self._available_work()
                 has_work = selected is not None
         # M59：冷却→意义门控。agent 不会累：有活+预算+没卡住就连续干；
         # 停止只因真实原因（预算地板/无目标/全目标连败/秒败熔断）。
@@ -1531,7 +1597,7 @@ class ProtoAgent:
                     self._complete(client, system, user, pool=pool))
                 children = self.goal_tree.children_of_level(selected.id, "mid")
             if children:
-                selected = children[0]
+                selected, _unavailable = self._available_work()
         if selected is not None and selected.level in ("short", "mid", "task"):
             return self.work_on_goal(selected)      # M30：可执行目标→项目工位开发
         # 没有可执行目标时，欲望缺口才驱动开新方向

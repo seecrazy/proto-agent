@@ -1066,6 +1066,10 @@ const LIVE_REASONS = {
   safe_resume_model: "模型或额度受阻 · 修复后可继续原任务",
   safe_resume_limit: "已保留安全断点 · 等待主人继续",
   context_budget_exceeded: "完整任务指令超过执行上下文上限",
+  model_route_busy: "同一接入正在服务另一条请求",
+  delivery_no_progress: "连续两个工作片无实质变化，已暂停",
+  delivery_not_verified: "四个工作片未通过验收，已暂停",
+  ios_delivery_evidence_missing: "没有可据以验收的模拟器构建或测试记录",
 };
 const SAFE_CONTINUATION_REASONS = ["model_retry_exhausted", "safe_resume_model", "safe_resume_limit"];
 let liveVersion = 0;
@@ -1085,7 +1089,11 @@ function liveSummary(data) {
     return LIVE_REASONS[run.reason];
   }
   if (run?.status === "awaiting_approval" || run?.status === "needs_reconciliation") return LIVE_PHASES[run.status];
-  if (model.waiting) return model.retry_at ? `模型冷却 · ${liveTime(model.retry_at)} 后可试探` : "模型恢复试探中";
+  if (model.waiting) {
+    if (model.reason === "model_route_busy") return "模型接入在用 · 不重复发请求";
+    const prefix = model.reason === "model_rate_limited" ? "供应商限流 (429)" : "模型冷却";
+    return model.retry_at ? `${prefix} · ${liveTime(model.retry_at)} 后可试探` : "模型恢复试探中";
+  }
   if (data.autonomy) return LIVE_REASONS[data.autonomy] || "自主行动受限";
   if (run?.status === "queued") return "排队中";
   if (model.state === "open") return "模型冷却已到期 · 待下次试探";
@@ -1161,10 +1169,26 @@ async function refreshActivity() {
   const goals = a.goal_work || [];
   gbox.innerHTML = goals.length
     ? goals.map(g => `<div style="font-size:11px;line-height:1.6;margin-bottom:6px">` +
-        `<span class="badge">${g.rounds}轮</span> <b>${esc(g.text.slice(0, 32))}</b>` +
+        `<span class="badge">${g.rounds} 条尝试记录</span> <b>${esc(g.text.slice(0, 32))}</b>` +
+        `<div style="color:var(--dim)">${g.no_output} 条日志无产出 · ${g.model_blocks} 条模型受阻</div>` +
+        (g.delivery?.blocked ? `<div>${esc(LIVE_REASONS[g.delivery.reason] || "交付已暂停")} ` +
+          `<button class="secondary" data-retry-delivery="${esc(g.goal_id)}">恢复此目标</button></div>` :
+          g.waiting_for_stage ? `<div style="color:var(--dim)">等待前一阶段验收</div>` : "") +
         `<div style="color:var(--dim)">产出：${esc((g.produced || "无").slice(0, 50))}</div>` +
         `<div style="color:var(--dim)">下一步：${esc((g.next || "—").slice(0, 50))}</div></div>`).join("")
     : "";
+  for (const button of gbox.querySelectorAll("[data-retry-delivery]")) {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await api("POST", `/api/goals/${encodeURIComponent(button.dataset.retryDelivery)}/retry`, {});
+        await refreshActivity();
+      } catch (error) {
+        button.textContent = `未恢复：${error.message}`;
+        button.disabled = false;
+      }
+    });
+  }
   const fbox = document.getElementById("activity-files");
   const files = a.recent_files || [];
   const projects = a.project_outputs || [];

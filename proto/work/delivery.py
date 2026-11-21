@@ -1,0 +1,240 @@
+"""Progress, project identity and locally checkable evidence for autonomous work."""
+from __future__ import annotations
+
+import hashlib
+import os
+import plistlib
+import re
+import stat
+from pathlib import Path, PurePosixPath
+
+from proto.runtime.activity import artifact_path
+
+
+MAX_STALLED_SLICES = 2
+MAX_UNVERIFIED_SLICES = 4
+_GENERATED = {"node_modules", "__pycache__", "build", "DerivedData", "dist"}
+_APP = re.compile(r"(?:iphone|ios|swiftui)", re.I)
+_DESIGN = re.compile(r"规格|设计|概念|spec(?:ification)?|design", re.I)
+_IMPLEMENT = re.compile(r"实现|编码|开发|implement|build", re.I)
+_CHECK = re.compile(r"本地验证|验证|测试|交付|xctest|test|deliver", re.I)
+
+
+def ios_stage(root, node):
+    if (not _APP.search(root.text) or not _IMPLEMENT.search(root.text)
+            or not re.search(r"\bapp\b|应用", root.text, re.I)):
+        return ""
+    if node is root:
+        return "" if root.level == "long" else "build"
+    text = re.split(r"[:：，、；。]", node.text, 1)[0][:40]
+    if _DESIGN.search(text) and not _IMPLEMENT.search(text):
+        return "design"
+    if _CHECK.search(text) and not _IMPLEMENT.search(text):
+        return "verify"
+    return "build"
+
+
+def stage_waiters(tree, active):
+    ranks = {"design": 1, "build": 2, "verify": 3}
+    groups = {}
+    excluded = {node.parent_id for node in active if node.parent_id}
+    for node in active:
+        root = tree.root_for(node)
+        if root is not None and root is not node:
+            rank = ranks.get(ios_stage(root, node))
+            if rank:
+                groups.setdefault(root.id, []).append((rank, node.id))
+    for group in groups.values():
+        first = min(rank for rank, _goal in group)
+        excluded.update(goal for rank, goal in group if rank > first)
+    return excluded
+
+
+def project_path(root, directory):
+    directory = artifact_path(directory)
+    if not directory or len(PurePosixPath(directory).parts) != 2:
+        return None
+    path = root / directory
+    try:
+        return path if path.resolve() == path else None
+    except (OSError, RuntimeError):
+        return None
+
+
+def project_files(folder):
+    if folder.is_symlink():
+        return
+    for current, dirs, names in os.walk(folder, followlinks=False):
+        dirs[:] = [name for name in dirs if not name.startswith((".", "_")) and name not in _GENERATED]
+        for name in names:
+            path = Path(current) / name
+            if not name.startswith(".") and not path.is_symlink() and path.is_file():
+                yield path
+
+
+def main_project(agent, node):
+    root = agent.goal_tree.root_for(node) or node
+    store = agent.spine.store
+    work_root = agent.code_workspace.root.resolve()
+    saved = store.get("delivery_projects", root.id) or {}
+    if project_path(work_root, saved.get("dir")):
+        return saved["dir"]
+    lineage = (root, *agent.goal_tree.related_goals(root.id))
+    claimed = set()
+    for other in agent.goal_tree.all_active():
+        if other not in lineage:
+            claimed.update((store.get(collection, other.id) or {}).get("dir")
+                           for collection in ("project_dirs", "delivery_projects"))
+    candidates = []
+    for related in lineage:
+        directory = (store.get("project_dirs", related.id) or {}).get("dir")
+        folder = project_path(work_root, directory)
+        if folder is None or directory in claimed or not folder.is_dir():
+            continue
+        rank = (any(folder.glob("*.xcodeproj/project.pbxproj")),
+                ios_stage(root, related) == "build", (folder / "Package.swift").is_file(),
+                related is root, -related.created_at)
+        candidates.append((rank, directory))
+    legacy = agent._legacy_slug(root.text)
+    directory = f"projects/{legacy}" if legacy else ""
+    original = project_path(work_root, directory)
+    if candidates:
+        directory = max(candidates)[1]
+    elif original is None or not original.is_dir() or directory in claimed:
+        directory = agent._project_dir_for(root, migrate_legacy=False)
+    if directory in claimed or not project_path(work_root, directory):
+        directory = f"projects/{agent._goal_slug(root.text, root.id)}-{root.id[:8]}"
+        store.put("project_dirs", root.id, {"dir": directory, "text": root.text[:80]})
+    store.put("delivery_projects", root.id, {"dir": directory})
+    return directory
+
+
+def snapshot(workspace, project_dir, *, sources=False):
+    folder = project_path(workspace.root.resolve(), project_dir)
+    if folder is None:
+        return None
+    digest = hashlib.sha256()
+    remaining = 32 * 1024 * 1024
+    count = 0
+    pending = [folder]
+    try:
+        if not folder.exists():
+            return digest.hexdigest()
+        while pending:
+            directory = pending.pop()
+            rows = []
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if entry.name.startswith(".") or entry.name in _GENERATED:
+                        continue
+                    count += 1
+                    if count > 2048:
+                        return None
+                    rows.append(entry)
+            for entry in sorted(rows, key=lambda item: item.name):
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(Path(entry.path))
+                    continue
+                if sources and entry.name.lower().endswith(('.md', '.markdown')):
+                    continue
+                info = entry.stat(follow_symlinks=False)
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                if info.st_size > remaining:
+                    return None
+                with open(entry.path, "rb") as stream:
+                    content = stream.read(info.st_size + 1)
+                if len(content) != info.st_size:
+                    return None
+                remaining -= len(content)
+                digest.update(os.fsencode(Path(entry.path).relative_to(folder)) + b"\0")
+                digest.update(hashlib.sha256(content).digest())
+    except (OSError, ValueError):
+        return None
+    return digest.hexdigest()
+
+
+def _value(argv, flag):
+    if argv.count(flag) != 1:
+        return ""
+    index = argv.index(flag) + 1
+    return argv[index] if index < len(argv) else ""
+
+
+def _app_binary(bundle):
+    try:
+        if bundle.resolve() != bundle:
+            return None
+        info = bundle / "Info.plist"
+        if info.is_symlink() or not info.is_file() or info.stat().st_size > 128_000:
+            return None
+        metadata = plistlib.loads(info.read_bytes())
+        name = metadata.get("CFBundleExecutable")
+        if (metadata.get("CFBundlePackageType") != "APPL" or not isinstance(name, str)
+                or not name or Path(name).name != name
+                or "iPhoneSimulator" not in metadata.get("CFBundleSupportedPlatforms", [])):
+            return None
+        binary = bundle / name
+        if not binary.is_file() or binary.resolve() != binary:
+            return None
+        with binary.open("rb") as stream:
+            magic = stream.read(4)
+        if magic in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf"):
+            return binary
+    except (OSError, ValueError, TypeError, AttributeError, RuntimeError):
+        return None
+    return None
+
+
+def ios_build_start(workspace, project_dir, arguments):
+    argv = arguments.get("argv", [])
+    if (not argv or argv[0] != "xcodebuild" or arguments.get("cwd") != project_dir
+            or not any(action in argv for action in ("build", "build-for-testing", "test"))):
+        return None
+    derived = _value(argv, "-derivedDataPath")
+    project = _value(argv, "-project")
+    if (not re.fullmatch(r"\.proto-build(?:-[A-Za-z0-9_-]{1,40})?", derived)
+            or not project.endswith(".xcodeproj") or Path(project).name != project):
+        return None
+    folder = project_path(workspace.root.resolve(), project_dir)
+    if (folder is None or (folder / derived).exists() or (folder / derived).is_symlink()
+            or not (folder / project / "project.pbxproj").is_file()
+            or (folder / project / "project.pbxproj").resolve() != folder / project / "project.pbxproj"):
+        return None
+    digest = snapshot(workspace, project_dir, sources=True)
+    action = "TEST" if "test" in argv else "TEST BUILD" if "build-for-testing" in argv else "BUILD"
+    return {"sources": digest, "derived": derived, "action": action} if digest else None
+
+
+def ios_build_result(workspace, project_dir, start, result):
+    if not (isinstance(start, dict) and isinstance(start.get("sources"), str)
+            and isinstance(start.get("derived"), str) and re.fullmatch(r"\.proto-build(?:-[A-Za-z0-9_-]{1,40})?", start["derived"])
+            and isinstance(result, dict) and result.get("backend") == "sandbox-exec"
+            and result.get("exit") == 0 and not result.get("timeout")):
+        return None
+    stdout = str(result.get("stdout", ""))
+    action = start.get("action")
+    if action not in ("BUILD", "TEST", "TEST BUILD") or f"** {action} SUCCEEDED **" not in stdout.splitlines():
+        return None
+    if snapshot(workspace, project_dir, sources=True) != start["sources"]:
+        return None
+    folder = project_path(workspace.root.resolve(), project_dir)
+    if folder is not None:
+        for bundle in (folder / start["derived"]).glob("Build/Products/*-iphonesimulator/*.app"):
+            if _app_binary(bundle):
+                return {"sources": start["sources"], "bundle": bundle.relative_to(folder).as_posix(),
+                        "tested": (action == "TEST" and bool(re.search(
+                            r"Executed [1-9][0-9]* tests?[, ]|Test run with [1-9][0-9]* tests?", stdout)))}
+    return None
+
+
+def valid_ios_evidence(workspace, project_dir, evidence):
+    if not isinstance(evidence, dict) or not evidence.get("sources"):
+        return False
+    folder = project_path(workspace.root.resolve(), project_dir)
+    bundle = evidence.get("bundle", "")
+    if not isinstance(bundle, str) or not re.fullmatch(
+            r"\.proto-build(?:-[A-Za-z0-9_-]{1,40})?/Build/Products/[^/]+-iphonesimulator/[^/]+\.app", bundle):
+        return False
+    return (folder is not None and _app_binary(folder / bundle) is not None
+            and snapshot(workspace, project_dir, sources=True) == evidence["sources"])

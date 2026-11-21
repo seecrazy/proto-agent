@@ -55,33 +55,12 @@ class TestChainGate:
                              "status": "failed_verification"}
         assert agent._may_start_chain() is True
 
-    def test_all_goals_failed_pivots_first(self, agent):
-        """M59b：全败先自主换打法（重置计数+强制换思路），不是死停。"""
-        for i in range(3):
-            agent.goal_tree.add(f"目标{i}", "mid")
-        for n in agent.goal_tree.all_active():
-            n.fail_streak = 3
-            agent.goal_tree._store.put("goaltree", n.id, n.to_dict())
-        assert agent._may_start_chain() is True          # 换法放行
-        events = [e["event_type"] for e in agent.spine.find(lambda d: True)]
-        assert "approach_reset" in events
-        assert any("换打法" in m for m in agent._inbox)
-        assert any(n.fail_streak == 0 for n in agent.goal_tree.all_active())
-
-    def test_exhausted_approaches_then_hold(self, agent):
-        """每个目标都换过 2 轮打法仍全败 → 真 hold（自主思路已尽）。"""
-        from proto.runtime.agent import create_store
-        for i in range(2):
-            agent.goal_tree.add(f"目标{i}", "mid")
-        store = create_store(agent.data_dir)
-        for n in agent.goal_tree.all_active():
-            n.fail_streak = 3
-            agent.goal_tree._store.put("goaltree", n.id, n.to_dict())
-            store.put("approach_resets", n.id, {"resets": 2})
-        assert agent._may_start_chain() is False
-        events = [e["event_type"] for e in agent.spine.find(lambda d: True)]
-        assert "work_hold" in events
-        assert any("工作暂停" in m for m in agent._inbox)
+    def test_legacy_failure_history_is_not_automatically_reset(self, agent):
+        goal = agent.goal_tree.add("旧目标", "mid")
+        goal.fail_streak = 5
+        assert agent._may_start_chain() is True
+        assert goal.fail_streak == 5
+        assert not agent.spine.find(lambda event: event["event_type"] == "approach_reset")
 
 
 class TestCrossRoundFeedback:

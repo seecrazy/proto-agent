@@ -2,7 +2,9 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError
 
 import pytest
@@ -217,6 +219,46 @@ def test_manual_continue_requires_valid_safe_receipt_after_model_retries(tmp_pat
     assert queued["status"] == "queued"
     final = step(fleet)
     assert final["status"] == "succeeded" and final["session_id"] == parked["session_id"]
+    assert counter.read_text(encoding="utf-8") == "写入\n"
+
+
+@pytest.mark.parametrize("stage", ["actor", "verifier"])
+def test_shared_provider_cooldown_keeps_same_run_without_replaying_work(tmp_path, monkeypatch, stage):
+    clock = [time.time()]
+
+    def now():
+        return clock[0]
+
+    def reject_after_switch():
+        model.pressure_key = "different-route"
+        raise HTTPError("https://example.invalid", 429, "private", {"Retry-After": "90"}, None)
+
+    monkeypatch.setattr(dispatcher, "time", SimpleNamespace(time=now, monotonic=time.monotonic))
+    model = (Model([WRITE, reject_after_switch, DONE], [PASS]) if stage == "actor"
+             else Model([WRITE, DONE], [reject_after_switch, PASS]))
+    model.pressure_key = "test-route"
+    fleet, agent = member(tmp_path, model)
+    fleet.runs.model_pressure.now = now
+    run, goal = start_autonomous(fleet, agent)
+    counter = tmp_path / "effects.txt"
+    record_writes(agent, counter)
+
+    parked = step(fleet)
+    assert parked["status"] == "queued" and parked["reason"] == "model_retry_wait"
+    assert parked["result"]["model_reason"] == "model_rate_limited"
+    assert parked["result"]["retry_at"] == clock[0] + 90
+    assert goal.id in agent.sessions.pending_goal_ids()
+    clock[0] += 89
+    assert fleet.runs._pick() is None and len(model.actor_inputs) == 2
+
+    restarted = AgentManager(tmp_path, llm=model)
+    restarted.runs.model_pressure.now = now
+    record_writes(restarted.get(agent.fleet_id), counter)
+    assert restarted.runs._pick() is None
+    clock[0] += 1
+    final = step(restarted)
+    assert final["status"] == "succeeded" and final["id"] == run["id"]
+    assert final["session_id"] == parked["session_id"]
     assert counter.read_text(encoding="utf-8") == "写入\n"
 
 

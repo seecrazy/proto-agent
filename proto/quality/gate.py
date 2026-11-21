@@ -16,6 +16,7 @@ from typing import List, Optional
 
 from proto.exec.work_context import target_args
 from proto.llm.breaker import model_wait_reason
+from proto.llm.client import ModelPressureWait
 
 ACCEPTANCE_PROMPT = (
     "为下面的任务给出**最小可检验定义**（什么场景、做什么操作、观察到什么结果才算做对；"
@@ -48,6 +49,7 @@ class Verdict:
     missing: List[str] = field(default_factory=list)
     reason: str = ""
     provider_reason: str = ""
+    retry_at: Optional[float] = None
 
 
 def generate_acceptance(llm, task_text: str, complete=None) -> str:
@@ -87,7 +89,8 @@ def verify(task_text: str, acceptance: str, trace: List[dict],
                if complete is not None else llm.complete(system, prompt))
     except Exception as exc:
         reason = model_wait_reason(exc)
-        return Verdict(False, ["验证器调用失败"], f"llm_error:{reason}", reason)
+        retry_at = exc.retry_at if isinstance(exc, ModelPressureWait) else None
+        return Verdict(False, ["验证器调用失败"], f"llm_error:{reason}", reason, retry_at)
     try:
         cleaned = re.sub(r"```(?:json)?", "", raw).strip()
         start, end = cleaned.find("{"), cleaned.rfind("}")

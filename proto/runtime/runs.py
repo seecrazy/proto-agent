@@ -16,6 +16,7 @@ from proto.runtime.activity import RunActivity
 from proto.runtime.coordination import CoordinationDB, CoordinationError, encode
 from proto.runtime.dialogue import Dialogue
 from proto.runtime.fleet_budget import FleetBudget
+from proto.runtime.model_pressure import ModelPressure
 from proto.runtime.projects import ProjectDelivery
 from proto.runtime.runcontext import current_run
 from proto.runtime.task_plans import PLAN_EXEC_KEY, TaskPlans
@@ -88,6 +89,7 @@ class RunCoordinator:
         self.activity = RunActivity(self.database)
         self.dialogue = Dialogue(self.database)
         self.budget = FleetBudget(self.database)
+        self.model_pressure = ModelPressure(self.database)
         self.projects = ProjectDelivery(self)
         self.task_plans = TaskPlans(self)
         self._instance = InstanceLock(self.database.directory)
@@ -516,13 +518,14 @@ class RunCoordinator:
             agent._inbox.append(result.get("message") or f"行动未成：{result.get('reason', '')}")
             return result
         if kind == "tick":
-            if not args and agent.model_status()["waiting"]:
-                return {"status": "blocked", "reason": "circuit_breaker_open"}
+            model = agent.model_status()
+            if not args and model["waiting"]:
+                return {"status": "blocked", "reason": model["reason"]}
             proposal = agent.maybe_proactive()
             if isinstance(proposal, str) and proposal not in agent._inbox:
                 agent._inbox.append(proposal)
             if isinstance(proposal, dict):
-                return {"proposal": proposal, "status": proposal.get("status"), "reason": proposal.get("reason", "")}
+                return self._wrap_session_result(run, proposal)
             return {"proposal": proposal}
         if run["work_id"]:
             return self.projects.execute(run, agent)
@@ -531,7 +534,10 @@ class RunCoordinator:
     @staticmethod
     def _wrap_session_result(run, result):
         if run["kind"] == "tick":
-            return {"proposal": result, "status": result["status"], "reason": result.get("reason", "")}
+            wrapped = {"proposal": result, "status": result.get("status"), "reason": result.get("reason", "")}
+            if "retry_at" in result:
+                wrapped["retry_at"] = result["retry_at"]
+            return wrapped
         if run["kind"] == "act":
             return dict(result, acted=True)
         return result
@@ -556,12 +562,16 @@ class RunCoordinator:
         code = result.get("reason", "").removeprefix("llm_error:")
         attempts = (run["result"] or {}).get("model_retries", 0)
         resumed = self._resume_result(run, status="waiting_model", model_reason=code, model_retries=attempts)
+        if code == "model_route_busy":
+            resumed["retry_at"] = time.time() + 2
+            return "queued", "model_retry_wait", resumed
         if code not in TRANSIENT_MODEL_REASONS:
             return "needs_reconciliation", "safe_resume_model", resumed
         if attempts == len(_MODEL_RETRY_DELAYS):
             return "needs_reconciliation", "model_retry_exhausted", resumed
+        deadline = result.get("retry_at") or agent.model_status()["retry_at"] or 0
         resumed.update(model_retries=attempts + 1, retry_at=max(
-            time.time() + _MODEL_RETRY_DELAYS[attempts], agent.model_status()["retry_at"] or 0))
+            time.time() + _MODEL_RETRY_DELAYS[attempts], deadline))
         return "queued", "model_retry_wait", resumed
 
     @staticmethod
@@ -645,9 +655,14 @@ class RunCoordinator:
             status, reason = "awaiting_approval", waiting["reason"]
             result = {"status": "paused", **waiting, "session_id": run["session_id"]}
         elif result is not None and (run["session_id"] or run["kind"] not in ("tick", "act")):
-            if result.get("status") == "verified" and result.get("verified") is True and result.get("goal_id"):
+            if result.get("goal_id"):
                 with agent.background_write():
-                    agent.goal_tree.complete(result["goal_id"])
+                    node = agent.goal_tree.get(result["goal_id"])
+                    if node and node.status == "active":
+                        if result.get("status") in ("verified", "awaiting_retry", "max_steps", "failed"):
+                            agent._record_delivery(node, result, result.get("project_dir", ""))
+                        if result.get("status") == "verified" and result.get("verified") is True:
+                            agent.goal_tree.complete(node.id)
             result = self._wrap_session_result(run, result)
             status, reason = self._outcome(result, None, run)
         elif run["kind"] == "plan":

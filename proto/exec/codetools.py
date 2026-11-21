@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterable, List
 
@@ -46,6 +47,26 @@ def _limit_resources():
 def json_quote(value: str) -> str:
     """sandbox-exec profile 字符串参数的安全引号。"""
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+@lru_cache(maxsize=1)
+def _darwin_build_dirs() -> tuple[str, ...]:
+    if sys.platform != "darwin":
+        return ()
+    root = Path("/var/folders").resolve()
+    paths = set()
+    for name in ("DARWIN_USER_TEMP_DIR", "DARWIN_USER_CACHE_DIR"):
+        try:
+            found = subprocess.run(["/usr/bin/getconf", name], check=True,
+                                   capture_output=True, text=True, timeout=2, env={})
+            candidate = Path(found.stdout.strip())
+            if candidate.is_absolute():
+                path = candidate.resolve(strict=True)
+                if root in path.parents and path.is_dir() and path.stat().st_uid == os.geteuid():
+                    paths.add(str(path))
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            pass
+    return tuple(sorted(paths))
 
 
 class CodeTools:
@@ -244,34 +265,20 @@ class CodeTools:
     def _sandbox_exec_profile(self, tmp: str) -> str:
         """写遏制 + 禁网：deny-default 会挡掉 dyld 等系统读导致 SIGABRT，
         这里只锁"能写哪里"（tmp + 工作区）和"不能联网"，读不限制。
-        M49b：xcrun/swiftpm 需要 Darwin 用户级临时与缓存目录
-        （confstr DARWIN_USER_TEMP_DIR/CACHE_DIR，即 /var/folders/…，
-        不受 TMPDIR 环境变量控制）——放行本用户这两处，否则编译链
-        一律 Operation not permitted（本地验证墙）。"""
-        allow_write = [os.path.realpath(tmp), str(self.root.resolve())]
-        darwin_user_dirs = set()
-        for fn in (os.confstr_names.get("CS_DARWIN_USER_TEMP_DIR"),
-                   os.confstr_names.get("CS_DARWIN_USER_CACHE_DIR")):
-            if fn is None:
-                continue
-            try:
-                d = os.confstr(fn)
-                if d and os.path.isdir(d):
-                    darwin_user_dirs.add(os.path.realpath(d))
-            except (ValueError, OSError):
-                pass
-        allow_write.extend(sorted(darwin_user_dirs))
+        Xcode 等编译链的缓存和系统原子写入使用 Darwin 用户级 TEMP/CACHE，
+        不受 TMPDIR 控制；Python 不一定公开相应的 confstr 常量。"""
+        allow_write = (os.path.realpath(tmp), str(self.root.resolve()), *_darwin_build_dirs())
         write_rules = "\n".join(
             f"(allow file-write* (subpath {json_quote(p)}))" for p in allow_write)
-        read_denials = "\n".join(
-            f"(deny file-read* (subpath {json_quote(p)}))"
-            for p in self.protected_paths)
+        protected_denials = "\n".join(
+            f"(deny file-{operation}* (subpath {json_quote(p)}))"
+            for p in self.protected_paths for operation in ("read", "write"))
         return (
             "(version 1)\n"
             "(allow default)\n"
             "(deny file-write*)\n"
             f"{write_rules}\n"
-            f"{read_denials}\n"
+            f"{protected_denials}\n"
             "(deny network*)\n"
         )
 

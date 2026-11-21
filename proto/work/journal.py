@@ -82,6 +82,12 @@ class GoalJournal:
     def round_count(self) -> int:
         return len(self._round_blocks())
 
+    def activity_view(self):
+        blocks = self._round_blocks()
+        return {"rounds": len(blocks),
+                "no_output": sum("\n产出：无\n" in block for block in blocks),
+                "model_blocks": sum(block.splitlines()[0].endswith("· model_blocked") for block in blocks)}
+
     def _round_blocks(self) -> List[str]:
         text = self.path.read_text(encoding="utf-8") if self.path.exists() else ""
         return [b for b in text.split("\n## ") if b.strip()]
@@ -97,7 +103,7 @@ class GoalJournal:
         self._append("\n".join(lines) + "\n")
 
     def finish(self, status: str, observations: List[str], trace: List[dict],
-               summarize: Optional[Callable[[str, str], str]] = None) -> None:
+               summarize: Optional[Callable[[str, str], str]] = None, missing=None) -> None:
         """一轮结束：优先 LLM 小结，失败/离线用机械摘要（绝不空手）。"""
         findings: List[str] = []
         produced = self._written_files(trace)
@@ -114,8 +120,9 @@ class GoalJournal:
             except Exception:
                 pass
         if not next_steps:
-            next_steps = ([f"先写 {produced[0]} 的剩余部分并验证"]
-                          if produced else ["改从 write_file 直接产出，避免纯探索"])
+            next_steps = (list(missing[:3]) if missing else
+                          [f"检查 {produced[0]} 并执行最小验收"] if produced else
+                          ["先完成一个可验收增量；避免重复探索"])
         self.note_round(status, findings[:3] or ["（见 observations 尾部）"],
                         produced[:5], next_steps[:3])
 

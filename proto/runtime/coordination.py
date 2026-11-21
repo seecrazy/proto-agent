@@ -94,6 +94,12 @@ CREATE INDEX IF NOT EXISTS dialogue_agent ON dialogue_turns(agent_id, seq);
 CREATE INDEX IF NOT EXISTS dialogue_pending ON dialogue_turns(seq) WHERE remembered = 0;
 """
 
+_MODEL_PRESSURE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS model_pressure (
+    route TEXT PRIMARY KEY, retry_at REAL NOT NULL, strikes INTEGER NOT NULL
+);
+"""
+
 
 class CoordinationDB:
     def __init__(self, root):
@@ -116,14 +122,15 @@ class CoordinationDB:
             connection = self._connect()
             try:
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version not in (0, 1, 2, 3):
+                if version not in (0, 1, 2, 3, 4):
                     raise CoordinationError("unsupported_coordination_schema")
                 if version == 0:
                     connection.execute("PRAGMA journal_mode = WAL")
-                if version < 3:
+                if version < 4:
                     schema = (_SCHEMA if version == 0 else "") + (_PROJECT_SCHEMA if version < 2 else "")
-                    connection.executescript("BEGIN IMMEDIATE;\n" + schema + _DIALOGUE_SCHEMA
-                                             + "\nPRAGMA user_version = 3; COMMIT;")
+                    connection.executescript("BEGIN IMMEDIATE;\n" + schema
+                                             + (_DIALOGUE_SCHEMA if version < 3 else "")
+                                             + _MODEL_PRESSURE_SCHEMA + "\nPRAGMA user_version = 4; COMMIT;")
                 self._ready = True
             finally:
                 connection.close()

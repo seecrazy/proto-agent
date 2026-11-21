@@ -1,0 +1,19 @@
+{
+    archiveVersion = 1;
+    objectVersion = 56;
+    objects = {
+        AAA000000000000000000001 = { isa = PBXProject; buildConfigurationList = AAA000000000000000000008; compatibilityVersion = "Xcode 14.0"; mainGroup = AAA000000000000000000003; productRefGroup = AAA000000000000000000004; projectDirPath = ""; targets = (AAA000000000000000000002,); };
+        AAA000000000000000000002 = { isa = PBXNativeTarget; buildConfigurationList = AAA00000000000000000000A; buildPhases = (AAA000000000000000000007,); buildRules = (); dependencies = (); name = FixtureApp; productName = FixtureApp; productReference = AAA000000000000000000006; productType = "com.apple.product-type.application"; };
+        AAA000000000000000000003 = { isa = PBXGroup; children = (AAA000000000000000000005, AAA000000000000000000004,); sourceTree = "<group>"; };
+        AAA000000000000000000004 = { isa = PBXGroup; children = (AAA000000000000000000006,); name = Products; sourceTree = "<group>"; };
+        AAA000000000000000000005 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
+        AAA000000000000000000006 = { isa = PBXFileReference; explicitFileType = wrapper.application; path = FixtureApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+        AAA000000000000000000007 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (AAA00000000000000000000C,); runOnlyForDeploymentPostprocessing = 0; };
+        AAA000000000000000000008 = { isa = XCConfigurationList; buildConfigurations = (AAA000000000000000000009,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+        AAA000000000000000000009 = { isa = XCBuildConfiguration; name = Debug; buildSettings = { IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; }; };
+        AAA00000000000000000000A = { isa = XCConfigurationList; buildConfigurations = (AAA00000000000000000000B,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+        AAA00000000000000000000B = { isa = XCBuildConfiguration; name = Debug; buildSettings = { GENERATE_INFOPLIST_FILE = YES; CODE_SIGNING_ALLOWED = NO; PRODUCT_BUNDLE_IDENTIFIER = org.proto.fixture; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; }; };
+        AAA00000000000000000000C = { isa = PBXBuildFile; fileRef = AAA000000000000000000005; };
+    };
+    rootObject = AAA000000000000000000001;
+}

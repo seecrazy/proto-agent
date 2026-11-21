@@ -11,6 +11,7 @@ DeepSeek、Ollama、LM Studio……配置走环境变量：
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -18,10 +19,25 @@ import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
 from typing import Optional
+from urllib.parse import urlsplit
 
 
 class LLMError(Exception):
     """LLM 调用失败（网络/HTTP/协议）。调用方应回退到离线路径。"""
+
+
+class ModelPressureWait(LLMError):
+    def __init__(self, reason, retry_at=None):
+        super().__init__(reason)
+        self.reason = reason
+        self.retry_at = retry_at
+
+
+def pressure_key(base_url, credential):
+    origin = urlsplit(base_url)
+    port = origin.port or (443 if origin.scheme == "https" else 80)
+    identity = json.dumps([origin.scheme, (origin.hostname or "").rstrip("."), port, credential])
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 class LLMClient(ABC):
@@ -65,6 +81,10 @@ class OpenAICompatClient(LLMClient):
 
     def describe(self) -> str:
         return f"{self._model} @ {self._base}"
+
+    @property
+    def pressure_key(self):
+        return pressure_key(self._base, self._key)
 
     def complete(self, system: str, user: str) -> str:
         self.last_usage = None
@@ -119,6 +139,10 @@ class AnthropicCompatClient(LLMClient):
 
     def describe(self) -> str:
         return f"{self._model} @ {self._base} (anthropic)"
+
+    @property
+    def pressure_key(self):
+        return pressure_key(self._base, self._key)
 
     def complete(self, system: str, user: str) -> str:
         self.last_usage = None

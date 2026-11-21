@@ -17,14 +17,15 @@ from typing import Dict, List
 from proto.exec.context import (ContextError, create_context, instructions_for_call,
                                 render_context)
 from proto.exec.checkpoints import SCHEMA_VERSION
-from proto.exec.contracts import ParameterError
 from proto.exec.plan_evidence import EvidenceError, OutputEvidence
 from proto.exec.router import Task, TaskResult, VARIANT_ID
 from proto.exec.sessions import SESSION_SCHEMA_VERSION, TERMINAL_STATES
 from proto.exec.work_context import (MAX_ACTOR_BYTES, MAX_ADVISORY_BYTES, MAX_HISTORY_BYTES,
                                     clipped, render_history, size, target_args, tool_receipt, written_file)
 from proto.llm.breaker import model_wait_reason
+from proto.llm.client import ModelPressureWait
 from proto.runtime.runcontext import current_run, track_session
+from proto.work.delivery import ios_build_result, ios_build_start, snapshot, valid_ios_evidence
 
 PLAN_PROMPT = (
     "为下面的任务用一句话制定执行计划（先做什么再做什么，不超过 30 字）。只输出计划本身。"
@@ -132,12 +133,13 @@ class AgenticLoop:
 
     def run(self, task_text: str, acceptance: str = "",
             feedback: str = "", journal=None, goal_id: str = "",
-            project_dir: str = "", *, frozen_context=None) -> Dict:
+            project_dir: str = "", *, frozen_context=None, delivery_stage=None) -> Dict:
         with self._agent.sessions.lock:
             try:
                 self._session = None
                 self._autonomous = bool(goal_id) or self._pool == "self_initiated"
-                return self._run(task_text, acceptance, feedback, journal, goal_id, project_dir, frozen_context)
+                return self._run(task_text, acceptance, feedback, journal, goal_id, project_dir,
+                                 frozen_context, delivery_stage=delivery_stage)
             finally:
                 self._agent._current_op = None
 
@@ -160,6 +162,12 @@ class AgenticLoop:
             session["trace"].append({"step": pending["step"], "tool": tool,
                                      "args": pending["args"], "category": pending["category"],
                                      "result": excerpt, "receipt": tool_receipt(tool, pending["args"], observation)})
+            if tool == "run_command" and pending.get("ios_build"):
+                evidence = ios_build_result(self._agent.code_workspace, session["context"]["project_dir"],
+                                            pending["ios_build"], observation)
+                if evidence:
+                    session["delivery"]["ios_build"] = evidence
+                    session["observations"].append(f"已核对模拟器应用包：{evidence['bundle']}")
             session["explore_run"] = session["explore_run"] + 1 if tool in READ_ONLY_TOOLS else 0
             if session["explore_run"] >= 4:
                 session["observations"].append(
@@ -301,13 +309,17 @@ class AgenticLoop:
         self._save()
         return result
 
-    def _model_stalled(self, code, *, verifying=False):
+    def _model_stalled(self, code, *, verifying=False, retry_at=None):
         lease = current_run.get()
         held = (lease is not None and lease.agent is self._agent
                 and self._session["schema_version"] == SESSION_SCHEMA_VERSION
-                and (verifying or self._session["trace"]))
-        return dict(status="waiting_model" if held else "failed", reason=f"llm_error:{code}",
-                    observations=self._session["observations"], trace=self._session["trace"])
+                and (verifying or self._session["trace"] or code == "model_route_busy"
+                     or (self._session.get("delivery") is not None and self._agent._scoped_model())))
+        result = dict(status="waiting_model" if held else "failed", reason=f"llm_error:{code}",
+                      observations=self._session["observations"], trace=self._session["trace"])
+        if retry_at is not None:
+            result["retry_at"] = retry_at
+        return result
 
     def _fixed_prompt(self, catalog):
         context = self._session["context"]
@@ -322,7 +334,8 @@ class AgenticLoop:
         return f"{scope}\n\n可用工具：\n{catalog}"
 
     def _run(self, task_text: str, acceptance: str,
-             feedback: str, journal, goal_id: str = "", project_dir: str = "", frozen_context=None) -> Dict:
+             feedback: str, journal, goal_id: str = "", project_dir: str = "", frozen_context=None,
+             *, delivery_stage=None) -> Dict:
         reason = self._autonomy_reason()
         if reason:
             if self._session is not None:
@@ -349,6 +362,9 @@ class AgenticLoop:
                 "observations": [], "trace": [], "events": [], "last_sigs": [],
                 "explore_run": 0, "pending_call": None, "pending_decision": None, "task_ids": [],
                 "journal_path": str(journal.path.resolve()) if journal is not None else ""}
+            if delivery_stage is not None:
+                self._session["delivery"] = {"stage": delivery_stage,
+                                             "start": snapshot(self._agent.code_workspace, project_dir)}
             track_session(self._session["id"])
             self._save()
         session = self._session
@@ -356,12 +372,21 @@ class AgenticLoop:
         trace = session["trace"]
         task_id = session["id"]
         approved_plan = session["context"].get("approved_plan")
+        delivery = session.get("delivery")
+        directory = session["context"]["project_dir"]
 
         def _finish(result: Dict) -> Dict:
             """统一出口：无论怎么结束都把接力小结写进日志（M45）。"""
             self._agent._current_op = None      # M51: 活动中心实时状态
             result.update(session_id=task_id, goal_id=session["context"]["goal_id"],
                           project_dir=session["context"]["project_dir"])
+            if delivery is not None and result["status"] in TERMINAL_STATES:
+                latest = snapshot(self._agent.code_workspace, directory)
+                result["delivery_progress"] = (latest is not None and delivery["start"] is not None
+                                               and latest != delivery["start"])
+                if delivery.get("ios_build") and valid_ios_evidence(
+                        self._agent.code_workspace, directory, delivery["ios_build"]):
+                    result["ios_build"] = delivery["ios_build"]
             if approved_plan is not None:
                 result.update(plan_id=approved_plan["id"], plan_sha256=approved_plan["sha256"])
             session["status"] = ("awaiting_approval" if result["status"] == "paused" else result["status"])
@@ -376,11 +401,11 @@ class AgenticLoop:
                     if model_blocked:
                         journal.note_model_block(trace)
                         return result
-                    if self._agent.llm_fast is not None and not self._autonomy_reason():
+                    if delivery is None and self._agent.llm_fast is not None and not self._autonomy_reason():
                         def summarize(prompt, text):
                             return self._complete(self._agent.llm_fast, prompt, text)
                     journal.finish(result.get("status", "?"),
-                                   observations, trace, summarize=summarize)
+                                   observations, trace, summarize=summarize, missing=result.get("missing"))
                 except Exception:
                     pass
             return result
@@ -421,7 +446,8 @@ class AgenticLoop:
                     reason = self._autonomy_reason()
                     if reason:
                         return _finish(self._stop("cancelled", reason))
-                    return _finish(self._model_stalled(model_wait_reason(exc)))
+                    retry_at = exc.retry_at if isinstance(exc, ModelPressureWait) else None
+                    return _finish(self._model_stalled(model_wait_reason(exc), retry_at=retry_at))
                 session["next_step"] = step + 1
                 session["pending_decision"] = {"step": step, "raw": raw if isinstance(raw, str) else ""}
                 session["events"].append({"kind": "decision", **session["pending_decision"]})
@@ -447,6 +473,20 @@ class AgenticLoop:
                 self._agent.activity_event("verification")
                 result = {"summary": decision.get("summary", ""), "observations": observations,
                           "trace": trace, "acceptance": acceptance, "verified": None}
+                ios_receipt = ""
+                if delivery is not None and delivery["stage"] in ("build", "verify"):
+                    local = [delivery.get("ios_build"), self._agent.saved_ios_build(directory)]
+                    valid = [item for item in local if valid_ios_evidence(self._agent.code_workspace, directory, item)]
+                    needs_test = delivery["stage"] == "verify" and bool(re.search(
+                        r"XCTest|单测|测试|\btests?\b", acceptance + task_text.split("。", 1)[0], re.I))
+                    if not valid or (needs_test and not any(item.get("tested") for item in valid)):
+                        needed = ("同工位的 iOS Simulator XCTest 必须真实通过，且生成 App 包"
+                                  if needs_test else "缺少与当前源码一致的 iOS Simulator .app 构建回执")
+                        return _finish(dict(result, status="awaiting_retry", verified=False,
+                                            reason="ios_delivery_evidence_missing", missing=[needed]))
+                    evidence = next((item for item in valid if item.get("tested")), valid[0])
+                    ios_receipt = (f"本机 Xcode 沙盒回执：iOS 模拟器应用 {evidence['bundle']} 构建成功，"
+                                   f"对应当前源文件；{'实际测试通过' if evidence['tested'] else '未证明测试执行'}。\n")
                 if approved_plan is not None:
                     try:
                         evidence = OutputEvidence(self._agent.code_workspace, session["context"]["project_dir"])
@@ -463,13 +503,13 @@ class AgenticLoop:
                         return _finish(dict(result, status="awaiting_retry", verified=False,
                                             reason="plan_evidence_failed", missing=missing))
                 verdict = verify(task_text, acceptance, trace,
-                                 artifacts_from_trace(trace, workspace=self._agent.code_workspace),
+                                 ios_receipt + artifacts_from_trace(trace, workspace=self._agent.code_workspace),
                                  self._agent.llm, complete=self._complete)
                 reason = self._autonomy_reason()
                 if reason or self._goal_stopped():
                     return _finish(self._stop("cancelled", reason))
                 if verdict is not None and verdict.provider_reason:
-                    return _finish(self._model_stalled(verdict.provider_reason, verifying=True))
+                    return _finish(self._model_stalled(verdict.provider_reason, verifying=True, retry_at=verdict.retry_at))
                 if approved_plan is not None:
                     if verdict is None:
                         return _finish(dict(result, status="awaiting_retry", verified=False,
@@ -490,11 +530,16 @@ class AgenticLoop:
             try:
                 arguments = self._agent.tools.validate(tool, decision.get("args", {}))
                 decision["args"] = arguments
+                if delivery is not None and tool in ("write_file", "edit_file"):
+                    target = self._agent.code_workspace._abs(arguments["path"]).resolve()
+                    if (self._agent.code_workspace.root.resolve() / directory) not in target.parents:
+                        observations.append(f"写入范围仅限主工位 {directory}/；旧阶段目录只作为参考。")
+                        continue
                 if instructions_for_call(session["context"], tool, arguments):
                     observations.append("已加载本次目标路径适用的项目指令；请先按完整指令重新决策，原动作尚未执行。")
                     self._save()
                     continue
-            except (ParameterError, ContextError) as exc:
+            except ValueError as exc:
                 observations.append(f"参数错误：{tool} {exc}。原动作未执行，修正后重试。")
                 continue
             marker = self._agent._current_op or {}
@@ -508,6 +553,10 @@ class AgenticLoop:
             step_task_id = f"{task_id}-{step}"
             session["pending_call"] = {"task_id": step_task_id, "step": step, "tool": tool,
                                        "args": arguments, "category": decision.get("category", "read_draft")}
+            if delivery is not None and delivery["stage"] in ("build", "verify") and tool == "run_command":
+                proof = ios_build_start(self._agent.code_workspace, directory, arguments)
+                if proof:
+                    session["pending_call"]["ios_build"] = proof
             session["task_ids"].append(step_task_id)
             self._save()
             task = Task(id=step_task_id, description=task_text,
@@ -556,7 +605,8 @@ class AgenticLoop:
                                 + head[:900] + "\n")
         # 计划先行（plan-then-act）+ 工作区现状（避免盲目探索）
         plan_block = ""
-        if session["context"].get("approved_plan") is None and self._agent.llm_fast is not None:
+        if (session.get("delivery") is None and session["context"].get("approved_plan") is None
+                and self._agent.llm_fast is not None):
             try:
                 plan = self._complete(
                     self._agent.llm_fast, PLAN_PROMPT,
@@ -566,7 +616,7 @@ class AgenticLoop:
             except Exception:
                 pass
         try:
-            listing = self._agent.code_workspace.list_dir("")
+            listing = self._agent.code_workspace.list_dir(session["context"]["project_dir"] if session.get("delivery") is not None else "")
             if listing:
                 plan_block += f"\n工作区当前内容（直接用，别再重复列目录）：\n{listing[:400]}\n"
         except Exception:

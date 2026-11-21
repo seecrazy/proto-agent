@@ -181,12 +181,11 @@ class TestBudgetFloorAndSteps:
         assert "budget_floor_wait" in events
         assert agent.llm.prompts == []       # 没烧一次 LLM
 
-    def test_work_on_goal_uses_raised_step_budget(self, agent, tmp_path):
-        """实现类目标步数上限升到 24/12（源级断言防回退）。"""
+    def test_work_on_goal_runs_one_bounded_slice(self):
         import inspect
         from proto.runtime import agent as agent_mod
         src = inspect.getsource(agent_mod.ProtoAgent._work_on_goal)
-        assert "max_steps=24" in src and "max_steps=12" in src
+        assert "max_steps=24" in src and src.count("AgenticLoop(") == 1
 
     def test_zero_output_escalation_prefix(self, tmp_path):
         from proto.runtime.agent import _escalation_prefix

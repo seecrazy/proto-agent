@@ -579,6 +579,10 @@ class _Handler(BaseHTTPRequestHandler):
         if m6 and method == "POST":
             agent.drop_goal(m6.group(1))
             return self._json(200, agent.goal_tree.snapshot())
+        delivery = re.fullmatch(r"/api/goals/([0-9a-f]{12})/retry", path)
+        if delivery and method == "POST":
+            agent.retry_delivery(delivery.group(1))
+            return self._json(200, {"goal_id": delivery.group(1), "ready": True})
         if path == "/api/world" and method == "GET":
             return self._json(200, agent.world.snapshot())
         if path == "/api/memory" and method == "GET":
@@ -689,33 +693,37 @@ def _activity_view(agent: ProtoAgent) -> dict:
     """M51 活动中心：现在在干嘛（链实时标记）+ 每目标接力日志 + 近 24h 落盘。"""
     import time as _t
     from pathlib import Path as _P
+    from proto.work.delivery import project_files, stage_waiters
     from proto.work.journal import GoalJournal
     cur = getattr(agent, "_current_op", None)
     if cur:
         cur = dict(cur, elapsed_s=round(_t.time() - cur.get("since", _t.time())))
     goals = []
-    node_text = {n.id: n.text for n in agent.goal_tree.all_active()}
+    active = agent.goal_tree.all_active()
+    node_text = {n.id: n.text for n in active}
+    prerequisites = stage_waiters(agent.goal_tree, active)
     work_dir = _P(agent.data_dir) / "work"
+    goal_ids = set(node_text)
     if work_dir.is_dir():
-        for d in sorted(work_dir.iterdir()):
-            if not d.is_dir():
-                continue
-            j = GoalJournal(d / "JOURNAL.md")
-            lr = j.latest_round()
-            if lr:
-                goals.append({"goal_id": d.name,
-                              "text": (node_text.get(d.name) or "（目标已归档）")[:60],
-                              "rounds": j.round_count(), **lr})
-    goals.sort(key=lambda g: -g["rounds"])
+        goal_ids.update(path.name for path in work_dir.iterdir() if path.is_dir())
+    for goal_id in sorted(goal_ids):
+        j = GoalJournal(work_dir / goal_id / "JOURNAL.md")
+        lr = j.latest_round()
+        delivery = agent.delivery_state(goal_id) if goal_id in node_text else {}
+        if lr or delivery.get("blocked") or goal_id in prerequisites:
+            goals.append({"goal_id": goal_id, "text": (node_text.get(goal_id) or "（目标已归档）")[:60],
+                          "delivery": delivery, "waiting_for_stage": goal_id in prerequisites,
+                          **j.activity_view(), **(lr or {})})
+    goals.sort(key=lambda g: (not g["delivery"].get("blocked"), -g["rounds"]))
     files = []
     outputs = {}
     proot = agent.code_workspace.root / "projects"
     cutoff = _t.time() - 86400
     if proot.is_dir():
-        for f in proot.rglob("*"):
+        for f in project_files(proot):
             try:
                 relative = f.relative_to(agent.code_workspace.root)
-                if any(part.startswith(("_", ".")) for part in relative.parts) or f.is_symlink() or not f.is_file():
+                if f.name.startswith("_"):
                     continue
                 st = f.stat()
             except OSError:

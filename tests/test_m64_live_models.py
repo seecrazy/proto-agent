@@ -401,11 +401,12 @@ def test_offline_cached_new_lazy_and_adopted_agents_share_models(tmp_path, endpo
         assert received[-1]["body"]["model"] == "alpha"
 
 
-def test_inflight_call_keeps_result_usage_and_does_not_block_switch(web, endpoint):
+@pytest.mark.parametrize("same_credential", [True, False])
+def test_inflight_call_keeps_result_usage_and_does_not_block_switch(web, endpoint, same_credential):
     server, agent, catalog = web
     base, _, entered, release = endpoint
     save(catalog, profile("blocked", base))
-    save(catalog, profile("beta", base))
+    save(catalog, profile("beta", base, api_key="test-private-key" if same_credential else "another-key"))
     select(catalog, "blocked")
     before = agent.kernel.pools.remaining("owner_tasks", "tokens")
 
@@ -421,10 +422,16 @@ def test_inflight_call_keeps_result_usage_and_does_not_block_switch(web, endpoin
                 "expected_revision": catalog.view()["revision"], "main": "beta", "fast": None})
             assert status == 200 and state["selection"]["main"] == "beta"
             assert not pending.done()
-            assert agent._complete(agent.llm, "s", "u") == "beta"
+            if same_credential:
+                with pytest.raises(LLMError, match="model_route_busy"):
+                    agent._complete(agent.llm, "s", "u")
+            else:
+                assert agent._complete(agent.llm, "s", "u") == "beta"
         finally:
             release.set()
         assert pending.result(3) == "blocked"
+    if same_credential:
+        assert agent._complete(agent.llm, "s", "u") == "beta"
     assert before - agent.kernel.pools.remaining("owner_tasks", "tokens") == 14 + 34
 
 

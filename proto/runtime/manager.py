@@ -386,7 +386,7 @@ class AgentManager:
             try:
                 agent = self.get(info["id"])
                 if (agent is not None and not agent.autonomy_blocker(suggestions=True)
-                        and not agent.model_status()["waiting"]):
+                        and agent.heartbeat_ready()):
                     self.runs.enqueue(info["id"], "tick")
             except CoordinationError as exc:
                 if exc.status not in (404, 429):

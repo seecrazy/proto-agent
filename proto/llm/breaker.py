@@ -10,9 +10,13 @@ import time
 import threading
 from urllib.error import HTTPError, URLError
 
+from proto.llm.client import ModelPressureWait
+
 
 def model_failure(error):
     while error is not None:
+        if isinstance(error, ModelPressureWait):
+            return error.reason
         if isinstance(error, HTTPError):
             return {401: "model_unauthorized", 403: "model_forbidden",
                     429: "model_rate_limited"}.get(error.code, "model_http_error")
@@ -86,13 +90,13 @@ class CircuitBreaker:
             self._state = "closed"
             self._reason = ""
 
-    def record_failure(self, reason="model_request_failed", *, permit=None) -> None:
+    def record_failure(self, reason="model_request_failed", *, permit=None, immediate=False) -> None:
         with self._lock:
             if permit is not None and permit != self._generation:
                 return
             self._fails += 1
             self._reason = reason
-            if self._state == "half_open" or self._fails >= self._threshold:
+            if immediate or self._state == "half_open" or self._fails >= self._threshold:
                 self._state = "open"
                 self._opened_at = time.time()
                 self._generation += 1

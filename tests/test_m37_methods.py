@@ -137,7 +137,7 @@ class TestWorkOnGoalIntegration:
                     self.loop_turn = getattr(self, "loop_turn", 0) + 1
                     if self.loop_turn == 1:
                         return json.dumps({"tool": "write_file",
-                                           "args": {"path": "notes.md",
+                                           "args": {"path": "projects/widget/notes.md",
                                                     "content": "read_wwdc_notes 摘录"},
                                            "category": "workspace_write"})
                     return json.dumps({"done": True, "summary": "read_wwdc_notes 完成"})
@@ -149,12 +149,14 @@ class TestWorkOnGoalIntegration:
                                fetch=lambda u, x="t": (_ for _ in ()).throw(OSError("禁网"))))
         node = agent.goal_tree.add("调研 widget 最佳实践", level="mid",
                                    acceptance="项目目录有产物文件")
+        agent._curate_methods(node.text, pool="self_initiated")
         result = agent.work_on_goal(node)
         # 任务提示词里带方法菜单 + 自发明方法名
         task_prompts = [p for p in llm.prompts if "调研 widget 最佳实践" in p]
         assert any("[可用方法]" in p and "read_wwdc_notes" in p for p in task_prompts)
         # 发明入审计；战果归因记账（摘要里提到方法名）
         assert agent.spine.find(lambda d: d["event_type"] == "method_invent")
+        assert sum("owner_hinted" in prompt for prompt in llm.prompts) == 1
         assert agent.spine.find(lambda d: d["event_type"] == "method_used")
         assert agent.methods_lib.methods[-1].used >= 1
         assert result.get("status") in ("completed", "verified")

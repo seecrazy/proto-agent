@@ -23,6 +23,7 @@ REASONS = {
     "model_not_configured": "未配置可用模型", "model_unreachable": "无法连接模型端",
     "model_http_error": "模型端返回 HTTP 错误", "model_request_failed": "模型请求失败",
     "model_server_error": "模型端暂时不可用",
+    "model_route_busy": "同一模型接入正在服务另一条请求",
     "circuit_breaker_open": "模型暂在熔断冷却", "run_cancelled": "主人已请求取消",
     "fleet_paused": "Agent 已暂停", "muted": "Agent 已静音",
     "manual_only": "当前为手动模式", "not_enabled": "自主行动已关闭", "suggestions_only": "当前仅提案",
@@ -34,6 +35,10 @@ REASONS = {
     "safe_resume_model": "模型或额度受阻，修复后可继续原任务",
     "safe_resume_limit": "已保留安全断点，等待主人继续",
     "context_budget_exceeded": "完整任务指令超过执行上下文上限",
+    "delivery_no_progress": "连续两个工作片无实质文件变化，已暂停",
+    "delivery_not_verified": "四个工作片仍未通过验收，已暂停",
+    "delivery_predecessor_pending": "等待前一阶段验收",
+    "ios_delivery_evidence_missing": "缺少真实且未过期的模拟器构建或测试证据",
 }
 
 
@@ -55,6 +60,8 @@ def _reason(raw):
             return "model_forbidden"
         if "401" in reason:
             return "model_unauthorized"
+        if "429" in reason:
+            return "model_rate_limited"
         return "model_request_failed"
     return "verification" if "verifi" in reason else ""
 
@@ -146,7 +153,12 @@ def activity_reply(snapshot, *, detailed=False):
             text += {"awaiting_approval": "有任务等待主人批准。", "queued": "有任务正在排队。",
                      "needs_reconciliation": "有在途结果未知，需人工核对。"}.get(run["status"], "")
     if model["waiting"]:
-        text += "模型处于熔断冷却或正在做恢复试探。"
+        if model["reason"] == "model_route_busy":
+            text += "同一模型接入正在处理另一条请求。"
+        elif model["reason"] == "model_rate_limited":
+            text += "供应商限流，此接入按冷却截止等待，不会重复发送。"
+        else:
+            text += "模型处于熔断冷却或正在做恢复试探。"
     reason = REASONS.get(model["reason"]) or REASONS.get((snapshot["last_run"] or {}).get("reason"))
     if reason:
         text += f"最近的卡点：{reason}。"

@@ -104,6 +104,10 @@ class _PinnedClient(LLMClient):
         self._client = client
         self.binding_key = binding_key
 
+    @property
+    def pressure_key(self):
+        return getattr(self._client, "pressure_key", None)
+
     def complete(self, system, user):
         self.last_usage = None
         result = self._client.complete(system, user)
