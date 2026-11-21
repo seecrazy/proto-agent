@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 from uuid import uuid4
 
+from proto.kernel.budgets import parse_count
 from proto.runtime.coordination import CoordinationError
 
 
@@ -47,7 +48,9 @@ class FleetBudget:
         return [dict(row) for row in rows]
 
     def configure(self, tokens, calls):
-        if any(type(value) is not int or not 0 <= value <= 10**12 for value in (tokens, calls)):
+        tokens = parse_count(tokens, maximum=10**12)
+        calls = parse_count(calls, maximum=10**12)
+        if tokens is None or calls is None:
             raise CoordinationError("invalid_fleet_limits", 400)
         with self.database.connect(write=True) as connection:
             connection.execute("UPDATE fleet_limits SET tokens = ?, calls = ?", (tokens, calls))

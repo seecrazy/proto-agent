@@ -386,9 +386,11 @@
       <details>
         <summary>调整舰队模型总额</summary>
         <form class="coord-form" id="fleet-budget-form" onsubmit="saveFleetBudget(event)">
-          <label>每日 tokens<input name="tokens" type="number" min="0" max="1000000000000" required></label>
-          <label>每日 calls<input name="calls" type="number" min="0" max="1000000000000" required></label>
+          <label>每日 tokens<input name="tokens" type="text" placeholder="16万 / 1.2M" required></label>
+          <label>每日 calls<input name="calls" type="text" placeholder="2k / 2000" required></label>
+          <div class="empty">全舰队共用；模型调用仍受 Agent 自己的额度限制。支持 8k / 16万 / 1.2M，任一项为 0 时停止新模型调用。</div>
           <button type="submit">保存上限</button>
+          <div id="fleet-budget-message" class="empty" role="status"></div>
         </form>
       </details>
       <div id="runs-err" class="empty" role="status"></div>
@@ -1826,12 +1828,12 @@ function showCoordinationDetail(title, value) {
   document.getElementById("coord-detail-content").textContent = value;
   if (!dialog.open) dialog.showModal();
 }
-function drawFleetBudget(budget) {
+function drawFleetBudget(budget, saved = false) {
   const {cycle, caps, remaining, uncertain, in_flight} = budget;
   document.getElementById("fleet-budget-state").textContent =
     `${cycle} 本地周期｜剩余 ${remaining.tokens} / ${caps.tokens} tokens，${remaining.calls} / ${caps.calls} calls；在途 ${in_flight}、估算待核 ${uncertain}`;
   const form = document.getElementById("fleet-budget-form");
-  if (!form.dataset.loaded) {
+  if (saved || !form.dataset.loaded) {
     form.elements.tokens.value = caps.tokens;
     form.elements.calls.value = caps.calls;
     form.dataset.loaded = "1";
@@ -1840,9 +1842,21 @@ function drawFleetBudget(budget) {
 async function saveFleetBudget(event) {
   event.preventDefault();
   const form = event.currentTarget;
-  const body = {tokens: form.elements.tokens.valueAsNumber, calls: form.elements.calls.valueAsNumber};
-  drawFleetBudget(await api("POST", "/api/fleet-budget", body));
-  addMsg("舰队模型上限已保存，今日已占用额度保留。", "system");
+  const button = form.querySelector('button[type="submit"]');
+  const message = document.getElementById("fleet-budget-message");
+  const body = {tokens: form.elements.tokens.value, calls: form.elements.calls.value};
+  button.disabled = true;
+  message.textContent = "";
+  try {
+    drawFleetBudget(await api("POST", "/api/fleet-budget", body), true);
+    message.textContent = "已保存，今日已占用额度保留。";
+  } catch (error) {
+    message.textContent = error.message === "invalid_fleet_limits"
+      ? "请填写 0 至 1 万亿之间的整数；支持单位后缀，换算后须为整数。"
+      : `保存失败：${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
 }
 async function refreshRuns() {
   if (PANEL.left.cat !== "ov") return;

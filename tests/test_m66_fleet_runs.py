@@ -393,6 +393,40 @@ def test_ticket_release_local_denial_actual_overrun_and_uncertain_receipt(tmp_pa
         restarted.runs.stop()
 
 
+def test_web_fleet_budget_units_preserve_usage_and_agent_limits(tmp_path):
+    fleet, agent, _ = members(tmp_path)
+    path = "/api/fleet-budget"
+    budget = fleet.runs.budget
+    budget.day = lambda: "2026-11-21"
+    agent_budget = agent.kernel.pools.remaining_all()
+    with console(fleet) as server:
+        settled = budget.reserve(agent.fleet_id, "owner_tasks", 12)
+        assert budget.settle(settled.id, tokens=40)
+        pending = budget.reserve(agent.fleet_id, "self_initiated", 20)
+        status, view = request(server, path, {"tokens": "16万", "calls": "2k"})
+        assert status == 200
+        assert view["caps"] == {"tokens": 160000, "calls": 2000}
+        assert view["used"] == {"tokens": 60, "calls": 2}
+        assert view["remaining"] == {"tokens": 159940, "calls": 1998}
+        assert view["in_flight"] == 1
+        assert request(server, path, {"tokens": "1.2M", "calls": "0.0001k"}) == (
+            400, {"error": "invalid_fleet_limits"})
+        assert request(server, path) == (200, view)
+        assert agent.kernel.pools.remaining_all() == agent_budget
+        assert budget.settle(pending.id, tokens=25)
+
+    reopened = AgentManager(tmp_path)
+    reopened.runs.budget.day = budget.day
+    with console(reopened) as server:
+        _, persisted = request(server, path)
+        assert persisted["caps"] == view["caps"]
+        assert persisted["used"] == {"tokens": 65, "calls": 2}
+        status, stopped = request(server, path, {"tokens": "1.2M", "calls": "0"})
+        assert status == 200 and stopped["caps"] == {"tokens": 1200000, "calls": 0}
+        with pytest.raises(CoordinationError, match="fleet_budget_exhausted:calls"):
+            reopened.runs.budget.reserve(agent.fleet_id, "owner_tasks", 1)
+
+
 def test_web_legacy_and_durable_jobs_are_authenticated_and_deduplicated(tmp_path):
     fleet, agent, _ = members(tmp_path)
     agent.run_task = lambda text: {"status": "completed", "summary": text}

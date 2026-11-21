@@ -561,7 +561,9 @@ CodingBridge 自动探测 `claude/codex/zcode`，可用 `PROTO_BRIDGE_CLI` 指�
 - **流程与交互**：轮询 `/api/runs` 及单条记录，主人可取消、续批或显式关闭待核对记录；旧 `/api/jobs` 映射为兼容视图，旧同步任务接口在不持写锁的情况下等待 Run。`Idempotency-Key` 按 Agent 去重；同键异载荷拒绝。自主心跳按 Agent 合并，浏览器只轮询不代发心跳；选择自主目标时跳过已有非终态会话的目标及祖先，可选择其他分支。轮转以最近认领顺序为准，显式任务在同 Agent 内先于心跳；等待审批、暂停、未满足依赖和写锁繁忙者不占槽。
 - **数据与恢复**：舰队根 `.coordination/state.sqlite3` 保存 `Run(id, agent_id, kind, args, generation, session_id, result, cancel_requested)`、认领顺序、预算及交付记录；事务原子认领。队列状态为 `queued → running → succeeded/failed/blocked/cancelled/awaiting_approval/needs_reconciliation`，续批使用同一 Run 的新代次。取消排队立即生效；运行中只在下一模型/工具/交付边界停止，不撤回已启动的动作；待审批取消走原拒绝路径。托管待批从 Run 入口作主人决策，不由旧心跳超时直接消费。重启只接纳有对应会话的确认结果或等待检查点；若工具已确认完成而会话未消费回执，主人可从该回执续接，不重新运行工具。其他在途尝试留待核对，不自动重放。核对期间冻结该 Agent 的新 Run；主人确认外部状态后可关闭记录，但不会恢复旧调用。原 AgenticLoop 与 Router 仍是工具/审批的权威。
 - **预算**：每次模型调用（包括非 Run 的主人对话）先预留舰队的当日本地日期 tokens/calls，再预留 Agent `global` 和原来源池；拒绝本地时释放未发出的舰队票，发送后异常/崩溃保留估算并标为不确定。票据关联 Run（若有）、Agent、请求、来源、原日期和金额；结算幂等。实际用量超过估算形成欠额，阻止新请求；旧周期回执不扣或补新周期。额度预检不是供应商硬输出上限，与供应商账单也不同；工具不占舰队模型票，仍用原 L1 预算。启动时默认舰队 200,000 tokens/2,000 calls，主人可独立调整，按当日已占用计算余额，不在调额时清账。
+- **两层上限与输入单位**：舰队是所有成员共享的模型总闸，不是各 Agent 上限之和，也不向成员分配余额。模型请求同时受舰队余量、当前 Agent 总池及对应来源池限制；提高一层不会提高另一层。同一次用量计入不同层级，不是向供应商重复付费。在「概览 → 舰队额度与运行 → 调整舰队模型总额」分别填每日 tokens、calls。两项可用整数或与 Agent 上限相同的数量后缀（`k`=千、`w`/`万`=万、`m`/`兆`=百万，不区分字母大小写）；换算后必须是 0 至 10^12 的整数，不四舍五入。任一项设为 `0` 阻止新模型请求。`POST /api/fleet-budget` 两字段一起校验，失败返回 `400 invalid_fleet_limits` 且均不修改。正确输入按整数写回原 SQLite 上限和 API 响应，保留当日已用和在途票据。输入单位不是新增资源维度；不改变 Agent 扣减、重置或计费机制，不需要数据迁移。
 - **验收**：`tests/test_m66_fleet_runs.py` 覆盖 F3–F5 的慢 Agent 与空槽、并发认领、取消和待批、旧入口、重启已知/未知分支、幂等冲突、预算原池/跨日/异常/重复；使用临时舰队、假模型，不调用真实服务。
+- **额度输入验收**：网页支持填写带单位的文本，保存成功显示换算后的整数；非法输入就地提示且保留草稿。轮询不覆盖编辑；接口覆盖原整数、零、单位换算、非法值原子拒绝、跨重启持久与当日占用不变。
 
 <a id="project-delivery"></a>
 ### 12.8 M67 实施契约：项目交接与硬验收
@@ -583,6 +585,7 @@ CodingBridge 自动探测 `claude/codex/zcode`，可用 `PROTO_BRIDGE_CLI` 指�
 │ 左栏 340px      │ 对话 1fr                 │ 右栏 380px           │
 │ 概览 / 内在     │ 消息流、输入、任务反馈    │ 工作 / 项目 / 工程   │
 │ 观察信息        │                          │ 干预与工程信息       │
+│ 舰队额度内编辑  │                          │                      │
 ├────────────────┤                          ├──────────────────────┤
 │ 左栏边缘把手    │                          │ 右栏边缘把手         │
 └────────────────┴──────────────────────────┴──────────────────────┘
@@ -608,6 +611,7 @@ CodingBridge 自动探测 `claude/codex/zcode`，可用 `PROTO_BRIDGE_CLI` 指�
 | 每卡片折叠钮 | 只折叠本卡；每次 distribute 后补挂，包括首次分发 | `proto-collapsed` |
 | 伙伴/工程视角 | 切换工程信息与参数显示 | `proto-view` |
 | 顶栏额度 | 打开浮层、补额度、改上限；不受卡片折叠状态控制 | 不复用 `proto-collapsed` |
+| 舰队额度 | 概览卡内 `#fleet-budget-form` 的 tokens、calls 文本框与 `#fleet-budget-message` 反馈；只改舰队上限，不改顶栏 Agent 额度 | 无独立持久键 |
 | 任务审批 | `#task-result` 展示整链结果；`#task-resume` 和 `pausedTaskId` 绑定最新待批 task id，再暂停仍可继续 | 不把在途审批写入 localStorage |
 
 待批卡片沿用右侧 work 分区，不增加新页签。`refreshProposals` 显示并转义原始工具请求和审批类别；批准按钮对执行会话标为“批准并续跑原任务”，未绑定执行器的旧自主学习提案才沿用草稿行为。任务面板与提案按钮的结果统一交给 `renderTaskResult`，包括再次暂停、验收失败和核对原因；待批徽标只按本次返回的提案列表计算。保持现有 DOM id、CSS 和存储键，不改变左右栏布局。
@@ -628,7 +632,7 @@ M64 模型管理由顶栏 `#model` 打开独立 `#model-panel` 对话框，不�
 
 M65 顶栏「＋Agent」用 `#agent-create-panel` 的 `agent-create-{name,template,persona,priority,preview,save,message}` 和 `agent-preview-btn` 完成预览/保存；编辑字段后必须重做预览。`#autonomy-btn` 管当前成员，舰队卡片动作管该卡成员；共用 `#autonomy-panel` 及 `autonomy-{heading,current,mode,scope,save,disable,message}`，始终绑定目标 ID 和修订号。`profile-state` 与 `autonomy-state` 贴在人设/优先级卡片，展示待应用、待启用及只读建议；舰队暂停与页头静音仍各管其职责。对话框内部滚动、窄屏单列、失败可见，不增加卡片或 localStorage 键。API 使用 `POST /api/agents/preview`、`POST /api/agents` 创建草稿，`GET/POST /api/agents/{id}/autonomy` 查看范围或显式启用/切换（并发旧版本返回 409）。
 
-M66 在概览增加 `fleet-budget-{state,form}`、`run-list`；显示舰队余额/在途/不确定票据、运行详情及原池计费，安全状态下提供取消、续批和需确认的核对关闭。`task-result` 跟进异步指派，待批徽标仍直达原工作侧。浏览器只轮询；Web 心跳负责入队。`GET/POST /api/fleet-budget` 管舰队上限，`GET/POST /api/runs` 读队列或提交任务，`/api/runs/{id}` 与 `/cancel`、`/resume`、`/reconcile` 子路径提供详情与操作。
+M66 在概览增加 `fleet-budget-{state,form,message}`、`run-list`；显示舰队余额/在途/不确定票据、运行详情及原池计费，安全状态下提供取消、续批和需确认的核对关闭。`task-result` 跟进异步指派，待批徽标仍直达原工作侧。浏览器只轮询；Web 心跳负责入队。`GET/POST /api/fleet-budget` 管舰队上限：表单沿用 `.coord-form`，`saveFleetBudget` 发送原始文本，`drawFleetBudget` 首次加载或成功保存回填上限，轮询只更新摘要；校验失败就地反馈，不触碰待批徽标、锚点或存储键。`GET/POST /api/runs` 读队列或提交任务，`/api/runs/{id}` 与 `/cancel`、`/resume`、`/reconcile` 子路径提供详情与操作。
 
 M67 的 `delivery-{select,description,work}` 属右栏，`work-{create,assignee,reviewer,requires}` 贴近分派合同。产物、运行与验收详情共用 `coord-detail`，产物内容只按纯文本展示，不执行或解析为页面；对话框内部滚动。API 为 `GET/POST /api/projects`、`GET /api/projects/{project}`、`POST /api/projects/{project}/work`、`GET /api/projects/{project}/work/{item}/artifacts/{version}`、`POST .../work/{item}/{retry|drop}`。使用现有主人认证，不以当前 Agent 选择授予项目访问权限；UI 不引入新的持久键。
 

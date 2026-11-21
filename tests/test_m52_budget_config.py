@@ -11,7 +11,7 @@ import urllib.request
 
 import pytest
 
-from proto.kernel.budgets import parse_amount
+from proto.kernel.budgets import parse_amount, parse_count
 from proto.llm.client import LLMClient
 from proto.web.server import ProtoWebServer
 
@@ -57,6 +57,24 @@ class TestParseAmount:
         assert parse_amount("") is None
         assert parse_amount("-5k") is None
         assert parse_amount(None) is None
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    (0, 0), ("0k", 0), ("8k", 8000), ("16万", 160000), ("1.2M", 1200000),
+    (" 1.001K ", 1001), ("0.5w", 5000), ("0.5兆", 500000),
+    ("1，200", 1200), ("1,000,000m", 10**12),
+])
+def test_parse_count_uses_agent_amount_suffixes(text, expected):
+    result = parse_count(text, maximum=10**12)
+    assert type(result) is int and result == expected
+
+
+@pytest.mark.parametrize("invalid", [
+    True, 1.0, None, "", "abc", "-1k", "NaN", "Infinity", "1__2k",
+    "0.0001k", "1.001000000000000000000000000000001K", "1000000.000001m",
+])
+def test_parse_count_rejects_invalid_or_fractional_amount(invalid):
+    assert parse_count(invalid, maximum=10**12) is None
 
 
 class TestSetCap:

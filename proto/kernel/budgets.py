@@ -10,31 +10,51 @@ import math
 import threading
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from typing import Callable, Dict, Optional
 
 from proto.storage.store import DocumentStore
 
 
-_UNIT_SUFFIX = {"k": 1e3, "w": 1e4, "万": 1e4, "m": 1e6, "兆": 1e6}
+_UNIT_POWERS = {"k": 3, "w": 4, "万": 4, "m": 6, "兆": 6}
 
 
-def parse_amount(text) -> float:
+def _amount_parts(text) -> tuple[str, int]:
+    number = str(text).strip().lower().replace("，", "").replace(",", "")
+    power = _UNIT_POWERS.get(number[-1:], 0)
+    return (number[:-1].strip() if power else number), power
+
+
+def parse_amount(text) -> Optional[float]:
     """数值+单位解析（M52）：'8k'→8000、'16万'→160000、'1.2M'→1200000、
     '200000'→200000。非法/负数返回 None。"""
     if text is None:
         return None
-    s = str(text).strip().lower().replace("，", "").replace(",", "")
-    if not s:
-        return None
-    mult = 1.0
-    if s[-1] in _UNIT_SUFFIX:
-        mult = _UNIT_SUFFIX[s[-1]]
-        s = s[:-1].strip()
+    number, power = _amount_parts(text)
     try:
-        value = float(s) * mult
+        value = float(number) * 10**power
     except ValueError:
         return None
     return value if math.isfinite(value) and value > 0 else None
+
+
+def parse_count(text, *, maximum: int) -> Optional[int]:
+    """Parse a bounded, nonnegative integer, using the same suffixes as parse_amount."""
+    if type(text) is int:
+        return text if 0 <= text <= maximum else None
+    if not isinstance(text, str):
+        return None
+    number, power = _amount_parts(text)
+    try:
+        if not math.isfinite(float(number)):
+            return None
+        sign, digits, exponent = Decimal(number).as_tuple()
+        count = Decimal((sign, digits, exponent + power))
+        if 0 <= count <= maximum and count == count.to_integral_value():
+            return int(count)
+    except (ValueError, InvalidOperation):
+        return None
+    return None
 
 
 def _checked_amounts(amounts: Dict[str, float]) -> Dict[str, float]:
