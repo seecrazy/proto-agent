@@ -313,7 +313,7 @@ class AgenticLoop:
         lease = current_run.get()
         held = (lease is not None and lease.agent is self._agent
                 and self._session["schema_version"] == SESSION_SCHEMA_VERSION
-                and (verifying or self._session["trace"] or code == "model_route_busy"
+                and (verifying or self._session["trace"] or code in ("model_route_busy", "model_group_unavailable")
                      or (self._session.get("delivery") is not None and self._agent._scoped_model())))
         result = dict(status="waiting_model" if held else "failed", reason=f"llm_error:{code}",
                       observations=self._session["observations"], trace=self._session["trace"])

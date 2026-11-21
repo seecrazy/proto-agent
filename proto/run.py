@@ -13,8 +13,8 @@
   /deny <id>      拒绝一个主动提议（触发阻尼：阈值上调）
   /task <描述>    指派任务：LLM 规划步骤 → 安全管线执行
   /mute /unmute   静音/解除（静音期间不出自主提议）
-  /models         查看已接入模型；/models reload 重载磁盘目录
-  /model <id> [fast-id|main]  热切换主/快模型（main 表示跟随）
+  /models         查看模型与模型组；/models reload 重载磁盘目录
+  /model <id|group:id> [id|group:id|main]  热切换主/快模型（main 表示跟随）
   /quit           退出
 """
 from __future__ import annotations
@@ -145,7 +145,7 @@ def main(argv=None) -> int:
 
 
 def model_command(models, line) -> None:
-    from proto.llm.catalog import ModelConfigError
+    from proto.llm.catalog import GROUP_PREFIX, ModelConfigError
     parts = line.split()
     try:
         state = models.view()
@@ -155,13 +155,16 @@ def model_command(models, line) -> None:
             fast = parts[2] if len(parts) == 3 and parts[2] != "main" else None
             state = models.select(parts[1], fast, state["revision"])
         elif parts != ["/models"]:
-            print("  用法：/models [reload] 或 /model <main-id> [fast-id|main]\n")
+            print("  用法：/models [reload] 或 /model <id|group:id> [id|group:id|main]\n")
             return
         selection = state["selection"]
         print(f"  模型目录 revision={state['revision']}，主={selection['main']}，"
               f"快={selection['fast'] or '跟随主模型'}")
         for profile in state["profiles"]:
             print(f"  {profile['id']}  {profile['name']}  {profile['model']}  {profile['api_style']}")
+        for group in state["groups"]:
+            members = " → ".join(group["profile_ids"])
+            print(f"  {GROUP_PREFIX}{group['id']}  {group['name']}  {members}")
         print("  下一次调用生效；新增接入可用控制台或编辑 llm_models.json 后 /models reload。\n")
     except ModelConfigError as exc:
         print(f"  模型配置未改变：{exc}\n")

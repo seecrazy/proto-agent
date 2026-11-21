@@ -37,38 +37,40 @@ class ModelPressure:
         self._inflight = set()
         self._front = Counter()
 
-    def _cooldown(self, route):
+    def _retry_at(self, route, origin):
         with self.database.connect() as connection:
-            return connection.execute("SELECT retry_at, strikes FROM model_pressure WHERE route = ?",
-                                      (route,)).fetchone()
+            return connection.execute("SELECT coalesce(max(retry_at), 0) FROM model_pressure WHERE route IN (?, ?)",
+                                      (route, origin)).fetchone()[0]
 
-    def snapshot(self, route):
+    def snapshot(self, route, *, origin=None):
         if route:
+            keys = (route, origin) if origin else (route,)
             with self._condition:
-                row = self._cooldown(route)
-                if row and row["retry_at"] > self.now():
+                retry_at = self._retry_at(route, origin)
+                if retry_at > self.now():
                     return {"state": "cooldown", "waiting": True, "reason": "model_rate_limited",
-                            "retry_at": row["retry_at"]}
-                if route in self._inflight or self._front.get(route):
+                            "retry_at": retry_at}
+                if any(key in self._inflight or self._front.get(key) for key in keys):
                     return {"state": "busy", "waiting": True, "reason": "model_route_busy", "retry_at": None}
         return None
 
     @contextmanager
-    def admit(self, route, *, foreground=False):
+    def admit(self, route, *, origin=None, foreground=False):
         if not route:
             yield
             return
+        keys = (route, origin) if origin else (route,)
         with self._condition:
             if foreground:
-                self._front[route] += 1
+                self._front.update(keys)
             try:
                 wait_until = time.monotonic() + self.foreground_wait
                 while True:
-                    row = self._cooldown(route)
-                    if row and row["retry_at"] > self.now():
-                        raise ModelPressureWait("model_rate_limited", row["retry_at"])
-                    if route not in self._inflight and (foreground or not self._front.get(route)):
-                        self._inflight.add(route)
+                    retry_at = self._retry_at(route, origin)
+                    if retry_at > self.now():
+                        raise ModelPressureWait("model_rate_limited", retry_at)
+                    if not any(key in self._inflight or (not foreground and self._front.get(key)) for key in keys):
+                        self._inflight.update(keys)
                         break
                     remaining = wait_until - time.monotonic()
                     if not foreground or remaining <= 0:
@@ -76,33 +78,42 @@ class ModelPressure:
                     self._condition.wait(remaining)
             finally:
                 if foreground:
-                    self._front[route] -= 1
-                    if not self._front[route]:
-                        del self._front[route]
+                    for key in keys:
+                        self._front[key] -= 1
+                        if not self._front[key]:
+                            del self._front[key]
         try:
             yield
         finally:
             with self._condition:
-                self._inflight.remove(route)
+                self._inflight.difference_update(keys)
                 self._condition.notify_all()
 
-    def limited(self, route, error):
+    def limited(self, route, error, *, origin=None):
         now = self.now()
         hint = retry_after(error, now)
+        deadlines = {}
         with self.database.connect(write=True) as connection:
-            row = connection.execute("SELECT strikes, retry_at FROM model_pressure WHERE route = ?",
-                                     (route,)).fetchone()
-            strikes = min((row["strikes"] if row else 0) + 1, 6)
-            delay = min(1800, 60 * 2 ** (strikes - 1))
-            retry_at = max(now + 1, hint) if hint is not None and math.isfinite(hint) else now + delay
-            if row:
-                retry_at = max(retry_at, row["retry_at"])
-            connection.execute("INSERT OR REPLACE INTO model_pressure VALUES (?, ?, ?)",
-                               (route, retry_at, strikes))
-        return ModelPressureWait("model_rate_limited", retry_at)
+            for key in (route, origin) if origin else (route,):
+                row = connection.execute("SELECT strikes, retry_at FROM model_pressure WHERE route = ?",
+                                         (key,)).fetchone()
+                strikes = min((row["strikes"] if row else 0) + 1, 6)
+                delay = min(1800, 60 * 2 ** (strikes - 1))
+                retry_at = max(now + 1, hint) if hint is not None and math.isfinite(hint) else now + delay
+                if row:
+                    retry_at = max(retry_at, row["retry_at"])
+                connection.execute("INSERT OR REPLACE INTO model_pressure VALUES (?, ?, ?)",
+                                   (key, retry_at, strikes))
+                deadlines[key] = retry_at
+        return ModelPressureWait("model_rate_limited", deadlines[route])
 
-    def succeeded(self, route):
-        if route and self._cooldown(route):
+    def succeeded(self, route, *, origin=None):
+        if not route:
+            return
+        where = "FROM model_pressure WHERE route IN (?, ?) AND retry_at <= ?"
+        args = (route, origin, self.now())
+        with self.database.connect() as connection:
+            expired = connection.execute(f"SELECT 1 {where} LIMIT 1", args).fetchone()
+        if expired is not None:
             with self.database.connect(write=True) as connection:
-                connection.execute("DELETE FROM model_pressure WHERE route = ? AND retry_at <= ?",
-                                   (route, self.now()))
+                connection.execute(f"DELETE {where}", args)

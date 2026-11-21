@@ -612,7 +612,8 @@ def test_model_panel_scripts_submit_revision_and_never_cache_keys():
 const assert = require("assert");
 const elements = {};
 for (const identity of ["model-key", "model-clear-key", "model-main", "model-fast", "model-profile",
-                       "model-name", "model-style", "model-base", "model-id", "model-key-label", "model-message"])
+                       "model-name", "model-style", "model-base", "model-id", "model-key-label", "model-message",
+                       "model-group", "model-group-name", "model-group-add", "model-group-members"])
   elements[identity] = {value: "", textContent: "", innerHTML: "", checked: false};
 elements["model-panel"] = {querySelectorAll: () => [], showModal() {}, close() {}};
 const document = {getElementById: identity => elements[identity]};
@@ -620,7 +621,9 @@ const esc = value => value.replaceAll("<", "&lt;");
 const calls = [];
 let reject = false;
 const state = {revision: 7, selection: {main: "alpha", fast: null},
-               profiles: [{id: "alpha", name: "<private>", model: "m", api_style: "openai", base_url: "http://localhost", has_api_key: true}]};
+               profiles: [{id: "alpha", name: "<private>", model: "m", api_style: "openai", base_url: "http://localhost", has_api_key: true},
+                          {id: "beta", name: "二号", model: "b"}],
+               groups: [{id: "team", name: "<编码组>", profile_ids: ["beta"]}]};
 async function api(method, path, body) {
   calls.push({method, path, body});
   if (reject) throw new Error("model_revision_conflict");
@@ -646,6 +649,20 @@ async function refreshState() {}
   await selectModels();
   assert.equal(calls.at(-1).path, "/api/models/select");
   assert.equal(calls.at(-1).body.fast, null);
+  assert(elements["model-main"].innerHTML.includes('value="group:team"'));
+  assert(elements["model-fast"].innerHTML.includes("&lt;编码组>"));
+  elements["model-group"].value = "team";
+  fillModelGroup();
+  elements["model-group-add"].value = "alpha";
+  addModelGroupMember();
+  moveModelGroupMember(1, -1);
+  assert(elements["model-group-members"].innerHTML.indexOf("&lt;private>") < elements["model-group-members"].innerHTML.indexOf("二号"));
+  reject = true;
+  await saveModelGroup();
+  assert.deepEqual(calls.at(-1), {method:"POST", path:"/api/models/groups",
+    body:{expected_revision:7, group:{id:"team", name:"<编码组>", profile_ids:["alpha", "beta"]}}});
+  assert.deepEqual(modelGroupMembers, ["alpha", "beta"]);
+  reject = false;
   await reloadModels();
   assert.equal(calls.at(-1).path, "/api/models/reload");
   reject = true;

@@ -43,7 +43,8 @@ from proto.metacog.scheduler import MetacogScheduler
 from proto.metacog.strategies import StrategyLibrary
 from proto.state.agent_state import AgentState, StateManager
 from proto.state.desires import DesireDynamics
-from proto.llm.breaker import CircuitBreaker, model_failure
+from proto.llm.breaker import CircuitBreaker, GROUP_FAILOVER_REASONS, model_failure
+from proto.llm.client import LLMError, ModelPressureWait
 from proto.memory.extract import extract_facts, reflect as llm_reflect
 from proto.memory.extract import score_importance
 from proto.goals.system import GoalTree
@@ -121,6 +122,10 @@ def _escalation_prefix(consecutive_no_output: int) -> str:
     return (f"【产出纪律】此前 {consecutive_no_output} 轮尝试全部零产出"
             "（只探索没写文件）。本轮第 1 步必须 write_file 创建或修改"
             "目标文件——所需信息已在[上一轮进展]里，不许再探索。\n")
+
+
+class _GroupMemberFailed(Exception):
+    pass
 
 
 class ProtoAgent:
@@ -533,40 +538,68 @@ class ProtoAgent:
         finally:
             self.activity_event("tool_returned", tool=tool)
 
-    def _model_binding(self, client):
+    def _model_bindings(self, client):
         from proto.llm.catalog import ModelRoleClient
         if isinstance(client, ModelRoleClient):
-            role = client.role
-            client = client.pin()
-            key = (role, client.binding_key)
+            plan = client.plan()
+            bindings = []
             with self._model_breakers_lock:
-                if key not in self._model_breakers:
-                    self._model_breakers[key] = CircuitBreaker()
-                return client, self._model_breakers[key]
+                for member in plan.members:
+                    key = (client.role, member.binding_key)
+                    if key not in self._model_breakers:
+                        self._model_breakers[key] = CircuitBreaker()
+                    bindings.append((member, self._model_breakers[key]))
+            return plan.group_name, bindings
         if client is not None and client is self._llm_fast and client is not self._llm:
-            return client, self._fast_breaker
-        return client, self._breaker
+            return "", [(client, self._fast_breaker)]
+        return "", [(client, self._breaker)]
+
+    def _model_binding(self, client):
+        return self._model_bindings(client)[1][0]
+
+    @staticmethod
+    def _group_stops_at(status):
+        return (status["waiting"] and status["state"] in ("open", "half_open")
+                and status["reason"] not in GROUP_FAILOVER_REASONS)
+
+    def _binding_status(self, client, breaker, pressure, *, grouped=False):
+        local = breaker.snapshot()
+        if grouped and self._group_stops_at(local):
+            return local
+        origin = client.pressure_origin if grouped else None
+        shared = pressure.snapshot(getattr(client, "pressure_key", None), origin=origin)
+        if shared and (not local["waiting"] or (shared["retry_at"] or 0) > (local["retry_at"] or 0)):
+            return shared
+        return local
+
+    def _group_model_status(self, name, bindings, pressure):
+        waiting = []
+        for client, breaker in bindings:
+            state = self._binding_status(client, breaker, pressure, grouped=True)
+            if not state["waiting"]:
+                return dict(state, group=name)
+            waiting.append(state)
+            if self._group_stops_at(state):
+                break
+        return dict(min(waiting, key=lambda state: state["retry_at"] or 0), group=name)
 
     def model_status(self):
-        from proto.llm.client import LLMError
         try:
-            client, breaker = self._model_binding(self.llm)
+            group, bindings = self._model_bindings(self.llm)
+            client, breaker = bindings[0]
         except LLMError:
             client = None
         if client is None:
             return {"state": "offline", "waiting": False, "retry_at": None,
                     "reason": "model_not_configured"}
-        local = breaker.snapshot()
-        shared = self._pressure().snapshot(getattr(client, "pressure_key", None))
-        if shared and (not local["waiting"] or (shared["retry_at"] or 0) > (local["retry_at"] or 0)):
-            return shared
-        return local
+        pressure = self._pressure()
+        return (self._group_model_status(group, bindings, pressure) if group else
+                self._binding_status(client, breaker, pressure))
 
     def _pressure(self):
         return self._fleet_runs.model_pressure if self._fleet_runs is not None else self._local_model_pressure
 
     def _scoped_model(self):
-        from proto.llm.client import LLMError
         try:
             client, _breaker = self._model_binding(self.llm)
             return bool(getattr(client, "pressure_key", None))
@@ -576,23 +609,58 @@ class ProtoAgent:
     def _complete(self, client, system: str, user: str,
                   pool: str = "owner_tasks", *, foreground=False) -> str:
         """熔断 + 预算守卫的 LLM 调用。"""
-        from proto.llm.client import LLMError
         reason = self._blocked_dispatch(False)
         if reason:
             raise LLMError(reason)
-        client, breaker = self._model_binding(client)
+        group, bindings = self._model_bindings(client)
+        pressure = self._pressure()
+        if group:
+            return self._complete_group(group, bindings, pressure, system, user, pool)
+        client, breaker = bindings[0]
         if breaker.snapshot()["waiting"]:
             raise LLMError("circuit_breaker_open")
-        pressure = self._pressure()
         route = getattr(client, "pressure_key", None)
         with pressure.admit(route, foreground=foreground):
             return self._model_request(client, breaker, pressure, route, system, user, pool)
 
-    def _model_request(self, client, breaker, pressure, route, system, user, pool):
-        from proto.llm.client import LLMError
+    def _complete_group(self, name, bindings, pressure, system, user, pool):
+        sent_failures = 0
+        for client, breaker in bindings:
+            if sent_failures == 2:
+                break
+            local = breaker.snapshot()
+            if local["waiting"]:
+                if self._group_stops_at(local):
+                    raise ModelPressureWait(local["reason"], local["retry_at"])
+                continue
+            route = client.pressure_key
+            try:
+                with pressure.admit(route, origin=client.pressure_origin):
+                    return self._model_request(client, breaker, pressure, route, system, user, pool, grouped=True)
+            except _GroupMemberFailed:
+                sent_failures += 1
+            except ModelPressureWait as exc:
+                if exc.reason not in ("model_route_busy", "model_rate_limited", "circuit_breaker_open"):
+                    raise
+        state = self._group_model_status(name, bindings, pressure)
+        reason = "model_group_unavailable"
+        if not sent_failures and state["reason"] == "model_route_busy":
+            reason = "model_route_busy"
+        raise ModelPressureWait(reason, state["retry_at"] if state["waiting"] else None)
+
+    def _breaker_error(self, breaker, grouped):
+        if not grouped:
+            return LLMError("circuit_breaker_open")
+        local = breaker.snapshot()
+        reason = local["reason"] if self._group_stops_at(local) else "circuit_breaker_open"
+        return ModelPressureWait(reason, local["retry_at"])
+
+    def _model_request(self, client, breaker, pressure, route, system, user, pool, *, grouped=False):
         blocked = self._blocked_dispatch(False)
-        if blocked or breaker.snapshot()["waiting"]:
-            raise LLMError(blocked or "circuit_breaker_open")
+        if blocked:
+            raise LLMError(blocked)
+        if breaker.snapshot()["waiting"]:
+            raise self._breaker_error(breaker, grouped)
         estimated_in = max(1, (len(system) + len(user)) // 4)
         fleet_budget = self._fleet_runs.budget if self._fleet_runs is not None else None
         ticket = None
@@ -612,16 +680,18 @@ class ProtoAgent:
             raise LLMError(f"budget_exhausted:{reserved.reason}")
         reason = self._blocked_dispatch(False)
         permit = breaker.acquire() if not reason else None
-        if not reason and permit is None:
-            reason = "circuit_breaker_open"
-        if reason:
+        if reason or permit is None:
             if ticket is not None:
                 fleet_budget.settle(ticket.id, unsent=True)
             self.kernel.pools.finish_model(request_id, unsent=True)
-            raise LLMError(reason)
+            if reason:
+                raise LLMError(reason)
+            raise self._breaker_error(breaker, grouped)
         started = time.monotonic()
+        origin = getattr(client, "pressure_origin", None)
+        activity = {"model": client.profile_name} if grouped else {}
         try:
-            self.activity_event("model_wait")
+            self.activity_event("model_wait", **activity)
             with self._background_io():
                 reply = client.complete(system, user)
             usage = getattr(client, "last_usage", None)
@@ -632,14 +702,16 @@ class ProtoAgent:
                 total = max(1, (len(system) + len(user) + len(reply)) // 4)
         except Exception as exc:
             incident = model_failure(exc)
+            can_failover = grouped and incident in GROUP_FAILOVER_REASONS
             limited = None
             if route and incident == "model_rate_limited":
-                limited = pressure.limited(route, exc)
+                limited = pressure.limited(route, exc, origin=origin)
                 breaker.record_success(permit=permit)
             else:
                 breaker.record_failure(incident, permit=permit,
-                                       immediate=bool(route and incident in ("model_unauthorized", "model_forbidden")))
-            self.activity_event("model_failed", reason=incident)
+                                       immediate=(can_failover or bool(route and incident in (
+                                           "model_unauthorized", "model_forbidden"))))
+            self.activity_event("model_failed", reason=incident, **activity)
             if ticket is not None:
                 fleet_budget.settle(ticket.id)
             self.kernel.pools.finish_model(request_id, elapsed=time.monotonic() - started)
@@ -649,15 +721,17 @@ class ProtoAgent:
                     and not self.spine.find(lambda d: d["event_type"] == "llm_breaker_trip")):
                 self.spine.append("llm_breaker_trip",
                                   {"fails": breaker._fails})
+            if can_failover:
+                raise _GroupMemberFailed(incident) from exc
             if limited is not None:
                 raise limited from exc
             raise
         breaker.record_success(permit=permit)
-        self.activity_event("model_returned")
+        self.activity_event("model_returned", **activity)
         if ticket is not None:
             fleet_budget.settle(ticket.id, tokens=total)
         self.kernel.pools.finish_model(request_id, tokens=total, elapsed=time.monotonic() - started)
-        pressure.succeeded(route)
+        pressure.succeeded(route, origin=origin if grouped else None)
         return reply
 
     def _system_prompt(self) -> str:

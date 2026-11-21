@@ -183,6 +183,9 @@
     overflow: auto; background: var(--panel); color: var(--text); border: 1px solid var(--border);
     border-radius: 12px; padding: 20px; }
   #model-panel::backdrop, .agent-panel::backdrop { background: rgba(0,0,0,.6); }
+  #model-panel[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; padding: 0; }
+  #model-panel-heading { padding: 16px 20px 10px; }
+  #model-scroll { overflow: auto; padding: 0 20px 18px; }
   #model { min-width: 0; max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #agent-select { min-width: 0; max-width: 220px; }
   .fleet-agent-id { color: var(--dim); font-size: 11px; overflow-wrap: anywhere; }
@@ -190,7 +193,7 @@
   #fleet-bulk button:disabled { opacity: .5; cursor: default; }
   #fleet-bulk-status { white-space: pre-wrap; overflow-wrap: anywhere; }
   .fleet-empty #composer, .fleet-empty .card:not(.fleet-scope), .fleet-empty .agent-only { display: none !important; }
-  #model-panel h2 { padding-right: 30px; }
+  #model-panel h2 { margin: 0; padding-right: 32px; }
   #model-close { position: absolute; top: 12px; right: 12px; }
   #model-panel h3 { margin: 14px 0 8px; }
   #model-panel label, .agent-panel label { display: block; margin: 10px 0; }
@@ -200,7 +203,14 @@
     background: var(--panel2); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 7px; }
   #model-panel .model-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
-  #model-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+  #model-groups { margin: 14px 0; border-block: 1px solid var(--border); padding: 10px 0; }
+  #model-groups summary { cursor: pointer; font-weight: 600; }
+  #model-group-members { padding-left: 25px; }
+  #model-group-members li { padding: 5px 0; overflow-wrap: anywhere; }
+  #model-group-members .btns { margin-top: 4px; }
+  #model-group-members button:disabled { opacity: .5; cursor: default; }
+  #model-message { margin: 0; padding: 8px 20px; border-top: 1px solid var(--border);
+    white-space: pre-wrap; overflow-wrap: anywhere; }
   .agent-panel output, .agent-panel pre { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
   .agent-panel pre { font: inherit; padding: 8px; background: var(--panel2); border-radius: 6px; }
   .coord-form { display: grid; gap: 8px; margin: 8px 0; }
@@ -324,27 +334,42 @@
 </div>
 
 <dialog id="model-panel" aria-labelledby="model-heading" onclose="clearModelSecret()">
-  <button id="model-close" onclick="closeModels()" aria-label="关闭模型管理">×</button>
-  <h2 id="model-heading">模型接入与热切换</h2>
-  <p class="empty">舰队共享配置；新接入保存后即可选用，无需重启。在途请求不中断，下一次调用生效。</p>
-  <div class="model-grid">
-    <label><span>主模型</span><select id="model-main" aria-label="主模型"></select></label>
-    <label><span>快模型</span><select id="model-fast" aria-label="快模型"></select></label>
+  <div id="model-panel-heading">
+    <h2 id="model-heading">模型与模型组</h2>
+    <button id="model-close" onclick="closeModels()" aria-label="关闭模型管理">×</button>
   </div>
-  <div class="btns"><button class="primary" onclick="selectModels()">应用选择</button>
-    <button onclick="refreshModels()">刷新目录</button><button onclick="reloadModels()">从磁盘重载</button></div>
-  <h3>新增 / 编辑接入</h3>
-  <label><span>接入配置（保存不会自动切换）</span><select id="model-profile" onchange="fillModelProfile()"></select></label>
-  <div class="model-grid">
-    <label><span>显示名称</span><input id="model-name" autocomplete="off" placeholder="例如：本地编码模型"></label>
-    <label><span>协议</span><select id="model-style"><option value="openai">OpenAI compatible</option><option value="anthropic">Anthropic compatible</option></select></label>
+  <div id="model-scroll">
+    <p class="empty">全舰队共享：主模型和快模型均可选择单个接入或模型组。在途请求不中断，下一次调用才应用改动。</p>
+    <div class="model-grid">
+      <label><span>主模型</span><select id="model-main" aria-label="主模型"></select></label>
+      <label><span>快模型</span><select id="model-fast" aria-label="快模型"></select></label>
+    </div>
+    <div class="btns"><button class="primary" onclick="selectModels()">应用选择</button>
+      <button onclick="refreshModels()">刷新目录</button><button onclick="reloadModels()">从磁盘重载</button></div>
+    <details id="model-groups">
+      <summary>新增 / 编辑模型组</summary>
+      <p class="empty">从上往下选择可用接入，每次调用最多实际尝试两个。只把可以接收相同上下文的模型放在同一组。</p>
+      <div class="model-grid">
+        <label><span>模型组</span><select id="model-group" onchange="fillModelGroup()"></select></label>
+        <label><span>组名称</span><input id="model-group-name" maxlength="80" placeholder="例如：编码主用与备用" autocomplete="off"></label>
+      </div>
+      <label><span>添加已保存的接入（最多 8 个）</span><select id="model-group-add" onchange="addModelGroupMember()"></select></label>
+      <ol id="model-group-members" aria-label="模型尝试顺序"></ol>
+      <div class="btns"><button id="model-group-save" class="primary" onclick="saveModelGroup()">保存模型组</button></div>
+    </details>
+    <h3>新增 / 编辑接入</h3>
+    <label><span>接入配置（保存不会自动切换）</span><select id="model-profile" onchange="fillModelProfile()"></select></label>
+    <div class="model-grid">
+      <label><span>显示名称</span><input id="model-name" autocomplete="off" placeholder="例如：本地编码模型"></label>
+      <label><span>协议</span><select id="model-style"><option value="openai">OpenAI compatible</option><option value="anthropic">Anthropic compatible</option></select></label>
+    </div>
+    <label><span>Base URL（不含密钥、查询参数或片段）</span><input id="model-base" type="url" placeholder="http://localhost:11434/v1"></label>
+    <label><span>模型名 / Endpoint ID</span><input id="model-id" autocomplete="off" placeholder="供应商支持的模型标识"></label>
+    <label><span id="model-key-label">API Key（本地模型可留空）</span><input id="model-key" type="password" autocomplete="new-password"></label>
+    <label><input id="model-clear-key" type="checkbox"> 显式清除已有密钥（否则编辑留空保留原密钥）</label>
+    <div class="btns"><button class="primary" onclick="saveModelProfile()">保存接入</button>
+      <button onclick="closeModels()">关闭</button></div>
   </div>
-  <label><span>Base URL（不含密钥、查询参数或片段）</span><input id="model-base" type="url" placeholder="http://localhost:11434/v1"></label>
-  <label><span>模型名 / Endpoint ID</span><input id="model-id" autocomplete="off" placeholder="供应商支持的模型标识"></label>
-  <label><span id="model-key-label">API Key（本地模型可留空）</span><input id="model-key" type="password" autocomplete="new-password"></label>
-  <label><input id="model-clear-key" type="checkbox"> 显式清除已有密钥（否则编辑留空保留原密钥）</label>
-  <div class="btns"><button class="primary" onclick="saveModelProfile()">保存接入</button>
-    <button onclick="closeModels()">关闭</button></div>
   <p class="empty" id="model-message" role="status" aria-live="polite"></p>
 </dialog>
 
@@ -906,6 +931,7 @@ async function api(method, path, body, requestKey, agentId) {
 
 let modelCatalog = null;
 let modelBusy = false;
+let modelGroupMembers = [];
 function clearModelSecret() {
   document.getElementById("model-key").value = "";
   document.getElementById("model-clear-key").checked = false;
@@ -929,22 +955,77 @@ function fillModelProfile() {
     ? "API Key（已有密钥；留空保留，不会回显）" : "API Key（本地模型可留空）";
   clearModelSecret();
 }
+function modelProfileOption(profile) {
+  return `<option value="${profile.id}">${esc(profile.name)} · ${esc(profile.model)}</option>`;
+}
+function renderModelGroupMembers() {
+  const add = document.getElementById("model-group-add");
+  const available = modelCatalog.profiles.filter(row => !modelGroupMembers.includes(row.id));
+  const prompt = modelGroupMembers.length === 8 ? "已达到成员上限" : available.length ? "选择并添加接入" : "没有可添加的接入";
+  add.innerHTML = `<option value="">${prompt}</option>` +
+    (modelGroupMembers.length < 8 ? available.map(modelProfileOption).join("") : "");
+  add.value = "";
+  document.getElementById("model-group-members").innerHTML = modelGroupMembers.map((identity, index) => {
+    const row = modelCatalog.profiles.find(profile => profile.id === identity);
+    return `<li><span>${esc(row.name)} · ${esc(row.model)}</span><div class="btns">
+      <button onclick="moveModelGroupMember(${index},-1)" aria-label="上移第 ${index + 1} 项" ${index === 0 ? "disabled" : ""}>上移</button>
+      <button onclick="moveModelGroupMember(${index},1)" aria-label="下移第 ${index + 1} 项" ${index === modelGroupMembers.length - 1 ? "disabled" : ""}>下移</button>
+      <button onclick="removeModelGroupMember(${index})" aria-label="移除第 ${index + 1} 项">移除</button>
+    </div></li>`;
+  }).join("");
+}
+function fillModelGroup() {
+  const identity = document.getElementById("model-group").value;
+  const group = (modelCatalog.groups || []).find(row => row.id === identity);
+  document.getElementById("model-group-name").value = group?.name || "";
+  modelGroupMembers = [...(group?.profile_ids || [])];
+  renderModelGroupMembers();
+}
+function addModelGroupMember() {
+  if (modelBusy || !modelCatalog) return;
+  const identity = document.getElementById("model-group-add").value;
+  if (modelGroupMembers.length < 8 && !modelGroupMembers.includes(identity) && modelCatalog.profiles.some(row => row.id === identity)) {
+    modelGroupMembers.push(identity);
+    renderModelGroupMembers();
+  }
+}
+function moveModelGroupMember(index, offset) {
+  const next = index + offset;
+  if (modelBusy || index < 0 || index >= modelGroupMembers.length || next < 0 || next >= modelGroupMembers.length) return;
+  [modelGroupMembers[index], modelGroupMembers[next]] = [modelGroupMembers[next], modelGroupMembers[index]];
+  renderModelGroupMembers();
+}
+function removeModelGroupMember(index) {
+  if (modelBusy || index < 0 || index >= modelGroupMembers.length) return;
+  modelGroupMembers.splice(index, 1);
+  renderModelGroupMembers();
+}
 function renderModels(state) {
   const previous = state.saved_id || document.getElementById("model-profile").value;
+  const previousGroup = state.saved_group_id || document.getElementById("model-group").value;
   modelCatalog = state;
-  const options = state.profiles.map(row => `<option value="${row.id}">${esc(row.name)} · ${esc(row.model)}</option>`).join("");
-  document.getElementById("model-main").innerHTML = '<option value="">请选择主模型</option>' + options;
-  document.getElementById("model-fast").innerHTML = '<option value="">跟随主模型</option>' + options;
+  const groups = state.groups || [];
+  const options = state.profiles.map(modelProfileOption).join("");
+  const groupTargets = groups.map(row => `<option value="group:${row.id}">${esc(row.name)} · ${row.profile_ids.length} 个接入</option>`).join("");
+  const targets = (groupTargets ? `<optgroup label="模型组">${groupTargets}</optgroup>` : "") +
+    (options ? `<optgroup label="单模型">${options}</optgroup>` : "");
+  document.getElementById("model-main").innerHTML = '<option value="">请选择主模型或模型组</option>' + targets;
+  document.getElementById("model-fast").innerHTML = '<option value="">跟随主模型</option>' + targets;
   document.getElementById("model-profile").innerHTML = '<option value="">＋新增接入</option>' + options;
+  document.getElementById("model-group").innerHTML = '<option value="">＋新建模型组</option>' +
+    groups.map(row => `<option value="${row.id}">${esc(row.name)}</option>`).join("");
   document.getElementById("model-main").value = state.selection.main || "";
   document.getElementById("model-fast").value = state.selection.fast || "";
   document.getElementById("model-profile").value = state.profiles.some(row => row.id === previous) ? previous : "";
+  document.getElementById("model-group").value = groups.some(row => row.id === previousGroup) ? previousGroup : "";
   fillModelProfile();
+  fillModelGroup();
 }
 async function modelAction(action, message) {
   if (modelBusy) return;
   modelBusy = true;
-  const controls = document.getElementById("model-panel").querySelectorAll("button,input,select");
+  const controls = [...document.getElementById("model-panel").querySelectorAll("button,input,select")]
+    .filter(control => !control.disabled);
   controls.forEach(control => control.disabled = true);
   document.getElementById("model-message").textContent = "处理中…";
   try {
@@ -978,6 +1059,18 @@ async function saveModelProfile() {
     ...(identity ? {id: identity} : {}),
   };
   await modelAction(() => api("POST", "/api/models", {expected_revision: modelCatalog.revision, profile}), "接入已保存；活动接入的修改下一次调用生效，新接入选择后应用");
+}
+async function saveModelGroup() {
+  if (modelBusy || !modelCatalog) return;
+  const identity = document.getElementById("model-group").value;
+  const name = document.getElementById("model-group-name").value.trim();
+  if (!name || !modelGroupMembers.length) {
+    document.getElementById("model-message").textContent = "请填写组名称，并至少添加一个已保存的接入。";
+    return;
+  }
+  const group = {name, profile_ids: [...modelGroupMembers], ...(identity ? {id: identity} : {})};
+  await modelAction(() => api("POST", "/api/models/groups", {expected_revision: modelCatalog.revision, group}),
+    identity ? "模型组已更新；若正在使用，下一次调用生效" : "模型组已保存；请在上方选择并应用");
 }
 async function selectModels() {
   if (!modelCatalog) return;
@@ -1165,6 +1258,7 @@ const LIVE_REASONS = {
   model_timeout: "模型响应超时", model_forbidden: "模型端拒绝请求（403）",
   model_unauthorized: "模型身份校验失败（401）", model_rate_limited: "模型端限流（429）",
   model_unreachable: "无法连接模型端", model_http_error: "模型端 HTTP 错误", model_server_error: "模型端暂时不可用",
+  model_not_found: "模型接入找不到（404）", model_group_unavailable: "模型组暂不可用",
   model_not_configured: "未配置可用模型", model_request_failed: "模型请求失败",
   circuit_breaker_open: "模型冷却中", run_cancelled: "已请求取消",
   needs_reconciliation: "在途结果未知", fleet_paused: "Agent 已暂停",
@@ -1192,7 +1286,7 @@ function liveSummary(data) {
   const run = data.run, current = data.current, model = data.model;
   if (run?.status === "running") {
     return run.cancel_requested ? "正在取消 · 等在途步骤到达安全边界"
-      : `${LIVE_PHASES[current?.phase] || "执行中"}${current?.tool ? " · " + current.tool : ""}`;
+      : [LIVE_PHASES[current?.phase] || "执行中", current?.model, current?.tool].filter(Boolean).join(" · ");
   }
   if (run && (SAFE_CONTINUATION_REASONS.includes(run.reason)
     || ["model_retry_wait", "interrupted_requeued", "safe_resume_ready"].includes(run.reason))) {
@@ -1235,7 +1329,7 @@ function renderLiveWork(data, selected) {
     const phase = event.phase === "needs_reconciliation" && SAFE_CONTINUATION_REASONS.includes(event.reason)
       ? "已保留断点" : LIVE_PHASES[event.phase] || "执行事件";
     label.textContent = [phase, event.step && `步骤 ${event.step}`,
-      event.tool, event.path, LIVE_REASONS[event.reason]].filter(Boolean).join(" · ");
+      event.model, event.tool, event.path, LIVE_REASONS[event.reason]].filter(Boolean).join(" · ");
     row.append(when, label);
     return row;
   }));

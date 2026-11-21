@@ -23,6 +23,7 @@ REASONS = {
     "model_not_configured": "未配置可用模型", "model_unreachable": "无法连接模型端",
     "model_http_error": "模型端返回 HTTP 错误", "model_request_failed": "模型请求失败",
     "model_server_error": "模型端暂时不可用",
+    "model_not_found": "模型接入找不到（404）", "model_group_unavailable": "模型组暂不可用",
     "model_route_busy": "同一模型接入正在服务另一条请求",
     "circuit_breaker_open": "模型暂在熔断冷却", "run_cancelled": "主人已请求取消",
     "fleet_paused": "Agent 已暂停", "muted": "Agent 已静音",
@@ -84,7 +85,7 @@ class RunActivity:
         self._lock = threading.Lock()
         self._seq = 0
 
-    def record(self, lease, phase, *, tool="", path="", reason=""):
+    def record(self, lease, phase, *, tool="", path="", reason="", model=""):
         marker = getattr(lease.agent, "_current_op", None) or {}
         with self._lock:
             self._seq += 1
@@ -93,6 +94,7 @@ class RunActivity:
                 "phase": phase, "step": marker.get("step") or 0,
                 "tool": tool if re.fullmatch(r"[\w-]{1,64}", tool) else "",
                 "path": artifact_path(path), "reason": _reason(reason),
+                "model": _line(model, 80),
             })
 
     def forget(self, agent_id):
@@ -140,7 +142,8 @@ def activity_reply(snapshot, *, detailed=False):
             text += f"第 {snapshot['step']}/{snapshot['max_steps']} 步。"
         current = snapshot["current"] or {}
         if current.get("phase") == "model_wait":
-            text += "正在等模型返回。"
+            name = current.get("model")
+            text += f"正在等模型「{name}」返回。" if name else "正在等模型返回。"
         if current.get("phase") == "tool_start":
             text += f"正在执行工具 {current['tool']}。"
         if run and run["cancel_requested"]:

@@ -10,11 +10,15 @@ import re
 import tempfile
 import threading
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from proto.llm.client import (AnthropicCompatClient, LLMClient, LLMError,
-                              OpenAICompatClient)
+                              OpenAICompatClient, pressure_key)
+
+
+GROUP_PREFIX = "group:"
 
 
 class ModelConfigError(ValueError):
@@ -63,8 +67,24 @@ def _profile(value):
     return result
 
 
+def _group(value, profiles):
+    if not isinstance(value, dict) or set(value) != {"id", "name", "profile_ids"}:
+        raise ModelConfigError("invalid_model_group")
+    identity = value["id"]
+    if not isinstance(identity, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", identity):
+        raise ModelConfigError("invalid_model_group_id")
+    members = value["profile_ids"]
+    if not isinstance(members, list) or not 1 <= len(members) <= 8:
+        raise ModelConfigError("invalid_model_group_members")
+    if any(not isinstance(member, str) or member not in profiles for member in members):
+        raise ModelConfigError("unknown_model_group_member")
+    if len(set(members)) != len(members):
+        raise ModelConfigError("duplicate_model_group_member")
+    return {"id": identity, "name": _text(value["name"], 80), "profile_ids": list(members)}
+
+
 def _document(value):
-    if not isinstance(value, dict) or set(value) != {
+    if not isinstance(value, dict) or set(value) - {"groups"} != {
             "schema_version", "revision", "profiles", "selection"}:
         raise ModelConfigError("invalid_model_catalog")
     if type(value["schema_version"]) is not int or value["schema_version"] != 1:
@@ -77,17 +97,25 @@ def _document(value):
     identities = {profile["id"] for profile in profiles}
     if len(identities) != len(profiles):
         raise ModelConfigError("duplicate_model_id")
+    raw_groups = value.get("groups", [])
+    if not isinstance(raw_groups, list) or len(raw_groups) > 32:
+        raise ModelConfigError("invalid_model_groups")
+    groups = [_group(group, identities) for group in raw_groups]
+    targets = {GROUP_PREFIX + group["id"] for group in groups}
+    if len(targets) != len(groups):
+        raise ModelConfigError("duplicate_model_group_id")
+    targets.update(identities)
     selection = value["selection"]
     if not isinstance(selection, dict) or set(selection) != {"main", "fast"}:
         raise ModelConfigError("invalid_model_selection")
     for identity in selection.values():
         if identity is not None and (not isinstance(identity, str)
-                                     or identity not in identities):
+                                     or identity not in targets):
             raise ModelConfigError("unknown_model")
     if selection["main"] is None and selection["fast"] is not None:
         raise ModelConfigError("missing_main_model")
     return {"schema_version": 1, "revision": value["revision"],
-            "profiles": profiles, "selection": dict(selection)}
+            "profiles": profiles, "groups": groups, "selection": dict(selection)}
 
 
 def _from_client(client, identity, name):
@@ -100,9 +128,11 @@ def _from_client(client, identity, name):
 
 
 class _PinnedClient(LLMClient):
-    def __init__(self, client, binding_key):
+    def __init__(self, client, binding_key, *, name="", origin=None):
         self._client = client
         self.binding_key = binding_key
+        self.profile_name = name
+        self.pressure_origin = origin
 
     @property
     def pressure_key(self):
@@ -113,6 +143,12 @@ class _PinnedClient(LLMClient):
         result = self._client.complete(system, user)
         self.last_usage = copy.deepcopy(getattr(self._client, "last_usage", None))
         return result
+
+
+@dataclass(frozen=True)
+class ModelPlan:
+    members: tuple
+    group_name: str = ""
 
 
 class ModelRoleClient(LLMClient):
@@ -132,6 +168,9 @@ class ModelRoleClient(LLMClient):
     def pin(self):
         return self._catalog.pin(self._role)
 
+    def plan(self):
+        return self._catalog.plan(self._role)
+
     def describe(self):
         return self._catalog.describe(self._role)
 
@@ -149,7 +188,7 @@ class ModelCatalog:
         self._lock = threading.RLock()
         self._fallback = {"main": main, "fast": fast if fast is not None else main}
         self._roles = {role: ModelRoleClient(self, role) for role in ("main", "fast")}
-        self._state = {"schema_version": 1, "revision": 0, "profiles": [],
+        self._state = {"schema_version": 1, "revision": 0, "profiles": [], "groups": [],
                        "selection": {"main": None, "fast": None}}
         if self.path.exists() or self.path.is_symlink():
             self._state = self._read()
@@ -182,7 +221,8 @@ class ModelCatalog:
     def _write(self, state):
         temporary = None
         try:
-            data = json.dumps(state, ensure_ascii=False, indent=2).encode("utf-8")
+            document = {key: value for key, value in state.items() if key != "groups" or value}
+            data = json.dumps(document, ensure_ascii=False, indent=2).encode("utf-8")
             if len(data) > 1024 * 1024:
                 raise ModelConfigError("model_catalog_too_large")
             if self.path.is_symlink():
@@ -258,6 +298,28 @@ class ModelCatalog:
             result["saved_id"] = identity
             return result
 
+    def save_group(self, group, expected_revision):
+        with self._lock:
+            self._check_revision(expected_revision)
+            if not isinstance(group, dict) or set(group) - {"id"} != {"name", "profile_ids"}:
+                raise ModelConfigError("invalid_model_group")
+            rows = self._state["groups"]
+            if "id" in group:
+                identity = group["id"]
+                if not isinstance(identity, str) or not any(row["id"] == identity for row in rows):
+                    raise ModelConfigError("unknown_model_group")
+            else:
+                identity = uuid.uuid4().hex[:12]
+            candidate = copy.deepcopy(self._state)
+            row = dict(group, id=identity)
+            candidate["groups"] = [row if current["id"] == identity else current
+                                   for current in candidate["groups"]]
+            if "id" not in group:
+                candidate["groups"].append(row)
+            result = self._publish(candidate)
+            result["saved_group_id"] = identity
+            return result
+
     def select(self, main, fast, expected_revision):
         with self._lock:
             self._check_revision(expected_revision)
@@ -284,6 +346,22 @@ class ModelCatalog:
                     and self._fallback["main"] is not None)
 
     def pin(self, role):
+        plan = self.plan(role)
+        if plan.group_name:
+            raise LLMError("model_group_requires_agent")
+        return plan.members[0]
+
+    @staticmethod
+    def _bind(profile):
+        cls = AnthropicCompatClient if profile["api_style"] == "anthropic" else OpenAICompatClient
+        client = cls(base_url=profile["base_url"], api_key=profile["api_key"], model=profile["model"])
+        fingerprint = hashlib.sha256(json.dumps(
+            {key: profile[key] for key in ("api_style", "base_url", "model", "api_key")},
+            sort_keys=True).encode("utf-8")).hexdigest()
+        origin = "origin:" + pressure_key(profile["base_url"], "")
+        return _PinnedClient(client, (profile["id"], fingerprint), name=profile["name"], origin=origin)
+
+    def plan(self, role):
         with self._lock:
             selection = self._state["selection"]
             identity = selection[role] or selection["main"]
@@ -291,20 +369,21 @@ class ModelCatalog:
                 client = self._fallback[role]
                 if client is None:
                     raise LLMError("model_not_configured")
-                return _PinnedClient(client, ("injected", id(client)))
-            profile = next(row for row in self._state["profiles"] if row["id"] == identity)
-            cls = AnthropicCompatClient if profile["api_style"] == "anthropic" else OpenAICompatClient
-            client = cls(base_url=profile["base_url"], api_key=profile["api_key"], model=profile["model"])
-            fingerprint = hashlib.sha256(json.dumps(
-                {key: profile[key] for key in ("api_style", "base_url", "model", "api_key")},
-                sort_keys=True).encode("utf-8")).hexdigest()
-            return _PinnedClient(client, (identity, fingerprint))
+                return ModelPlan((_PinnedClient(client, ("injected", id(client))),))
+            profiles = {row["id"]: row for row in self._state["profiles"]}
+            if identity.startswith(GROUP_PREFIX):
+                group = next(row for row in self._state["groups"] if row["id"] == identity[len(GROUP_PREFIX):])
+                return ModelPlan(tuple(self._bind(profiles[key]) for key in group["profile_ids"]), group["name"])
+            return ModelPlan((self._bind(profiles[identity]),))
 
     def describe(self, role):
         with self._lock:
             selection = self._state["selection"]
             identity = selection[role] or selection["main"]
             if identity:
+                if identity.startswith(GROUP_PREFIX):
+                    group = next(row for row in self._state["groups"] if row["id"] == identity[len(GROUP_PREFIX):])
+                    return f"模型组：{group['name']}（{len(group['profile_ids'])} 个接入）"
                 profile = next(row for row in self._state["profiles"] if row["id"] == identity)
                 return f"{profile['model']} @ {profile['base_url']} ({profile['api_style']})"
             client = self._fallback[role]

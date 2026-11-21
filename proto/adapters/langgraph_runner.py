@@ -56,8 +56,8 @@ def build_turn_graph(agent):
             agent.library.retrieve(state["text"], k=3, epsilon=0.15))
         if agent.llm is not None:
             try:
-                return {"reply": agent.llm.complete(
-                    SYSTEM_PROMPT, context + "\n\n主人说：" + state["text"])}
+                return {"reply": agent._complete(
+                    agent.llm, SYSTEM_PROMPT, context + "\n\n主人说：" + state["text"], foreground=True)}
             except Exception:
                 pass
         return {"reply": agent._offline_reply(state["text"])}

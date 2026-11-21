@@ -18,10 +18,14 @@ def model_failure(error):
         if isinstance(error, ModelPressureWait):
             return error.reason
         if isinstance(error, HTTPError):
-            return {401: "model_unauthorized", 403: "model_forbidden",
+            if 500 <= error.code < 600:
+                return "model_server_error"
+            return {401: "model_unauthorized", 403: "model_forbidden", 404: "model_not_found",
                     429: "model_rate_limited"}.get(error.code, "model_http_error")
         if isinstance(error, TimeoutError):
             return "model_timeout"
+        if isinstance(error, ConnectionError):
+            return "model_unreachable"
         if isinstance(error, URLError) and not error.__cause__:
             return "model_timeout" if isinstance(error.reason, TimeoutError) else "model_unreachable"
         error = error.__cause__
@@ -30,6 +34,11 @@ def model_failure(error):
 
 TRANSIENT_MODEL_REASONS = frozenset({
     "circuit_breaker_open", "model_timeout", "model_unreachable", "model_rate_limited", "model_server_error",
+    "model_group_unavailable",
+})
+GROUP_FAILOVER_REASONS = frozenset({
+    "model_timeout", "model_unreachable", "model_rate_limited", "model_server_error",
+    "model_unauthorized", "model_not_found",
 })
 
 
@@ -40,11 +49,6 @@ def model_wait_reason(error):
     for reason in ("budget_exhausted", "fleet_budget_exhausted"):
         if message.startswith(reason + ":"):
             return reason
-    cause = error
-    while cause is not None:
-        if isinstance(cause, HTTPError) and 500 <= cause.code < 600:
-            return "model_server_error"
-        cause = cause.__cause__
     return model_failure(error)
 
 

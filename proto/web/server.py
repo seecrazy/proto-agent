@@ -171,7 +171,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _api(self, method: str, parsed):
         server: ProtoWebServer = self.server
         path, query = parsed.path, parse_qs(parsed.query)
-        if path in {"/api/models", "/api/models/select", "/api/models/reload"}:
+        if path in {"/api/models", "/api/models/groups", "/api/models/select", "/api/models/reload"}:
             return self._models(method, path, server)
         autonomy = _AUTONOMY_RE.fullmatch(path)
         if autonomy:
@@ -520,6 +520,10 @@ class _Handler(BaseHTTPRequestHandler):
                 if set(body) != {"expected_revision", "profile"}:
                     raise ModelConfigError("invalid_model_request")
                 result = catalog.save_profile(body["profile"], expected)
+            elif path == "/api/models/groups":
+                if set(body) != {"expected_revision", "group"}:
+                    raise ModelConfigError("invalid_model_request")
+                result = catalog.save_group(body["group"], expected)
             elif path == "/api/models/select":
                 if set(body) != {"expected_revision", "main", "fast"}:
                     raise ModelConfigError("invalid_model_request")
