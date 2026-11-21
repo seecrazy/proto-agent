@@ -992,7 +992,7 @@ class ProtoAgent:
 
     def _finish_goal_result(self, node, result, project_dir):
         result["project_dir"] = project_dir
-        if result.get("status") in ("paused", "blocked", "needs_reconciliation", "cancelled", "denied"):
+        if result.get("status") in ("paused", "blocked", "needs_reconciliation", "waiting_model", "cancelled", "denied"):
             return result
         if node.status != "active":
             return dict(result, status="cancelled", verified=False)
@@ -1871,6 +1871,8 @@ class ProtoAgent:
         return self._finish_owner_result(description, result)
 
     def _finish_owner_result(self, description, result):
+        if result["status"] == "waiting_model":
+            return result
         if result["status"] == "verified":
             self.pad.apply_event("task_success")
             self.desires.satisfy("goal_urgency", 0.25)
@@ -1932,16 +1934,7 @@ class ProtoAgent:
         with self.sessions.lock:
             session = self.sessions.lookup(task_id)
             if session is not None:
-                result = AgenticLoop(self).resume(task_id, approved)
-                if result.get("status") in ("verified", "completed", "awaiting_retry", "max_steps"):
-                    goal_id = session["context"]["goal_id"]
-                    if goal_id:
-                        node = self.goal_tree.get(goal_id)
-                        if node is not None:
-                            return self._finish_goal_result(node, result, session["context"]["project_dir"])
-                    else:
-                        return self._finish_owner_result(session["context"]["task"], result)
-                return result
+                return self._resume_execution(session, task_id, approved)
         record = self.checkpoints.resume(task_id)
         if record is None:
             return {"status": "failed", "reason": "no_checkpoint"}
@@ -1956,6 +1949,24 @@ class ProtoAgent:
             self.pad.apply_event("task_success")
         self.scheduler.on_task_completed(result)
         return {"status": result.status, "step_results": result.step_results, "reason": result.reason}
+
+    def continue_run(self, session_id):
+        with self.sessions.lock:
+            session = self.sessions.lookup(session_id)
+            if session is None:
+                return {"status": "needs_reconciliation", "reason": "no_execution_session"}
+            return self._resume_execution(session, session_id, True, safe_only=True)
+
+    def _resume_execution(self, session, identifier, approved, *, safe_only=False):
+        result = AgenticLoop(self).resume(identifier, approved, safe_only=safe_only)
+        if result.get("status") in ("verified", "completed", "awaiting_retry", "max_steps"):
+            context = session["context"]
+            if not context["goal_id"]:
+                return self._finish_owner_result(context["task"], result)
+            node = self.goal_tree.get(context["goal_id"])
+            if node is not None:
+                return self._finish_goal_result(node, result, context["project_dir"])
+        return result
 
     # ------------------ 管理接口（Web 控制台用） ------------------
     def lock_param(self, param: str, on: bool) -> dict:

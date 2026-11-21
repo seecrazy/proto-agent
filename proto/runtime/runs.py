@@ -10,7 +10,8 @@ from uuid import uuid4
 
 from proto.exec.checkpoints import SCHEMA_VERSION
 from proto.exec.router import VARIANT_ID
-from proto.exec.sessions import TERMINAL_STATES
+from proto.exec.sessions import SESSION_SCHEMA_VERSION, TERMINAL_STATES
+from proto.llm.breaker import TRANSIENT_MODEL_REASONS
 from proto.runtime.activity import RunActivity
 from proto.runtime.coordination import CoordinationDB, CoordinationError, encode
 from proto.runtime.dialogue import Dialogue
@@ -22,6 +23,14 @@ from proto.system.instance_lock import InstanceLock
 
 
 _KEY = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
+_MODEL_RETRY_DELAYS = (5, 10, 20)
+_MAX_RESTART_RESUMES = 2
+_SAFE_RESUME_REASONS = frozenset({"safe_resume_limit", "model_retry_exhausted", "safe_resume_model"})
+
+
+def _continuation(run):
+    result = run["result"] or {}
+    return result if result.get("resume_session") is True else {}
 
 
 def _record(row, *, summary=False):
@@ -182,6 +191,8 @@ class RunCoordinator:
             cached = self.manager.get(row["agent_id"])
             if cached and cached.kernel.muted:
                 return "muted"
+        if row["reason"] in ("model_retry_wait", "interrupted_requeued", "safe_resume_ready"):
+            return row["reason"]
         return ""
 
     def find_link(self, agent_id, identifier):
@@ -235,11 +246,11 @@ class RunCoordinator:
         with self.database.connect(write=True) as connection:
             run = self._get_locked(connection, run_id)
             status = run["status"]
-            if status == "awaiting_approval" or (status == "queued" and run["decision"]):
-                self._decision(connection, run, False, cancel=True)
-            elif status == "running":
+            if status == "running" or (status == "queued" and _continuation(run)):
                 connection.execute("UPDATE runs SET cancel_requested = 1, updated_at = ? WHERE id = ?",
                                    (time.time(), run_id))
+            elif status == "awaiting_approval" or (status == "queued" and run["decision"]):
+                self._decision(connection, run, False, cancel=True)
             elif status == "queued":
                 self._save_result(connection, run, "cancelled", "run_cancelled",
                                   {"status": "cancelled", "reason": "run_cancelled"})
@@ -250,15 +261,40 @@ class RunCoordinator:
         return record
 
     def close_reconciliation(self, run_id, generation):
-        with self.database.connect(write=True) as connection:
-            run = self._get_locked(connection, run_id)
-            if (type(generation) is not int or run["status"] != "needs_reconciliation"
-                    or run["generation"] != generation):
-                raise CoordinationError("run_not_reconciling_or_stale_generation")
-            self._save_result(connection, run, "cancelled", "owner_closed_unknown_effect",
-                              {"status": "cancelled", "reason": "owner_closed_unknown_effect",
-                               "unresolved": run["result"]})
-            record = self._get_locked(connection, run_id)
+        return self._resolve_reconciliation(run_id, generation, resume=False)
+
+    def continue_reconciliation(self, run_id, generation):
+        return self._resolve_reconciliation(run_id, generation, resume=True)
+
+    def _resolve_reconciliation(self, run_id, generation, *, resume):
+        original = self.get(run_id)
+        lock = self.manager.ops_lock(original["agent_id"])
+        if not lock.acquire(blocking=False):
+            raise CoordinationError("agent_busy")
+        try:
+            agent = self.manager.get(original["agent_id"])
+            with self.database.connect(write=True) as connection:
+                run = self._get_locked(connection, run_id)
+                if (type(generation) is not int or run["status"] != "needs_reconciliation"
+                        or run["generation"] != generation):
+                    raise CoordinationError("run_not_reconciling_or_stale_generation")
+                safe = run["reason"] in _SAFE_RESUME_REASONS and self._safe_session(run, agent)
+                if resume:
+                    if not safe or run["cancel_requested"]:
+                        raise CoordinationError("unsafe_resume_checkpoint")
+                    self._save_result(connection, run, "queued", "safe_resume_ready",
+                                      self._resume_result(run, model_retries=0, restart_attempts=0))
+                else:
+                    if run["session_id"] and agent is None:
+                        raise CoordinationError("agent_unavailable")
+                    reason = "owner_closed_safe_checkpoint" if safe else "owner_closed_unknown_effect"
+                    if run["session_id"]:
+                        agent.sessions.abandon(run["session_id"], reason)
+                    self._save_result(connection, run, "cancelled", reason,
+                                      {"status": "cancelled", "reason": reason, "unresolved": run["result"]})
+                record = self._get_locked(connection, run_id)
+        finally:
+            lock.release()
         self.notify()
         return record
 
@@ -354,21 +390,26 @@ class RunCoordinator:
         with self.database.connect() as connection:
             candidates = connection.execute("""
                 SELECT queued.* FROM runs queued LEFT JOIN dispatch_turns turns ON queued.agent_id = turns.agent_id
-                WHERE queued.status = 'queued' AND NOT EXISTS (
+                WHERE queued.status = 'queued'
+                AND (queued.cancel_requested OR coalesce(json_extract(queued.result, '$.retry_at'), 0) <= ?)
+                AND NOT EXISTS (
                     SELECT 1 FROM runs busy WHERE busy.agent_id = queued.agent_id
                     AND busy.status IN ('running', 'needs_reconciliation'))
                 AND NOT EXISTS (SELECT 1 FROM work_dependencies dep JOIN work_items upstream ON upstream.id = dep.required_id
                                 WHERE dep.work_id = queued.work_id AND upstream.state != 'verified')
                 ORDER BY coalesce(turns.turn, 0), queued.agent_id,
-                         (queued.kind = 'tick' AND queued.decision IS NULL), queued.seq
-            """).fetchall()
+                         (queued.kind = 'tick' AND queued.decision IS NULL
+                          AND coalesce(json_extract(queued.result, '$.resume_session'), 0) = 0), queued.seq
+            """, (time.time(),)).fetchall()
         locked_agents, paused_agents = set(), set()
         for candidate in candidates:
             agent_id = candidate["agent_id"]
             if agent_id in locked_agents:
                 continue
-            deferred_if_paused = candidate["work_id"] or (candidate["kind"] == "tick" and
-                                  not candidate["decision"] and candidate["args"] == "{}")
+            candidate_run = _record(candidate)
+            deferred_if_paused = not candidate_run["cancel_requested"] and (
+                candidate_run["work_id"] or (candidate_run["kind"] in ("tick", "act") and _continuation(candidate_run))
+                or (candidate_run["kind"] == "tick" and not candidate_run["decision"] and not candidate_run["args"]))
             if deferred_if_paused and agent_id in paused_agents:
                 continue
             lock = self.manager.ops_lock(agent_id)
@@ -424,7 +465,10 @@ class RunCoordinator:
                     policy = agent.autonomy_view()["blocked_reason"]
                     if policy in ("fleet_paused", "muted"):
                         result = {"status": "blocked", "reason": policy}
-                status, reason = self._outcome(result, waiting, final)
+                if result.get("status") == "waiting_model":
+                    status, reason, result = self._wait_for_model(final, agent, result)
+                else:
+                    status, reason = self._outcome(result, waiting, final)
                 self._save_result(connection, final, status, reason, result, waiting)
             self.activity.record(lease, status, reason=reason)
         except Exception:
@@ -436,6 +480,13 @@ class RunCoordinator:
     def _invoke(self, run, agent, lease):
         decision, kind, args = run["decision"], run["kind"], run["args"]
         reason = lease.reason()
+        if _continuation(run):
+            if reason == "run_cancelled":
+                if not self._safe_session(run, agent):
+                    return {"status": "needs_reconciliation", "reason": "unsafe_resume_checkpoint"}
+                agent.sessions.abandon(run["session_id"], reason)
+                return {"status": "cancelled", "reason": reason}
+            return self._wrap_session_result(run, agent.continue_run(run["session_id"]))
         if decision and (not decision["approved"] or not reason):
             return agent.resume_task(decision["task_id"], decision["approved"])
         if reason:
@@ -478,6 +529,42 @@ class RunCoordinator:
         raise ValueError("unknown_run_kind")
 
     @staticmethod
+    def _wrap_session_result(run, result):
+        if run["kind"] == "tick":
+            return {"proposal": result, "status": result["status"], "reason": result.get("reason", "")}
+        if run["kind"] == "act":
+            return dict(result, acted=True)
+        return result
+
+    @staticmethod
+    def _safe_session(run, agent):
+        if agent is None or run["work_id"] or not run["session_id"]:
+            return False
+        session = agent.sessions.lookup(run["session_id"])
+        return agent.sessions.safe_to_continue(session, agent.checkpoints)
+
+    @staticmethod
+    def _resume_result(run, **fields):
+        return dict(resume_session=True, session_id=run["session_id"], **fields)
+
+    def _wait_for_model(self, run, agent, result):
+        if not self._safe_session(run, agent):
+            return "needs_reconciliation", "unsafe_resume_checkpoint", result
+        if run["cancel_requested"]:
+            agent.sessions.abandon(run["session_id"], "run_cancelled")
+            return "cancelled", "run_cancelled", {"status": "cancelled", "reason": "run_cancelled"}
+        code = result.get("reason", "").removeprefix("llm_error:")
+        attempts = (run["result"] or {}).get("model_retries", 0)
+        resumed = self._resume_result(run, status="waiting_model", model_reason=code, model_retries=attempts)
+        if code not in TRANSIENT_MODEL_REASONS:
+            return "needs_reconciliation", "safe_resume_model", resumed
+        if attempts == len(_MODEL_RETRY_DELAYS):
+            return "needs_reconciliation", "model_retry_exhausted", resumed
+        resumed.update(model_retries=attempts + 1, retry_at=max(
+            time.time() + _MODEL_RETRY_DELAYS[attempts], agent.model_status()["retry_at"] or 0))
+        return "queued", "model_retry_wait", resumed
+
+    @staticmethod
     def _outcome(result, waiting, run):
         state, reason = result.get("status"), str(result.get("reason_code") or result.get("reason") or "")
         if waiting:
@@ -494,6 +581,8 @@ class RunCoordinator:
         return "succeeded", ""
 
     def _save_result(self, connection, run, status, reason, result, waiting=None):
+        previous = run["result"] or {}
+        result = {**{key: previous[key] for key in ("model_retries", "restart_attempts") if key in previous}, **result}
         if run["work_id"]:
             status, reason, result = self.projects.finish(connection, run, status, reason, result)
         connection.execute("""
@@ -529,6 +618,8 @@ class RunCoordinator:
                 return None, {"status": "denied", "task_id": checkpoint_id, "reason": "human_denied"}, True
             if state.get("status") == "completed":
                 if session:
+                    if session["schema_version"] == SESSION_SCHEMA_VERSION:
+                        return None, None, agent.sessions.completed_call_matches(session, state)
                     return {"task_id": checkpoint_id, "reason": "confirmed_checkpoint"}, None, True
                 return None, {"status": "completed", "task_id": checkpoint_id, "step_results": state["results"]}, True
         proposal_id = state.get("waiting_for")
@@ -541,31 +632,46 @@ class RunCoordinator:
             return None, None, False
         return {"task_id": checkpoint_id, "proposal_id": proposal_id, "reason": "awaiting_approval"}, None, True
 
-    def _recover_run(self, run, agent):
+    def _recover_run(self, run, agent, *, startup=False):
         if run["status"] != "running":
             return
         try:
             waiting, result, _ = self._evidence(run, agent)
+            safe = not waiting and result is None and self._safe_session(run, agent)
         except Exception:
             logging.exception("Cannot read Run evidence: %s", run["id"])
-            waiting, result = None, None
+            waiting, result, safe = None, None, False
         if waiting:
             status, reason = "awaiting_approval", waiting["reason"]
             result = {"status": "paused", **waiting, "session_id": run["session_id"]}
-        elif result is not None and run["kind"] not in ("tick", "act"):
+        elif result is not None and (run["session_id"] or run["kind"] not in ("tick", "act")):
+            if result.get("status") == "verified" and result.get("verified") is True and result.get("goal_id"):
+                with agent.background_write():
+                    agent.goal_tree.complete(result["goal_id"])
+            result = self._wrap_session_result(run, result)
             status, reason = self._outcome(result, None, run)
         elif run["kind"] == "plan":
             status, reason = "failed", "plan_interrupted"
             result = {"status": status, "reason": reason}
+        elif safe:
+            attempts = (run["result"] or {}).get("restart_attempts", 0)
+            if startup and attempts < _MAX_RESTART_RESUMES:
+                status, reason = "queued", "interrupted_requeued"
+                result = self._resume_result(run, restart_attempts=attempts + 1)
+            else:
+                status, reason = "needs_reconciliation", "safe_resume_limit"
+                result = self._resume_result(run)
         else:
             status, reason = "needs_reconciliation", "interrupted_without_final_receipt"
             result = {"status": status, "reason": reason}
         with self.database.connect(write=True) as connection:
             latest = self._get_locked(connection, run["id"])
             if latest["status"] == "running" and latest["generation"] == run["generation"]:
-                if run["kind"] == "plan" and latest["cancel_requested"]:
+                if latest["cancel_requested"] and (safe or run["kind"] == "plan"):
                     status, reason = "cancelled", "run_cancelled"
                     result = {"status": status, "reason": reason}
+                    if safe:
+                        agent.sessions.abandon(run["session_id"], reason)
                 self._save_result(connection, latest, status, reason, dict(result, recovered=True), waiting)
 
     def recover(self):
@@ -579,4 +685,4 @@ class RunCoordinator:
             except Exception:
                 logging.exception("Cannot load Agent for Run recovery: %s", run["agent_id"])
                 agent = None
-            self._recover_run(run, agent)
+            self._recover_run(run, agent, startup=True)

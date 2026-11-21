@@ -288,6 +288,8 @@ def test_restart_reconciles_receipts_without_replaying_effects(tmp_path, crash):
             assert restarted.runs.find_link(loaded.fleet_id, result["task_id"])["id"] == uncertain["id"]
             with pytest.raises(CoordinationError, match="not_waiting"):
                 restarted.runs.decide(uncertain["id"], True, uncertain["generation"])
+            with pytest.raises(CoordinationError, match="unsafe_resume_checkpoint"):
+                restarted.runs.continue_reconciliation(uncertain["id"], uncertain["generation"])
             loaded.run_task = lambda text: {"status": "completed"}
             behind = enqueue(restarted, loaded, "after review")
             assert restarted.runs.blocked_reason(restarted.runs.get(behind["id"])) == "agent_needs_reconciliation"
@@ -296,15 +298,21 @@ def test_restart_reconciles_receipts_without_replaying_effects(tmp_path, crash):
             assert restarted.runs.get(uncertain["id"])["status"] == "needs_reconciliation"
             restarted.runs.close_reconciliation(uncertain["id"], uncertain["generation"])
             waited(restarted, behind, "succeeded")
+            assert loaded.sessions.lookup(uncertain["session_id"])["status"] == "cancelled"
             assert effects == []
         elif crash == "final_session":
             assert waited(restarted, enqueued, "succeeded")["result"]["summary"] == "saved"
             assert effects == []
+        elif crash == "confirmed_checkpoint":
+            continued = waited(restarted, enqueued, "succeeded")
+            assert continued["result"]["summary"] == "continued"
+            assert continued["session_id"] == result["session_id"]
+            assert continued["generation"] == claimed["generation"] + 1
+            assert effects == ["only once"]
         else:
             parked = waited(restarted, enqueued, "awaiting_approval")
-            expected = "awaiting_approval" if crash == "waiting" else crash
-            assert parked["result"]["reason"] == expected
-            assert len(effects) == (1 if crash == "confirmed_checkpoint" else 0)
+            assert parked["result"]["reason"] == "awaiting_approval"
+            assert effects == []
             restarted.runs.decide(parked["id"], True, parked["generation"])
             assert waited(restarted, parked, "succeeded")["result"]["summary"] == "continued"
             assert effects == ["only once"]

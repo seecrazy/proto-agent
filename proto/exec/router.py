@@ -396,6 +396,6 @@ class Router:
                     f"{step['tool']} 执行失败：{type(exc).__name__}: {exc}"
                     "（换一种做法或修正后重试）")
         self._cps.put(task.id, {"step": len(task.steps), "results": step_results,
-                               "status": "completed"},
+                               "status": "completed", "task": task_spec},
                       variant_id=VARIANT_ID)
         return TaskResult(task.id, "completed", step_results)

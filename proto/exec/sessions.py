@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import threading
 
+from proto.exec.checkpoints import SCHEMA_VERSION
 from proto.exec.plan_evidence import valid_approved_plan, valid_path, valid_text
 from proto.exec.router import VARIANT_ID
 
 
-SESSION_SCHEMA_VERSION = 1
+SESSION_SCHEMA_VERSION = 2
 TERMINAL_STATES = {"verified", "completed", "awaiting_retry", "max_steps",
                    "failed", "denied", "cancelled", "no_llm"}
 
@@ -44,10 +45,19 @@ class ExecutionSessions:
     def pending_goal_ids(self):
         return {self._pending_goal(session) for session in self.store.find("execution_sessions", self._pending_goal)}
 
+    def abandon(self, identifier, reason):
+        with self.lock:
+            session = self.store.get("execution_sessions", identifier)
+            if (session and self.compatible(session) and self.valid(session)
+                    and session["status"] not in TERMINAL_STATES):
+                session.update(status="cancelled", pending_decision=None,
+                               result={"status": "cancelled", "reason": reason, "session_id": identifier})
+                self.save(session)
+
     @staticmethod
     def compatible(session):
         return (type(session.get("schema_version")) is int
-                and session["schema_version"] == SESSION_SCHEMA_VERSION
+                and session["schema_version"] in (1, SESSION_SCHEMA_VERSION)
                 and session.get("variant_id") == VARIANT_ID)
 
     @staticmethod
@@ -55,7 +65,7 @@ class ExecutionSessions:
         if (not isinstance(session.get("id"), str) or not session["id"]
                 or not isinstance(session.get("status"), str)
                 or session.get("status") not in TERMINAL_STATES | {
-                    "running", "resuming", "awaiting_approval", "needs_reconciliation"}):
+                    "running", "resuming", "awaiting_approval", "needs_reconciliation", "waiting_model"}):
             return False
         context = session.get("context")
         if not isinstance(context, dict) or any(not isinstance(context.get(key), str) for key in (
@@ -95,9 +105,18 @@ class ExecutionSessions:
                 or any(not isinstance(block, str) for block in session["prompt_blocks"])):
             return False
         pending = session.get("pending_call")
+        decision = session.get("pending_decision")
+        if session.get("schema_version") == SESSION_SCHEMA_VERSION and "pending_decision" not in session:
+            return False
+        if decision is not None and (pending is not None or not isinstance(decision, dict)
+                or type(decision.get("step")) is not int or not 0 <= decision["step"] == session["next_step"] - 1
+                or not isinstance(decision.get("raw"), str)):
+            return False
         if pending is not None:
             if (not isinstance(pending, dict) or type(pending.get("step")) is not int
                     or not 0 <= pending["step"] < session["next_step"]
+                    or (session["schema_version"] == SESSION_SCHEMA_VERSION
+                        and pending["step"] != session["next_step"] - 1)
                     or pending.get("task_id") != f"{session['id']}-{pending['step']}"
                     or pending["task_id"] not in session["task_ids"]
                     or not isinstance(pending.get("tool"), str)
@@ -105,3 +124,38 @@ class ExecutionSessions:
                     or not isinstance(pending.get("category"), str)):
                 return False
         return session["status"] != "awaiting_approval" or pending is not None
+
+    @staticmethod
+    def completed_call_matches(session, state):
+        pending, context = session["pending_call"], session["context"]
+        task = state.get("task")
+        if not isinstance(task, dict):
+            return False
+        return (type(state.get("step")) is int and state["step"] == 1
+                and isinstance(state.get("results"), list)
+                and task.get("description") == context["task"]
+                and task.get("owner_assigned") is (context["pool"] == "owner_tasks")
+                and task.get("autonomous") is session.get("autonomous")
+                and task.get("steps") == [{key: pending[key] for key in ("tool", "args", "category")}])
+
+    @classmethod
+    def safe_to_continue(cls, session, checkpoints):
+        if (not session or not cls.compatible(session) or not cls.valid(session)
+                or session["schema_version"] != SESSION_SCHEMA_VERSION):
+            return False
+        status = session["status"]
+        pending = session.get("pending_call")
+        if pending is None:
+            return status in {"running", "resuming", "waiting_model"}
+        if (status not in {"running", "resuming", "awaiting_approval", "waiting_model"}
+                and not (status == "needs_reconciliation"
+                         and (session.get("result") or {}).get("reason") == "dispatcher_interrupted")):
+            return False
+        record = checkpoints.resume(pending["task_id"])
+        if (not record or record.get("task_id") != pending["task_id"]
+                or type(record.get("schema_version")) is not int or record["schema_version"] != SCHEMA_VERSION
+                or record.get("variant_id") != VARIANT_ID):
+            return False
+        state = record.get("state")
+        return (isinstance(state, dict) and state.get("status") == "completed"
+                and not state.get("waiting_for") and cls.completed_call_matches(session, state))

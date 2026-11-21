@@ -21,7 +21,10 @@ from proto.exec.contracts import ParameterError
 from proto.exec.plan_evidence import EvidenceError, OutputEvidence
 from proto.exec.router import Task, TaskResult, VARIANT_ID
 from proto.exec.sessions import SESSION_SCHEMA_VERSION, TERMINAL_STATES
-from proto.runtime.runcontext import track_session
+from proto.exec.work_context import (MAX_ACTOR_BYTES, MAX_ADVISORY_BYTES, MAX_HISTORY_BYTES,
+                                    clipped, render_history, size, target_args, tool_receipt, written_file)
+from proto.llm.breaker import model_wait_reason
+from proto.runtime.runcontext import current_run, track_session
 
 PLAN_PROMPT = (
     "为下面的任务用一句话制定执行计划（先做什么再做什么，不超过 30 字）。只输出计划本身。"
@@ -79,23 +82,6 @@ def _clip(tool: str, text: str) -> str:
     return (text[:limit]
             + f"\n…（截断：原文 {len(text)} 字符。用 grep 定位关键段，"
               "或分块读取所需部分）")
-
-
-def _recent_observations(observations: List[str], budget: int = 9000,
-                         at_least: int = 3) -> str:
-    """观察回灌（M47）：累计字符预算制——大观察（读文件 3000 字）时代
-    固定取 12 条会撑爆上下文；从尾部往回收，至少保留最近 3 条。"""
-    picked: List[str] = []
-    used = 0
-    for obs in reversed(observations):
-        if used + len(obs) > budget and len(picked) >= at_least:
-            break
-        picked.append(obs)
-        used += len(obs)
-        if len(picked) >= 12:
-            break
-    return "\n".join(f"{i+1}. {o}"
-                     for i, o in enumerate(reversed(picked))) or "（无）"
 
 
 def _overlap(a: str, b: str) -> bool:
@@ -162,16 +148,18 @@ class AgenticLoop:
         session = self._session
         pending = session["pending_call"]
         tool = pending["tool"]
+        path = ""
         if result.status != "completed":
             session["observations"].append(f"{tool} → {result.status}: {result.reason}")
         else:
             observation = result.step_results[-1] if result.step_results else ""
-            clipped = _clip(tool, observation)
-            call_summary = json.dumps(pending["args"], ensure_ascii=False)[:1000]
-            session["observations"].append(f"{tool}({call_summary}) → {clipped}")
+            excerpt = _clip(tool, observation)
+            call_summary = target_args(pending["args"])
+            path = written_file(tool, pending["args"], observation)
+            session["observations"].append(f"{tool}({call_summary}) → {excerpt}")
             session["trace"].append({"step": pending["step"], "tool": tool,
                                      "args": pending["args"], "category": pending["category"],
-                                     "result": clipped})
+                                     "result": excerpt, "receipt": tool_receipt(tool, pending["args"], observation)})
             session["explore_run"] = session["explore_run"] + 1 if tool in READ_ONLY_TOOLS else 0
             if session["explore_run"] >= 4:
                 session["observations"].append(
@@ -185,13 +173,10 @@ class AgenticLoop:
         session["pending_call"] = None
         session["status"] = "running"
         self._save()
-        args = pending["args"]
-        if result.status == "completed" and (
-                (tool == "write_file" and isinstance(observation, str) and observation.startswith("written:"))
-                or (tool == "edit_file" and type(observation) is int and observation > 0 and args["old"] != args["new"])):
-            self._agent.activity_event("file_written", tool=tool, path=args.get("path"))
+        if path:
+            self._agent.activity_event("file_written", tool=tool, path=path)
 
-    def resume(self, identifier: str, approved: bool) -> Dict:
+    def resume(self, identifier: str, approved: bool, *, safe_only: bool = False) -> Dict:
         if type(approved) is not bool:
             return {"status": "failed", "reason": "invalid_approval_decision"}
         with self._agent.sessions.lock:
@@ -206,18 +191,25 @@ class AgenticLoop:
                     return {"status": "blocked", "reason": "invalid_execution_session"}
                 if session["status"] in TERMINAL_STATES:
                     return {"status": "failed", "reason": "not_paused", "session_id": session["id"]}
+                if safe_only and (not approved or not self._agent.sessions.safe_to_continue(session, self._agent.checkpoints)):
+                    return {"status": "needs_reconciliation", "reason": "unsafe_resume_checkpoint",
+                            "session_id": session["id"]}
                 pending = session.get("pending_call")
                 if identifier != session["id"] and (not pending or identifier != pending["task_id"]):
                     return {"status": "failed", "reason": "stale_approval_task"}
                 track_session(session["id"])
                 context = session["context"]
                 if approved and str(self._agent.code_workspace.root.resolve()) != context["workspace"]:
+                    if safe_only:
+                        return self._stop("needs_reconciliation", "workspace_changed")
                     return {"status": "blocked", "reason": "workspace_changed", "session_id": session["id"]}
                 self.max_steps, self._pool = session["max_steps"], context["pool"]
                 self._autonomous = (session.get("autonomous") is True or bool(context["goal_id"])
                                     or self._pool == "self_initiated")
                 reason = self._autonomy_reason() if approved else ""
                 if reason:
+                    if safe_only:
+                        return self._stop("cancelled", reason)
                     return {"status": "blocked", "reason": reason, "session_id": session["id"]}
                 stopped = self._goal_stopped()
                 if stopped:
@@ -227,6 +219,8 @@ class AgenticLoop:
                             self._agent.router.resume(Task(pending["task_id"], context["task"], []), False)
                     return self._stop(stopped)
                 if approved and self._agent.llm is None:
+                    if safe_only:
+                        return self._stop("waiting_model", "llm_error:model_not_configured")
                     return {"status": "no_llm", "reason": "恢复执行需要 LLM", "session_id": session["id"]}
                 journal = None
                 if approved and session["journal_path"]:
@@ -247,12 +241,14 @@ class AgenticLoop:
                     if not isinstance(state, dict) or (record and record.get("task_id") != pending["task_id"]):
                         return self._stop("needs_reconciliation", "invalid_checkpoint")
                     if state.get("status") == "completed":
-                        if not isinstance(state.get("results"), list):
-                            return self._stop("needs_reconciliation", "invalid_checkpoint")
+                        if (not isinstance(state.get("results"), list)
+                                or (session["schema_version"] == SESSION_SCHEMA_VERSION
+                                    and not self._agent.sessions.completed_call_matches(session, state))):
+                            return self._stop("needs_reconciliation", "checkpoint_call_mismatch")
                         self._observe(TaskResult(pending["task_id"], "completed", state.get("results", [])))
                     elif state.get("status") == "denied":
                         return self._stop("denied", "human_denied")
-                    elif state.get("waiting_for"):
+                    elif state.get("waiting_for") and not safe_only:
                         saved = state.get("pending_step")
                         spec = state.get("task")
                         if approved and (not isinstance(saved, dict) or not isinstance(spec, dict)
@@ -294,6 +290,8 @@ class AgenticLoop:
 
     def _stop(self, status, reason=""):
         self._session["status"] = status
+        if status in TERMINAL_STATES:
+            self._session["pending_decision"] = None
         context = self._session["context"]
         result = {"status": status, "reason": reason, "session_id": self._session["id"],
                   "goal_id": context["goal_id"], "project_dir": context["project_dir"],
@@ -302,6 +300,26 @@ class AgenticLoop:
         self._session["result"] = result
         self._save()
         return result
+
+    def _model_stalled(self, code, *, verifying=False):
+        lease = current_run.get()
+        held = (lease is not None and lease.agent is self._agent
+                and self._session["schema_version"] == SESSION_SCHEMA_VERSION
+                and (verifying or self._session["trace"]))
+        return dict(status="waiting_model" if held else "failed", reason=f"llm_error:{code}",
+                    observations=self._session["observations"], trace=self._session["trace"])
+
+    def _fixed_prompt(self, catalog):
+        context = self._session["context"]
+        plan = context.get("approved_plan")
+        scope = render_context(context)
+        if plan is not None:
+            steps = "\n".join(f"- {step}" for step in plan["steps"])
+            outputs = [item["path"] for item in plan["outputs"]]
+            scope += (f"\n[主人批准的执行计划]\n{steps}\n"
+                      f"必须新增或实质改变的相对输出：{json.dumps(outputs, ensure_ascii=False)}。"
+                      "输出相对项目范围解析，工具 path 参数仍相对工作区，权限按原规则检查。")
+        return f"{scope}\n\n可用工具：\n{catalog}"
 
     def _run(self, task_text: str, acceptance: str,
              feedback: str, journal, goal_id: str = "", project_dir: str = "", frozen_context=None) -> Dict:
@@ -329,7 +347,7 @@ class AgenticLoop:
                 "autonomous": self._autonomous,
                 "feedback": feedback, "max_steps": self.max_steps, "next_step": 0,
                 "observations": [], "trace": [], "events": [], "last_sigs": [],
-                "explore_run": 0, "pending_call": None, "task_ids": [],
+                "explore_run": 0, "pending_call": None, "pending_decision": None, "task_ids": [],
                 "journal_path": str(journal.path.resolve()) if journal is not None else ""}
             track_session(self._session["id"])
             self._save()
@@ -347,9 +365,11 @@ class AgenticLoop:
             if approved_plan is not None:
                 result.update(plan_id=approved_plan["id"], plan_sha256=approved_plan["sha256"])
             session["status"] = ("awaiting_approval" if result["status"] == "paused" else result["status"])
+            if session["status"] in TERMINAL_STATES:
+                session["pending_decision"] = None
             session["result"] = result
             self._save()
-            if journal is not None:
+            if journal is not None and result["status"] != "waiting_model":
                 try:
                     summarize = None
                     model_blocked = str(result.get("reason", "")).startswith("llm_error:")
@@ -365,14 +385,13 @@ class AgenticLoop:
                     pass
             return result
 
-        # 状态调制循环（设计原则 1）：注入与对话同源的内在状态
-        if "prompt_blocks" in session:
-            state_block, lesson_block, resume_block, plan_block = session["prompt_blocks"]
-        else:
+        catalog = self._tool_catalog()
+        if size(LOOP_SYSTEM) + size(self._fixed_prompt(catalog)) > MAX_ACTOR_BYTES:
+            return _finish(self._stop("failed", "context_budget_exceeded"))
+        if "prompt_blocks" not in session:
             self._prepare_prompt_blocks(task_text, journal)
-            state_block, lesson_block, resume_block, plan_block = session["prompt_blocks"]
         last_sigs = session["last_sigs"]
-        for step in range(session["next_step"], self.max_steps):
+        while session.get("pending_decision") is not None or session["next_step"] < self.max_steps:
             reason = self._autonomy_reason()
             if reason:
                 return _finish(self._stop("cancelled", reason))
@@ -381,31 +400,41 @@ class AgenticLoop:
                 return _finish(self._stop(stopped))
             if str(self._agent.code_workspace.root.resolve()) != session["context"]["workspace"]:
                 return _finish(self._stop("needs_reconciliation", "workspace_changed"))
-            self._save()
+            saved = session.get("pending_decision")
+            step = saved["step"] if saved is not None else session["next_step"]
             self._agent._current_op.update(step=step + 1, tool="", detail="")
-            feedback_block = (f"\n上一轮独立验证未通过，缺少：{feedback}\n"
-                              "本轮必须补齐这些证据。" if feedback else "")
-            user = (f"{render_context(session['context'])}\n"
-                    f"{state_block}{lesson_block}{resume_block}{plan_block}{feedback_block}"
-                    f"\n\n任务：{task_text}\n\n可用工具：\n{self._tool_catalog()}\n\n"
-                    f"已有观察：\n" + _recent_observations(observations))
-            try:
-                raw = self._complete(self._agent.llm, LOOP_SYSTEM, user)
-            except Exception as exc:
-                reason = self._autonomy_reason()
-                if reason:
-                    return _finish(self._stop("cancelled", reason))
-                return _finish({"status": "failed", "reason": f"llm_error:{exc}",
-                                "observations": observations, "trace": trace})
-            session["next_step"] = step + 1
-            session["events"].append({"kind": "decision", "step": step, "raw": raw})
-            self._save()
+            fixed = self._fixed_prompt(catalog)
+            available = MAX_ACTOR_BYTES - size(LOOP_SYSTEM) - size(fixed)
+            if available < 0:
+                return _finish(self._stop("failed", "context_budget_exceeded"))
+            if saved is None:
+                history = render_history(observations, trace, min(MAX_HISTORY_BYTES, available))
+                feedback_block = (f"\n上一轮独立验证未通过，缺少：{feedback}\n"
+                                  "本轮必须补齐这些证据。" if feedback else "")
+                advisory = clipped(feedback_block + "".join(session["prompt_blocks"]),
+                                   min(MAX_ADVISORY_BYTES, available - size(history)))
+                session["status"] = "running"
+                self._save()
+                try:
+                    raw = self._complete(self._agent.llm, LOOP_SYSTEM, fixed + advisory + history)
+                except Exception as exc:
+                    reason = self._autonomy_reason()
+                    if reason:
+                        return _finish(self._stop("cancelled", reason))
+                    return _finish(self._model_stalled(model_wait_reason(exc)))
+                session["next_step"] = step + 1
+                session["pending_decision"] = {"step": step, "raw": raw if isinstance(raw, str) else ""}
+                session["events"].append({"kind": "decision", **session["pending_decision"]})
+                self._save()
+            else:
+                raw = saved["raw"]
             reason = self._autonomy_reason()
             if reason:
                 return _finish(self._stop("cancelled", reason))
             try:
                 decision = _parse_decision(raw)
             except (TypeError, ValueError) as exc:
+                session["pending_decision"] = None
                 observations.append(f"决策格式错误：{exc}；请返回合法工具对象或 done=true。")
                 continue
             stopped = self._goal_stopped()
@@ -436,10 +465,12 @@ class AgenticLoop:
                 verdict = verify(task_text, acceptance, trace,
                                  artifacts_from_trace(trace, workspace=self._agent.code_workspace),
                                  self._agent.llm, complete=self._complete)
+                reason = self._autonomy_reason()
+                if reason or self._goal_stopped():
+                    return _finish(self._stop("cancelled", reason))
+                if verdict is not None and verdict.provider_reason:
+                    return _finish(self._model_stalled(verdict.provider_reason, verifying=True))
                 if approved_plan is not None:
-                    reason = self._autonomy_reason()
-                    if reason:
-                        return _finish(self._stop("cancelled", reason))
                     if verdict is None:
                         return _finish(dict(result, status="awaiting_retry", verified=False,
                                             reason="plan_semantic_verifier_unavailable", missing=["缺少语义验收结果"]))
@@ -451,6 +482,7 @@ class AgenticLoop:
                     if not verdict.passed:
                         result["missing"] = verdict.missing
                 return _finish(result)
+            session["pending_decision"] = None
             tool = decision.get("tool", "")
             if tool not in self._agent.tools.names():
                 observations.append(f"错误：未知工具 {tool!r}（从清单里选）")
@@ -504,9 +536,9 @@ class AgenticLoop:
 
     def _prepare_prompt_blocks(self, task_text, journal):
         session = self._session
-        state_block = self._agent.injector.render(
+        state_block = "\n\n" + self._agent.injector.render(
             task_text, self._agent.state,
-            self._agent.library.retrieve(task_text, k=2, epsilon=0.0))
+            self._agent.library.retrieve(task_text, k=2, epsilon=0.0), include_task=False)
         # Reflexion：与任务相关的历史失败教训（failure becomes a note）
         lessons = [s_ for s_ in self._agent.library.strategies.values()
                    if s_.valence < 0 and _overlap(task_text, s_.text)]
@@ -524,14 +556,7 @@ class AgenticLoop:
                                 + head[:900] + "\n")
         # 计划先行（plan-then-act）+ 工作区现状（避免盲目探索）
         plan_block = ""
-        approved_plan = session["context"].get("approved_plan")
-        if approved_plan is not None:
-            steps = "\n".join(f"- {step}" for step in approved_plan["steps"])
-            outputs = [item["path"] for item in approved_plan["outputs"]]
-            plan_block = (f"\n[主人批准的执行计划]\n{steps}\n"
-                          f"必须新增或实质改变的相对输出：{json.dumps(outputs, ensure_ascii=False)}。"
-                          "输出相对项目范围解析，工具 path 参数仍相对工作区，权限按原规则检查。\n")
-        elif self._agent.llm_fast is not None:
+        if session["context"].get("approved_plan") is None and self._agent.llm_fast is not None:
             try:
                 plan = self._complete(
                     self._agent.llm_fast, PLAN_PROMPT,

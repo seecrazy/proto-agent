@@ -22,14 +22,15 @@ def _fmt(x: float) -> str:
 
 
 class StateInjector:
-    def render(self, task: str, state: AgentState, strategies: List[Strategy]) -> str:
+    def render(self, task: str, state: AgentState, strategies: List[Strategy], *, include_task=True) -> str:
         emotion = state.emotion
         k = retrieval_breadth(BASE_K, emotion["arousal"])
         eps = exploration_epsilon(state.get("instincts.exploration"), emotion["arousal"])
         bias = valence_bias(emotion["pleasure"])
         th = initiative_threshold(BASE_TH, emotion["dominance"])
 
-        lines = [f"[任务] {task}", "[内在状态]"]
+        lines = [f"[任务] {task}"] if include_task else []
+        lines.append("[内在状态]")
         lines.append(" ".join(
             f"{name}:{_fmt(spec['value'])}/{_fmt(spec['bounds'][1])}"
             for name, spec in state.instincts.items()))

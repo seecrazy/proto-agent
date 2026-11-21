@@ -11,6 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from proto.exec.work_context import written_file
+
 _SUMMARY_PROMPT = (
     "为下面这轮工作写接力小结，供下一轮直接续做。只输出三行，格式：\n"
     "发现：本轮摸清的关键事实（文件在哪/结论是什么，一行内）\n"
@@ -106,9 +108,7 @@ class GoalJournal:
                 raw = summarize(_SUMMARY_PROMPT, material)
                 for line in raw.splitlines():
                     line = line.strip()
-                    for key, bucket in (("发现：", findings),
-                                        ("产出：", produced),
-                                        ("下一步：", next_steps)):
+                    for key, bucket in (("发现：", findings), ("下一步：", next_steps)):
                         if line.startswith(key) and line[len(key):].strip():
                             bucket.append(line[len(key):].strip()[:160])
             except Exception:
@@ -128,10 +128,7 @@ class GoalJournal:
     def _written_files(trace: List[dict]) -> List[str]:
         files = []
         for step in trace or []:
-            if step.get("tool") in ("write_file", "edit_file"):
-                if "unchanged" in str(step.get("result", "")):
-                    continue          # M59：原样重写=没干活，不计产出
-                path = (step.get("args") or {}).get("path", "")
-                if path and path not in files:
-                    files.append(path)
+            path = written_file(step.get("tool"), step.get("args") or {}, step.get("result"))
+            if path and path not in files:
+                files.append(path)
         return files

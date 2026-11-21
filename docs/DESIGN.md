@@ -2,7 +2,7 @@
 
 > **当前设计的唯一入口与正文。** 阅读本文件即可理解产品、架构、内在机制、自主工作、模型交互、工具授权、数据、进化治理、控制台和运行部署，不需要按日期拼接旧设计。
 >
-> 更新日期：2026-11-21。版本 `0.33.0` 未重新发布；本地实现至 [M70 并行对话与实时活动](#concurrent-dialogue-live-work)，验证范围见[项目进度](PROGRESS.md)。
+> 更新日期：2026-11-21。版本 `0.33.0` 未重新发布；本地实现至 [M71 有界上下文与断点续作](#durable-work-continuity)，验证范围见[项目进度](PROGRESS.md)。
 
 ## 阅读与维护约定
 
@@ -335,22 +335,22 @@ GoalNode 具有 `id/text/level/parent_id/status/progress/source/created_at/accep
 2. 每步 prompt 包含固定上下文、适用项目指令、注册表工具契约和近期观察；快速规划也接收同一约束。
 3. 解析严格 JSON 决策：单个 `tool + args`，或 `done: true + summary`。done 与工具并存、非布尔 done、缺参数等不能视为成功。
 4. 模型返回后复核目标/工作区，参数先校验；新路径指令加载后先要求重新决策，不执行旧动作。持久标记在途，再由 Router 检查能力、预算和内核授权；执行工具或保存待批状态。
-5. 保存原模型决策、实际工具参数和完整结果事件，将裁剪观察回灌；接纳结果后清除在途。参数错误和未知工具成为可纠正观察。
-6. 模型 done 后运行质量门；成功 `verified`，失败携带反馈进入有限重试；达到步数上限为 `max_steps` 而非成功。
+5. 待处理决策与步数一起持久化，单步派发前再换成工具在途标记。接纳结果后清除在途，保留实参及完整结果事件，将有界观察和结构化回执回灌；参数错误和未知工具成为可纠正观察。
+6. 模型 done 后运行质量门；成功 `verified`，证据不足携带反馈进入有限重试；暂时无法验收不等于交付不合格。达到步数上限为 `max_steps` 而非成功。
 7. 持久保存会话状态，按需写接力记录并清理当前操作标记；审批恢复回同一循环，不把单工具完成当整链成功。有限重试若暂停，返回最新待批会话而非上轮失败结果。
 
 自主目标通常最多 24 步，加一轮最多 12 步的重试；主人任务默认 12 步，加一轮重试。重复完全相同工具及参数会被限制，避免无限原地调用。模型调用或工具异常与 `paused/no_budget/denied` 分开报告。
 
 ### 7.3 当前上下文边界
 
-近期观察采用字符预算，默认约 9000 字符，保留数量约 3–12 条并按类型裁剪；接力日志取近期两轮，但注入还会截短。它是有损重建，不是 token-aware compaction，也不是完整 assistant/tool 消息历史。
+M71 将执行决策限制为 128 KiB 的 system + user 文本，其中观察与实写/检查回执合计最多 12 KiB，辅助信息最多 8 KiB，按 UTF-8 字节计算。接力日志注入最近两轮的摘录。原数据保留，模型所见是有损投影，不是供应商 token 级压缩或完整 assistant/tool 消息历史。见[续作契约](#durable-work-continuity)。
 
 M63 已补齐的本地机制：
 
 - `_identity_prompt` 与固定验收、主人优先级、来源池进入 actor 每步和快速规划；会话内保持快照，恢复不采用后来变更的身份/验收。
 - 工作区根到目标路径祖先的规则按浅到深加载，单文件 16 KiB、累计 64 KiB；坏编码、超界和指令符号链接失败关闭。M68 每个目录优先采用非空白 `AGENTS.override.md`，否则读 `AGENTS.md`；会话中已选文件不替换。只渲染本次路径适用规则，不混入兄弟目录或宿主祖先规则。
 - 参数契约包含必填、类型、长度/数值界、枚举和未知字段策略；自定义工具保守推导函数签名，支持 `**kwargs`，不静默丢弃未知字段。
-- 执行事件、完整工具结果与原参数持久保存；回灌仍采用有损字符裁剪。返回结构契约、原生 assistant/tool 消息、token-aware compaction 尚未实现。
+- 执行事件、完整工具结果与原参数持久保存。统一的工具结果契约、原生 assistant/tool 消息、token-aware compaction 尚未实现。
 
 项目指令是受范围约束的开发材料，不能覆盖 L1、执行协议和主人明确任务。作用域识别基于工具的 `path/paths/cwd` 参数，不推断任意代码字符串里的所有访问路径，路径与执行权限仍由实际工具/内核限制。指令加载前后存在文件系统竞争窗口（D8），不能将本地提示规则当隔离证明。
 
@@ -360,7 +360,7 @@ Router 在执行前保存步骤检查点；审批恢复用持久决定校验原�
 
 外层会话保存 observations、trace、原验收、来源池、剩余步骤、重复/探索计数和待批 task；同 Agent 运行与恢复串行。恢复重校验参数与现行最低权限，工作区切换不得使用旧批准。拒绝不要求模型在线，目标丢弃在步骤边界及模型返回后阻止继续；终态与旧审批 id 不能重放。
 
-该顺序选择“避免自动重复副作用”，不承诺 exactly-once：认领与外部副作用之间仍可能有未知结果，只有版本匹配的 durable completed 结果可接纳，其余需人工核对。跨文档奖励/预算/会话不是事务，控制台没有完整会话管理或自动核对工作台，正在运行的外部进程也没有统一终止协议（D7/D8/D9）。
+该顺序选择“避免自动重复副作用”，不承诺 exactly-once：新版会话可继续尚未派发的决策，派发后只接纳身份匹配的持久完成回执；若效果无法确认，需人工核对。跨文档奖励/预算/会话不是事务，控制台没有完整会话管理或自动核对工作台，正在运行的外部进程也没有统一终止协议（D7/D8/D9）。
 
 <a id="tools"></a>
 ## 8. 工具、工作区与本机验证
@@ -470,7 +470,7 @@ DocumentStore 提供 `put/get/delete/find/revision` 语义。默认文件后端�
 | ActionProposal | proposal/task id、category、payload、owner_only、来源、时间 | 等批、批准或拒绝，绑定原始内容 |
 | ApprovalRecord | proposal id、granted、原因、决定时间 | 已拒绝不反转为批准绕过 |
 | Router checkpoint | task、schema_version=2、variant_id、步骤、结果、待批内容 | 先写等待/认领状态，再执行对应动作 |
-| `execution_sessions` | id、schema_version=1、variant_id、固定上下文、events、观察/trace、步数、重复/探索计数、待批/在途、接力路径 | 工具前持久标记；审批回原循环；completed 只接纳，未知结果不重放 |
+| `execution_sessions` | id、schema_version=2（兼容读取 v1）、variant_id、固定上下文、events、观察/trace、步数、待处理决策或在途动作、接力路径 | 派发前保存；审批回原循环；确认结果只接纳，未知结果不重放 |
 | Budget / quota | 周期、上限、余额、调用/时间、熔断、每日配额 | 重启保持，当日额度不可重启刷回 |
 | Audit | seq、ts、事件、payload、前序摘要与校验 | 追加、验证、显式断链恢复 |
 | GoalJournal | 每目标 `work/<goal_id>/JOURNAL.md` | 追加发现/产物/下一步，供下一轮接力 |
@@ -482,7 +482,7 @@ DocumentStore 提供 `put/get/delete/find/revision` 语义。默认文件后端�
 
 - 目标：`active → done` 或 `active → dropped`；重复完成幂等，dropped 不再完成；父节点聚合不重复计数。
 - Router：运行 → 待批 `paused` → 认领 `resuming` → `completed/failed`，或决定 `denied`；预算不足返回 `no_budget`。认领后未知副作用不自动重放。
-- 外层会话：`running → awaiting_approval → resuming → running`，或进入 `needs_reconciliation`；终态为 `verified/completed/awaiting_retry/max_steps/failed/denied/cancelled/no_llm`。API 暂停结果用 `paused`，与持久状态区分，不压成一个布尔成功；恢复条件不符返回 `blocked`。
+- 外层会话：`running → awaiting_approval → resuming → running`，或进入 `waiting_model` / `needs_reconciliation`；终态为 `verified/completed/awaiting_retry/max_steps/failed/denied/cancelled/no_llm`。API 审批暂停结果用 `paused`，与持久状态区分。托管运行按[续作契约](#durable-work-continuity)保留模型断点或明确阻塞。
 - Web 异步工作：提交返回工作标识，轮询展示 running/结果/错误；过期和异常要可见，不让“加载中”永久掩盖失败。
 
 ### 11.3 一致性保证与不保证
@@ -567,7 +567,7 @@ CodingBridge 自动探测 `claude/codex/zcode`，可用 `PROTO_BRIDGE_CLI` 指�
 
 - **目标与边界**：Web 心跳（含聊天后触发）、立即行动、主人任务/续批及 M67 使用同一 Run 队列；REPL/直接调用保留独立入口。每 Agent 同一时刻只有一名长操作写者。一个本地舰队一个调度器，默认 2 槽，不做跨进程接管、历史 job 迁移或强杀工具。认证仍用控制台主人令牌。
 - **流程与交互**：轮询 `/api/runs` 及单条记录，主人可取消、续批或显式关闭待核对记录；旧 `/api/jobs` 映射为兼容视图，旧同步任务接口在不持写锁的情况下等待 Run。`Idempotency-Key` 按 Agent 去重；同键异载荷拒绝。自主心跳按 Agent 合并，浏览器只轮询不代发心跳；选择自主目标时跳过已有非终态会话的目标及祖先，可选择其他分支。轮转以最近认领顺序为准，显式任务在同 Agent 内先于心跳；等待审批、暂停、未满足依赖和写锁繁忙者不占槽。
-- **数据与恢复**：舰队根 `.coordination/state.sqlite3` 保存 `Run(id, agent_id, kind, args, generation, session_id, result, cancel_requested)`、认领顺序、预算及交付记录；事务原子认领。队列状态为 `queued → running → succeeded/failed/blocked/cancelled/awaiting_approval/needs_reconciliation`，续批使用同一 Run 的新代次。取消排队立即生效；运行中只在下一模型/工具/交付边界停止，不撤回已启动的动作；待审批取消走原拒绝路径。托管待批从 Run 入口作主人决策，不由旧心跳超时直接消费。重启只接纳有对应会话的确认结果或等待检查点；若工具已确认完成而会话未消费回执，主人可从该回执续接，不重新运行工具。其他在途尝试留待核对，不自动重放。核对期间冻结该 Agent 的新 Run；主人确认外部状态后可关闭记录，但不会恢复旧调用。原 AgenticLoop 与 Router 仍是工具/审批的权威。
+- **数据与恢复**：舰队根 `.coordination/state.sqlite3` 保存 `Run(id, agent_id, kind, args, generation, session_id, result, cancel_requested)`、认领顺序、预算及交付记录；事务原子认领。队列状态为 `queued → running → succeeded/failed/blocked/cancelled/awaiting_approval/needs_reconciliation`，续批或续作使用同一 Run 的新代次。普通排队立即取消；延迟续作可登记取消，不等待退避到期；在途只在下一安全边界停止，待审批取消走原拒绝路径。新版会话恢复规则见 [M71](#durable-work-continuity)，旧版确认回执仍可人工接纳；其他未知在途须核对，不自动重放。核对期间冻结该 Agent 的新 Run；确认外部状态后可关闭 Run 与关联会话，不撤销或恢复旧调用。原 AgenticLoop 与 Router 仍是工具/审批的权威。
 - **预算**：每次模型调用（包括非 Run 的主人对话）先预留舰队的当日本地日期 tokens/calls，再预留 Agent `global` 和原来源池；拒绝本地时释放未发出的舰队票，发送后异常/崩溃保留估算并标为不确定。票据关联 Run（若有）、Agent、请求、来源、原日期和金额；结算幂等。实际用量超过估算形成欠额，阻止新请求；旧周期回执不扣或补新周期。额度预检不是供应商硬输出上限，与供应商账单也不同；工具不占舰队模型票，仍用原 L1 预算。启动时默认舰队 200,000 tokens/2,000 calls，主人可独立调整，按当日已占用计算余额，不在调额时清账。
 - **两层上限与输入单位**：舰队是所有成员共享的模型总闸，不是各 Agent 上限之和，也不向成员分配余额。模型请求同时受舰队余量、当前 Agent 总池及对应来源池限制；提高一层不会提高另一层。同一次用量计入不同层级，不是向供应商重复付费。在「概览 → 舰队额度与运行 → 调整舰队模型总额」分别填每日 tokens、calls。两项可用整数或与 Agent 上限相同的数量后缀（`k`=千、`w`/`万`=万、`m`/`兆`=百万，不区分字母大小写）；换算后必须是 0 至 10^12 的整数，不四舍五入。任一项设为 `0` 阻止新模型请求。`POST /api/fleet-budget` 两字段一起校验，失败返回 `400 invalid_fleet_limits` 且均不修改。正确输入按整数写回原 SQLite 上限和 API 响应，保留当日已用和在途票据。输入单位不是新增资源维度；不改变 Agent 扣减、重置或计费机制，不需要数据迁移。
 - **验收**：`tests/test_m66_fleet_runs.py` 覆盖 F3–F5 的慢 Agent 与空槽、并发认领、取消和待批、旧入口、重启已知/未知分支、幂等冲突、预算原池/跨日/异常/重复；使用临时舰队、假模型，不调用真实服务。
@@ -655,7 +655,7 @@ M64 模型管理由顶栏 `#model` 打开独立 `#model-panel` 对话框，不�
 
 M65 顶栏「＋Agent」用 `#agent-create-panel` 的 `agent-create-{name,template,persona,priority,preview,save,message}` 和 `agent-preview-btn` 完成预览/保存；编辑字段后必须重做预览。`#autonomy-btn` 管当前成员，舰队卡片动作管该卡成员；共用 `#autonomy-panel` 及 `autonomy-{heading,current,mode,scope,save,disable,message}`，始终绑定目标 ID 和修订号。`profile-state` 与 `autonomy-state` 贴在人设/优先级卡片，展示待应用、待启用及只读建议；舰队暂停与页头静音仍各管其职责。对话框内部滚动、窄屏单列、失败可见，不增加卡片或 localStorage 键。API 使用 `POST /api/agents/preview`、`POST /api/agents` 创建草稿，`GET/POST /api/agents/{id}/autonomy` 查看范围或显式启用/切换（并发旧版本返回 409）。
 
-M66 在概览增加 `fleet-budget-{state,form,message}`、`run-list`；显示舰队余额/在途/不确定票据、运行详情及原池计费，安全状态下提供取消、续批和需确认的核对关闭。`task-result` 跟进异步指派，待批徽标仍直达原工作侧。浏览器只轮询；Web 心跳负责入队。`GET/POST /api/fleet-budget` 管舰队上限：表单沿用 `.coord-form`，`saveFleetBudget` 发送原始文本，`drawFleetBudget` 首次加载或成功保存回填上限，轮询只更新摘要；校验失败就地反馈，不触碰待批徽标、锚点或存储键。`GET/POST /api/runs` 读队列或提交任务，`/api/runs/{id}` 与 `/cancel`、`/resume`、`/reconcile` 子路径提供详情与操作。
+M66 在概览增加 `fleet-budget-{state,form,message}`、`run-list`；显示舰队余额/在途/不确定票据、运行详情及原池计费，安全状态下提供取消、续批和需确认的核对关闭。M71 区分模型退避、可安全续作与未知效果；`POST /api/runs/{id}/reconcile` 保留 `confirmed: true`、`generation`，仅 `continue_safe: true` 请求从经复核的安全断点续接，不替代审批。`task-result` 跟进异步指派，待批徽标仍直达原工作侧。浏览器只轮询；Web 心跳负责入队。`GET/POST /api/fleet-budget` 管舰队上限：表单沿用 `.coord-form`，`saveFleetBudget` 发送原始文本，`drawFleetBudget` 首次加载或成功保存回填上限，轮询只更新摘要；校验失败就地反馈，不触碰待批徽标、锚点或存储键。`GET/POST /api/runs` 读队列或提交任务，`/api/runs/{id}` 与 `/cancel`、`/resume`、`/reconcile` 子路径提供详情与操作。
 
 M67 的 `delivery-{select,description,work}` 属右栏，`work-{create,assignee,reviewer,requires}` 贴近分派合同。产物、运行与验收详情共用 `coord-detail`，产物内容只按纯文本展示，不执行或解析为页面；对话框内部滚动。API 为 `GET/POST /api/projects`、`GET /api/projects/{project}`、`POST /api/projects/{project}/work`、`GET /api/projects/{project}/work/{item}/artifacts/{version}`、`POST .../work/{item}/{retry|drop}`。使用现有主人认证，不以当前 Agent 选择授予项目访问权限；UI 不引入新的持久键。
 
@@ -767,8 +767,8 @@ CI 配置覆盖 Ubuntu Python 3.9–3.12，并有 mongo/graph 可选依赖作业
 | A：统一执行上下文 | 人设、主人优先级、内化规则、固定验收、来源、项目根和适用指令 | M63 已实现快照、作用域与每步注入；提示不替代权限隔离 |
 | B：工具契约与模型适配 | 必填/类型/界/返回契约；本地校验，按 provider 能力选择协议 | M63 已实现参数子集和纠错；返回契约、原生 tools/纯工具响应消费仍待实现，不静默换协议重放 |
 | C：请求级用量 | 不可变文本/事件/usage/请求标识，来源与周期绑定票据 | 未实现；须验证多 Agent 不串账、跨日归原周期与失败追踪 |
-| D：持久执行会话 | 固定上下文、事件、观察/trace、剩余步数、待批身份和版本 | M63 已实现审批整链恢复、completed 接纳及未知在途阻塞；自动核对和完整会话管理 UI 待实现 |
-| E：上下文管理与取消 | token-aware 压缩、原始日志、约束/待批身份保留、取消与工具终止协议 | 已有完整工具结果事件及目标步骤边界检查；token 压缩、跨进程取消和进程终止待实现 |
+| D：持久执行会话 | 固定上下文、事件、观察/trace、剩余步数、待批身份和版本 | M63 支持审批续接；M71 支持托管 Run 的安全断点自动恢复和按证据手动续作；未知在途仍待核对 |
+| E：上下文管理与取消 | token-aware 压缩、原始日志、约束/待批身份保留、取消与工具终止协议 | M71 有界字节投影保留原始事件；token 压缩、跨进程取消和工具进程终止待实现 |
 
 执行会话和 Router 检查点是不同状态机，当前定义见第 11.2 节。流式输出、并行工具与完整外部 CLI 事件桥接排在安全会话和结算之后，不为外观对齐先扩大副作用面。
 
@@ -851,6 +851,21 @@ CI 配置覆盖 Ubuntu Python 3.9–3.12，并有 mongo/graph 可选依赖作业
 
 多 Agent 正常用例按[第 12 节](#fleet-next)的 M65–M67 推进；调度与预算覆盖 D7/D9 的舰队部分，协作涉及 D8 的任务认领一致性与 D11 的确定性验收。不以里程碑采纳代替这些债务的实证偿还。
 
+<a id="durable-work-continuity"></a>
+### 15.4 M71：有界工作上下文与可证明的断点续作
+
+**改造前。** 对话只取最近历史和相关长期记忆，内在状态、目标和文件已持久化；后台每轮限步，按工具裁切结果、取观察尾部，并用目标 `JOURNAL.md` 交接最近两轮，不是永远增长的聊天窗口。但观察的「至少三条」能超出字符预算，旧的落盘与检查证据会退出窗口，任务文字重复注入，验收材料被重复发送。原恢复能找回待批、末态和已完成检查点，但丢进程时通常仍停在待核对；决策已落盘、尚未执行也不能接着用，验收模型出错还会被误当作证据失败。
+
+**目标与非目标。** 不让持续工作的模型输入随历史增长；正常失败与重启后优先接上原任务、证据和剩余步数。原始日志不删、不让模型摘要成为验收或授权依据。不保证任意供应商 tokenizer 的精确窗口、跨进程共享写、突然断电耐久性、模型推理只计费一次、未知工具动作 exactly-once 或外部进程强制终止。
+
+**上下文契约。** 执行决策固定区保留完整任务、验收、身份、预算来源、项目指令、已批准计划与工具契约，任务不重复发送。动态区按 UTF-8 字节计：观察与结构化进度合计至多 12 KiB，优先保留最近观察及较早的已写文件、检查退出码；精简工具参数，不重复传写入正文。状态提示、教训/接力、计划草稿等辅助信息至多 8 KiB，可省略。决策整份输入不超过 128 KiB（system+user 文本，不含供应商包装，也不保证适合任意小窗口模型）；固定区超限明确阻塞，不静默丢规则。验收材料不在 system 和 user 重复，重试时重新读取真实文件。日志只认实际文件回执，不把模型自述当产出。
+
+**状态与用户流程。** 新执行会话 v2 在同一个文档原子保存模型的待处理决策、下一步和已知轨迹，另以原 `pending_call` 和 Router 检查点区分派发边界。Web 托管 Run 重启后复用同一 ID、任务范围、额度来源、验收和剩余步数：未派发的决策可接着处理，无决策回执可重做该模型调用；与本次工具、参数及来源严格匹配的完成检查点只接纳结果，不再次执行；已有批准诉求仍走原审批；无法确定效果一律停在待核对，不自动重放。旧 v1 会话保留原审批/核对路径，不推断新的安全证据。已持久化验收结果可补记自主目标完成，不重演奖惩。
+
+**失败与边界。** 已有工具进展或已到验收时，暂时模型失败停在原会话，按 5/10/20 秒各重试一次（熔断截止更晚则等待到期）；持久保存次数与下次时间，不占用执行槽。重试耗尽、鉴权或额度不足时等待处理。连续进程中断最多自动续作两次；一般运行时异常不在同一进程自动重跑。修好后可在运行卡片继续**有安全断点的**原 Run，无需重发。未知效果只能核对/关闭，关闭不执行任何工具；保留证据，相关目标若后续重规划须先核对已发生效果。暂停、取消、丢弃目标、路径变化和权限检查仍优先；恢复不产生新授权。无执行证据的遗留任务、直接 CLI 任务和项目生产/评审模型调用不扩大自动恢复范围。协调库版本不变，旧版程序不能读取新会话，回退前先冷备份。
+
+**验收。** 长中文/大工具输出下量化输入上限，早期实写/验证可见且原记录不变；固定指令超限不派发。以隔离数据目录中断进程，覆盖决策落盘后、工具完成回执后和未知在途；前两种同 Run 续接且工具不重复，后一种保持待核对。覆盖审批、取消、目标完成回执、模型/验收失败后重试、退避上限、持久记忆与原轨迹。取舍见 [ADR 0010](adr/0010-bounded-context-and-safe-continuation.md)。
+
 <a id="acceptance"></a>
 ## 16. 验收清单与验证证据
 
@@ -868,6 +883,7 @@ CI 配置覆盖 Ubuntu Python 3.9–3.12，并有 mongo/graph 可选依赖作业
 - [x] 固定执行上下文和范围化项目指令；参数契约同源、参数错误副作用前失败。
 - [x] 新执行会话审批续接原循环；重启保留上下文/步数/预算来源，已知结果接纳、未知在途不重放。
 - [x] 只读计划与执行分离；摘要批准幂等，规则或输出基线漂移拒绝执行；可选文件证据先于语义判断（M68 离线回归、浏览器验收见[进度](PROGRESS.md#m68)）。
+- [x] 工作观察按字节限额，保留旧文件/检查回执；真实进程退出后恢复同一已知断点，不重跑已完成工具，未知动作保持待核对。
 
 ### 16.2 未完成项不得勾选
 
@@ -888,6 +904,7 @@ CI 配置覆盖 Ubuntu Python 3.9–3.12，并有 mongo/graph 可选依赖作业
 | 审批、恢复、预算、工作区 | `test_router.py`、`test_m36_hardening.py`、`test_m38_timeout.py`、`test_m44_budget_control.py`、`test_m52_budget_config.py` |
 | 自主性与运行时不变量 | `test_m45_momentum.py`、`test_m59_continuous.py`、`test_m61_autonomy.py`、`test_m62_runtime_invariants.py` |
 | 上下文、工具契约与执行会话 | `test_m63_execution_sessions.py`（70 项，含重启/审批/在途核对/HTTP/页面脚本交互） |
+| 有界进度与安全断点续作 | `test_m71_continuity.py`（15 项，含真实进程中断、退避、控制台续作与字节限额） |
 | 模型热接入、切换与持久配置 | `test_m64_live_models.py`（62 项，含双协议/在途请求/舰队/审批续跑/并发/鉴权/页面/终端） |
 | 活动短问询与聊天反馈 | `test_web.py`、`test_m36_hardening.py::TestBusyLock`、`test_m51_activity.py` |
 | 并行对话、实时活动、阻塞恢复与交接 | `test_m70_live_work.py`（阻塞模型/工具、持久回执、额度、熔断、同谱系文件、写入与验收） |
@@ -914,6 +931,7 @@ M64 最终完整验证：同日同环境，**868 passed, 2 skipped，76.97s**；
 | [0007：只读计划与交付证据](adr/0007-reviewed-task-plans.md) | 只读计划与工具授权分离；同库幂等批准；固定证据与语义双门 | 第 7.3、12.9、13 节 |
 | [0008：只读活动问询](adr/0008-read-only-console-activity.md) | 本地短句查状态；普通聊天保留单写者并展示占锁错误 | 第 13.3、14.5 节 |
 | [0009：并行对话与实时活动](adr/0009-concurrent-dialogue-and-live-work.md) | 对话与任务分离长等待；只读执行事实；冷却恢复与存量证据接力 | 第 13.3、14.6 节 |
+| [0010：有界上下文与断点续作](adr/0010-bounded-context-and-safe-continuation.md) | 原记录与有界投影分层；以待处理决策和工具回执划分续作边界 | 第 7、11.2、15.4 节 |
 
 ADR 保留“为什么这样选”和当时替代方案；本文件给出累计后的完整方案。新增架构决策继续写 ADR 并同步相关正文，不另建竞争的总设计。
 

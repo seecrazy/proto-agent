@@ -1048,18 +1048,26 @@ const LIVE_PHASES = {
   model_returned: "模型已返回", model_failed: "模型调用失败", tool_start: "调用工具",
   tool_returned: "工具已返回", file_written: "写入文件（未必通过验收）", verification: "检查交付证据",
   awaiting_approval: "待主人批准", needs_reconciliation: "结果未知，待核对",
+  queued: "等待调度",
   succeeded: "本轮结束", failed: "本轮失败", blocked: "本轮受阻", cancelled: "已取消",
 };
 const LIVE_REASONS = {
   model_timeout: "模型响应超时", model_forbidden: "模型端拒绝请求（403）",
   model_unauthorized: "模型身份校验失败（401）", model_rate_limited: "模型端限流（429）",
-  model_unreachable: "无法连接模型端", model_http_error: "模型端 HTTP 错误",
+  model_unreachable: "无法连接模型端", model_http_error: "模型端 HTTP 错误", model_server_error: "模型端暂时不可用",
   model_not_configured: "未配置可用模型", model_request_failed: "模型请求失败",
   circuit_breaker_open: "模型冷却中", run_cancelled: "已请求取消",
   needs_reconciliation: "在途结果未知", fleet_paused: "Agent 已暂停",
   muted: "Agent 已静音", manual_only: "当前为手动模式", not_enabled: "自主行动已关闭", suggestions_only: "当前仅提案",
   budget: "额度不足", verification: "尚未通过验收",
+  model_retry_wait: "原进度已保存 · 等待重试模型",
+  interrupted_requeued: "重启后从已知断点续作", safe_resume_ready: "原任务已重新排队",
+  model_retry_exhausted: "模型自动重试已用尽 · 原任务可手动继续",
+  safe_resume_model: "模型或额度受阻 · 修复后可继续原任务",
+  safe_resume_limit: "已保留安全断点 · 等待主人继续",
+  context_budget_exceeded: "完整任务指令超过执行上下文上限",
 };
+const SAFE_CONTINUATION_REASONS = ["model_retry_exhausted", "safe_resume_model", "safe_resume_limit"];
 let liveVersion = 0;
 let liveReading = false;
 let liveRowsKey = "";
@@ -1071,6 +1079,10 @@ function liveSummary(data) {
   if (run?.status === "running") {
     return run.cancel_requested ? "正在取消 · 等在途步骤到达安全边界"
       : `${LIVE_PHASES[current?.phase] || "执行中"}${current?.tool ? " · " + current.tool : ""}`;
+  }
+  if (run && (SAFE_CONTINUATION_REASONS.includes(run.reason)
+    || ["model_retry_wait", "interrupted_requeued", "safe_resume_ready"].includes(run.reason))) {
+    return LIVE_REASONS[run.reason];
   }
   if (run?.status === "awaiting_approval" || run?.status === "needs_reconciliation") return LIVE_PHASES[run.status];
   if (model.waiting) return model.retry_at ? `模型冷却 · ${liveTime(model.retry_at)} 后可试探` : "模型恢复试探中";
@@ -1102,7 +1114,9 @@ function renderLiveWork(data, selected) {
   list.replaceChildren(...events.map(event => {
     const row = document.createElement("li"), when = document.createElement("time"), label = document.createElement("span");
     when.textContent = liveTime(event.at);
-    label.textContent = [LIVE_PHASES[event.phase] || "执行事件", event.step && `步骤 ${event.step}`,
+    const phase = event.phase === "needs_reconciliation" && SAFE_CONTINUATION_REASONS.includes(event.reason)
+      ? "已保留断点" : LIVE_PHASES[event.phase] || "执行事件";
+    label.textContent = [phase, event.step && `步骤 ${event.step}`,
       event.tool, event.path, LIVE_REASONS[event.reason]].filter(Boolean).join(" · ");
     row.append(when, label);
     return row;
@@ -2140,7 +2154,7 @@ async function refreshRuns() {
     const status = reviewable.has(run.id) ? "待审阅" : run.kind === "plan" && run.status === "succeeded"
       ? "计划已生成" : (RUN_STATES[run.status] || run.status);
     const {row, actions} = coordinationRow(`${agentLabel(run.agent_id)} · ${RUN_KINDS[run.kind] || run.kind}`,
-      `${status} #${run.id.slice(0, 8)}${reason ? " · " + (AUTONOMY_BLOCKERS[reason] || reason) : ""}`);
+      `${status} #${run.id.slice(0, 8)}${reason ? " · " + (LIVE_REASONS[reason] || AUTONOMY_BLOCKERS[reason] || reason) : ""}`);
     if (run.kind === "plan" && run.status === "succeeded") {
       coordinationAction(actions, "审阅计划", () => showTaskPlan(run.id));
     }
@@ -2156,8 +2170,13 @@ async function refreshRuns() {
       coordinationAction(actions, label, () => changeRun(run, "resume", {approved: true}));
     }
     if (run.status === "needs_reconciliation") {
-      coordinationAction(actions, "关闭待核对", async () => {
-        if (confirm("确认你已检查外部状态？关闭不会重跑，也不会撤销已发生的效果。")) {
+      const canContinue = SAFE_CONTINUATION_REASONS.includes(run.reason) && !run.cancel_requested;
+      if (canContinue) {
+        coordinationAction(actions, "继续原任务", () => changeRun(run, "reconcile", {confirmed: true, continue_safe: true}));
+      }
+      coordinationAction(actions, canContinue ? "放弃原任务" : "关闭待核对", async () => {
+        if (confirm(canContinue ? "放弃这个断点？已产生的文件或效果不会撤销。"
+          : "确认你已检查外部状态？关闭不会重跑，也不会撤销已发生的效果。")) {
           await changeRun(run, "reconcile", {confirmed: true});
         }
       });
@@ -2184,7 +2203,9 @@ async function refreshTrackedTask() {
     renderTaskResult({...run.result, status: "paused", task_id: run.waiting.task_id});
   } else if (["queued", "running"].includes(run.status)) {
     renderTaskResult({status: run.kind === "plan" && run.status === "running" ? "只读规划中" : RUN_STATES[run.status],
-      reason: run.blocked_reason || `#${run.id.slice(0, 8)}`});
+      reason: LIVE_REASONS[run.blocked_reason] || run.blocked_reason || `#${run.id.slice(0, 8)}`});
+  } else if (run.status === "needs_reconciliation") {
+    renderTaskResult({status: RUN_STATES[run.status], reason: LIVE_REASONS[run.reason] || "请在运行列表核对断点。"});
   } else {
     renderTaskResult(run.result || {status: run.status, reason: run.reason});
     trackedTaskRunId = null;

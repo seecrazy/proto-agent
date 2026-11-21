@@ -24,6 +24,26 @@ def model_failure(error):
     return "model_request_failed"
 
 
+TRANSIENT_MODEL_REASONS = frozenset({
+    "circuit_breaker_open", "model_timeout", "model_unreachable", "model_rate_limited", "model_server_error",
+})
+
+
+def model_wait_reason(error):
+    message = str(error)
+    if message == "circuit_breaker_open":
+        return message
+    for reason in ("budget_exhausted", "fleet_budget_exhausted"):
+        if message.startswith(reason + ":"):
+            return reason
+    cause = error
+    while cause is not None:
+        if isinstance(cause, HTTPError) and 500 <= cause.code < 600:
+            return "model_server_error"
+        cause = cause.__cause__
+    return model_failure(error)
+
+
 class CircuitBreaker:
     def __init__(self, fail_threshold: int = 3, cooldown_s: float = 600.0):
         self._threshold = fail_threshold

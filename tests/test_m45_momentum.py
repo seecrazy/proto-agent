@@ -68,7 +68,7 @@ class TestGoalJournal:
         trace = [
             {"tool": "list_dir", "args": {}, "result": "a/ b/"},
             {"tool": "write_file", "args": {"path": "projects/x/a.swift"},
-             "result": "ok"},
+             "result": "written:projects/x/a.swift"},
             {"tool": "run_python", "args": {"code": "pass"}, "result": ""},
         ]
         j.finish("max_steps", ["list_dir → a/ b/"], trace, summarize=None)

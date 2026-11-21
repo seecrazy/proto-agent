@@ -22,11 +22,18 @@ REASONS = {
     "model_unauthorized": "模型身份校验失败（401）", "model_rate_limited": "模型端限流（429）",
     "model_not_configured": "未配置可用模型", "model_unreachable": "无法连接模型端",
     "model_http_error": "模型端返回 HTTP 错误", "model_request_failed": "模型请求失败",
+    "model_server_error": "模型端暂时不可用",
     "circuit_breaker_open": "模型暂在熔断冷却", "run_cancelled": "主人已请求取消",
     "fleet_paused": "Agent 已暂停", "muted": "Agent 已静音",
     "manual_only": "当前为手动模式", "not_enabled": "自主行动已关闭", "suggestions_only": "当前仅提案",
     "budget": "额度不足", "verification": "尚未通过验收",
     "needs_reconciliation": "在途效果未知，需人工核对",
+    "model_retry_wait": "原进度已保存，等待重试模型",
+    "interrupted_requeued": "重启后从已知断点续作", "safe_resume_ready": "原任务已重新排队",
+    "model_retry_exhausted": "模型自动重试已用尽，原任务可手动继续",
+    "safe_resume_model": "模型或额度受阻，修复后可继续原任务",
+    "safe_resume_limit": "已保留安全断点，等待主人继续",
+    "context_budget_exceeded": "完整任务指令超过执行上下文上限",
 }
 
 
@@ -39,6 +46,9 @@ def _reason(raw):
     if "budget" in reason:
         return "budget"
     if reason.startswith("llm_error:"):
+        code = reason.removeprefix("llm_error:")
+        if code in REASONS:
+            return code
         if "timed out" in reason or "timeout" in reason:
             return "model_timeout"
         if "403" in reason:
@@ -129,8 +139,12 @@ def activity_reply(snapshot, *, detailed=False):
         if run and run["cancel_requested"]:
             text += "主人已请求取消，当前在途步骤未必能撤回。"
     elif run:
-        text += {"awaiting_approval": "有任务等待主人批准。", "queued": "有任务正在排队。",
-                 "needs_reconciliation": "有在途结果未知，需人工核对。"}.get(run["status"], "")
+        if run.get("reason") in ("model_retry_wait", "interrupted_requeued", "safe_resume_ready",
+                                  "model_retry_exhausted", "safe_resume_model", "safe_resume_limit"):
+            text += REASONS[run["reason"]] + "。"
+        else:
+            text += {"awaiting_approval": "有任务等待主人批准。", "queued": "有任务正在排队。",
+                     "needs_reconciliation": "有在途结果未知，需人工核对。"}.get(run["status"], "")
     if model["waiting"]:
         text += "模型处于熔断冷却或正在做恢复试探。"
     reason = REASONS.get(model["reason"]) or REASONS.get((snapshot["last_run"] or {}).get("reason"))

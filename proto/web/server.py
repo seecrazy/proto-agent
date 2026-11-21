@@ -273,6 +273,10 @@ class _Handler(BaseHTTPRequestHandler):
                     return self._json(202, runs.decide(run_id, body.get("approved"), body.get("generation")))
                 if body.get("confirmed") is not True:
                     raise _HTTPError(400, "reconciliation_confirmation_required")
+                if body.get("continue_safe") is True:
+                    return self._json(202, runs.continue_reconciliation(run_id, body.get("generation")))
+                if "continue_safe" in body and body["continue_safe"] is not False:
+                    raise _HTTPError(400, "invalid_reconciliation_action")
                 return self._json(200, runs.close_reconciliation(run_id, body.get("generation")))
         job = re.fullmatch(r"/api/jobs/([0-9a-f]+)", path)
         if method == "GET" and job:

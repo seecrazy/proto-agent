@@ -2,12 +2,12 @@
 
 > **内在状态显式可调制 · 主动行为受授权与预算约束 · 自我进化机制仍在验证中**
 
-[![tests](https://img.shields.io/badge/tests-981%20passed-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-996%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
 [![version](https://img.shields.io/badge/version-0.33.0-orange.svg)]()
 
-PROTO 的长期目标是在同等资源与权限下完成通用 AI Agent 能做的有用工作，并让同一个 Agent 以持续的人设、记忆和目标与人相处、主动学习、思考、成长和交付。没有新指令也能行动，但不能自行扩权，产出以可复核的证据为准。当前实现至 M70，仍是**单机多 Agent 原型**。见[核心设计原则](docs/DESIGN.md#core-design-principles)。
+PROTO 的长期目标是在同等资源与权限下完成通用 AI Agent 能做的有用工作，并让同一个 Agent 以持续的人设、记忆和目标与人相处、主动学习、思考、成长和交付。没有新指令也能行动，但不能自行扩权，产出以可复核的证据为准。当前实现至 M71，仍是**单机多 Agent 原型**。见[核心设计原则](docs/DESIGN.md#core-design-principles)。
 
 ## 文档入口
 
@@ -169,7 +169,7 @@ cd proto-agent
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev]'
-python -m pytest -q       # 本机验证：981 passed, 2 skipped（2026-11-21，Python 3.9.2）
+python -m pytest -q       # 本机验证：996 passed, 2 skipped（2026-11-21，Python 3.9.2）
 python3 -m proto.demo     # 12 段全链路演示：锚定→调制→毒化拒收→评估→审批→进化两轨→自驱执行→审计
 ```
 
@@ -221,7 +221,8 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 
 ## 验证
 
-- **981 passed, 2 skipped**（2026-11-21，本机 Python 3.9.2，`python3 -m pytest -q`）；未重跑 CI 矩阵、可选依赖组合或 Linux runsc，不宣称覆盖全部安全边界。
+- **996 passed, 2 skipped**（2026-11-21，本机 Python 3.9.2，`python3 -m pytest -q`）；未重跑 CI 矩阵、可选依赖组合或 Linux runsc，不宣称覆盖全部安全边界。
+- M71 新增 **15 个用例**：长输入、持久决策、真实进程中断、确认回执、未知效果、退避和安全续接。离线控制台验证恢复验收，不重复写入。
 - M70 新增 **7 个用例**：等待模型或工具时可继续对话、双层额度、回执恢复、冷却与半开探测、工具证据与同谱系产物交接。Chrome 用测试模型验证边工作边回复、落盘和验收分开显示、窄屏抽屉与折叠记忆；未调用真实模型。
 - M68 新增 **23 个用例**：只读、范围覆盖、审批幂等、双预算、重启、漂移、文件证据与语义验收。用 Chrome 和离线模型验证重载后审阅、批准前不落产物、批准后生成文件并显示证据；未调用真实模型。
 - M64 新增 **62 个用例**：两种协议的本地 HTTP 接入、活动配置更新、舰队/离线接入、在途请求与用量归属、审批续跑、熔断隔离、持久化/版本冲突/失败保留、鉴权和页面/终端交互。另用真实 Chrome 验证新增、选择、刷新后保持、关闭清密钥，并检查 1280×960 与 390×844 页面；未调用真实模型、未重启真实实例。
@@ -257,6 +258,7 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 | M68 先审计划与文件证据 | 分层规则覆盖、只读预案、按摘要批准、文件变化与语义双验收 | ✅ 本地实现，[使用及边界](docs/DESIGN.md#reviewed-task-plans) |
 | M69 聊天与活动问询 | 「在干嘛」本地只读与错误可见 | ✅ 历史节点，普通聊天限制由 M70 替代，[设计记录](docs/DESIGN.md#console-activity-chat) |
 | M70 并行对话与实时活动 | 对话和后台等待分离、真实活动与验收、冷却自动恢复、目标间文件接力 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#concurrent-dialogue-live-work) |
+| M71 有界上下文与断点续作 | 观察按字节限额、旧进度回执、重启安全续接和失败退避 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#durable-work-continuity) |
 | 后续模型交互 | 原生工具协议、请求级用量、token 压缩与进程级取消 | 待专项，不纳入 M63/M64 |
 
 ## 许可
@@ -347,6 +349,8 @@ PROTO 的长期记忆是完整的记忆流（Generative Agents 架构的零依�
 舰队暂停会持久化，不能用解除临时静音绕过；不挡主人对话、普通单任务指派或拒绝待批动作，也不强制终止已经启动的工具。项目生产和评审在参与者暂停时等待。脚本可用 `python3 -m proto.agents preview --name 评审员` 查看草稿配置，`create --name 评审员` 保存，再用 `autonomy <id> --enable --mode suggest` 启用建议模式，均可在子命令前指定 `--root`。
 
 **运行与预算：** 左侧「概览 → 舰队额度与运行」查看队列、每次运行的模型用量、待批与阻塞原因。后台默认并行 2 个 Agent、同一 Agent 串行；排队可取消，在途只能在安全边界停止。重启不会重跑未知效果，需要主人核对。
+
+**长任务与中断（M71）：** 执行模型每步只看有界的近期观察、关键文件/检查回执及固定任务约束；原轨迹和文件保留。新会话随服务重启从可证明的断点接回同一个 Run，已确认执行的工具不重跑。模型受阻修好后，在「舰队额度与运行」点「继续原任务」；如果显示在途结果未知，先核对再关闭。部署仍用原数据目录，不改协调库版本；降级前请冷备份。见[断点续作契约](docs/DESIGN.md#durable-work-continuity)。
 
 **两层额度：** 舰队上限是所有 Agent 共享的模型总量，默认每天 200,000 tokens / 2,000 calls；每次模型调用还须通过当前 Agent 的总池及对应来源池，任一不足都不发起请求。在「调整舰队模型总额」可像编辑 Agent 上限一样填写 `8k`、`16万`、`1.2M` 或整数。tokens 和 calls 都须换算为整数，任一设为 `0` 即阻止新模型调用。调额不改变 Agent 上限，也不清零今天已占用的额度。模型实际用量超出预留会记欠额；这不是供应商侧硬上限。
 
