@@ -18,6 +18,7 @@ from proto.exec.contracts import (ParameterError, builtin_parameters, check_sche
                                   checked_arguments, infer_parameters)
 from proto.exec.workspace import ScratchWorkspace
 from proto.kernel.kernel import ActionCategory, Kernel
+from proto.runtime.runcontext import track_checkpoint
 
 DEFAULT_STEP_COST = {"tokens": 20.0}
 VARIANT_ID = "core@0.3.0"
@@ -90,6 +91,7 @@ class Task:
     steps: List[dict]  # {"tool", "args", "category"}
     owner_assigned: bool = True
     desire_dim: Optional[str] = None  # 自主任务关联的欲望维度（阻尼/预算语义）
+    autonomous: bool = False
 
 
 @dataclass
@@ -106,7 +108,7 @@ class TaskResult:
 class Router:
     def __init__(self, kernel: Kernel, queue: ApprovalQueue, workspace: ScratchWorkspace,
                  checkpoints: CheckpointStore, tools: ToolRegistry,
-                 step_cost: Dict[str, float] = None, code_workspace=None):
+                 step_cost: Dict[str, float] = None, code_workspace=None, autonomy_check=None):
         self._kernel = kernel
         self._queue = queue
         self._ws = workspace
@@ -115,9 +117,17 @@ class Router:
         self._tools = tools
         self._cost = step_cost or DEFAULT_STEP_COST
         self._resume_lock = threading.RLock()
+        self._autonomy_check = autonomy_check
 
     def _pool(self, task: Task) -> str:
         return "owner_tasks" if task.owner_assigned else "self_initiated"
+
+    def _blocked(self, task: Task, step_results=None, step: int = 0) -> Optional[TaskResult]:
+        if self._autonomy_check is not None:
+            reason = self._autonomy_check(task.autonomous or not task.owner_assigned)
+            if reason:
+                return TaskResult(task.id, "blocked", step_results or [], reason=reason, next_step=step)
+        return None
 
     def _tool_exec_audit(self, tool: str, category: ActionCategory,
                          path: str = None, error: str = None) -> None:
@@ -157,6 +167,10 @@ class Router:
         return policy.category
 
     def run(self, task: Task) -> TaskResult:
+        track_checkpoint(task.id)
+        blocked = self._blocked(task)
+        if blocked:
+            return blocked
         total = {unit: amount * len(task.steps) for unit, amount in self._cost.items()}
         if not self._kernel.pools.try_consume(self._pool(task), total).granted:
             return TaskResult(task.id, "no_budget", reason="budget_pool_exhausted")
@@ -166,6 +180,7 @@ class Router:
         """从暂停检查点恢复：批准→继续余下步骤；拒绝→中止（产物留 scratch）。"""
         if type(human_approved) is not bool:
             return TaskResult(task.id, "failed", reason="invalid_approval_decision")
+        track_checkpoint(task.id)
         with self._resume_lock:
             return self._resume_locked(task, human_approved)
 
@@ -204,6 +219,13 @@ class Router:
                 checked_arguments(tool, pending_step.get("args", {}), schema)
             except (KeyError, ValueError) as exc:
                 return TaskResult(task.id, "failed", reason=f"parameter_contract:{exc}")
+            task = Task(task.id, spec["description"], spec["steps"],
+                        owner_assigned=spec.get("owner_assigned", True),
+                        desire_dim=spec.get("desire_dim"),
+                        autonomous=task.autonomous or spec.get("autonomous") is True)
+            blocked = self._blocked(task, state["results"], step_index)
+            if blocked:
+                return blocked
         try:
             approval = (self._queue.approve(proposal_id) if human_approved else
                         self._queue.deny(proposal_id, reason="human_denied"))
@@ -217,11 +239,6 @@ class Router:
         if not human_approved or not approval.granted:
             return TaskResult(task.id, "denied", step_results=state.get("results", []),
                               reason=approval.reason or "human_denied")
-        spec = state.get("task")
-        if spec:
-            task = Task(task.id, spec["description"], spec["steps"],
-                        owner_assigned=spec.get("owner_assigned", True),
-                        desire_dim=spec.get("desire_dim"))
         return self._execute(task, start_step=state["step"],
                              step_results=state.get("results", []),
                              approved_step=state["step"], approval=approval)
@@ -230,8 +247,11 @@ class Router:
                  approved_step: int = None, approval=None) -> TaskResult:
         task_spec = {"description": task.description, "steps": copy.deepcopy(task.steps),
                      "owner_assigned": task.owner_assigned,
-                     "desire_dim": task.desire_dim}
+                     "desire_dim": task.desire_dim, "autonomous": task.autonomous}
         for i in range(start_step, len(task.steps)):
+            blocked = self._blocked(task, step_results, i)
+            if blocked:
+                return blocked
             step = task.steps[i]
             if not isinstance(step, dict) or not isinstance(step.get("args", {}), dict):
                 step_results.append("参数错误：工具步骤和 args 必须是对象。修正后重试。")
@@ -259,6 +279,9 @@ class Router:
                 "step": i, "results": step_results, "task": task_spec,
                 "status": "resuming" if i == approved_step else "running",
             }, variant_id=VARIANT_ID)
+            blocked = self._blocked(task, step_results, i)
+            if blocked:
+                return blocked
             if step["tool"] == "write_file":
                 args = step.get("args", {}) or {}
                 path = args.get("path") or args.get("file_path") or args.get("filename")
@@ -282,6 +305,9 @@ class Router:
                     self._tool_exec_audit(step["tool"], category, str(path), str(exc))
                     step_results.append(f"write_file 执行失败：{type(exc).__name__}: {exc}")
                     continue
+                blocked = self._blocked(task, step_results, i)
+                if blocked:
+                    return blocked
                 if i == approved_step:
                     self._ws.promote(path, approval=approval)
                 elif category in (ActionCategory.VISIBLE_WRITE, ActionCategory.IRREVERSIBLE):
@@ -307,6 +333,9 @@ class Router:
                         return TaskResult(task.id, "paused", step_results,
                                           proposal_id=sub.proposal_id, next_step=i)
                     if sub.auto_approved and sub.approval is not None:
+                        blocked = self._blocked(task, step_results, i)
+                        if blocked:
+                            return blocked
                         self._ws.promote(path, approval=sub.approval)
                 self._tool_exec_audit(step["tool"], category, str(path))
                 step_results.append(f"written:{path}")
@@ -338,6 +367,9 @@ class Router:
                     return TaskResult(task.id, "paused", step_results,
                                       proposal_id=sub.proposal_id, next_step=i)
             call_args = step.get("args", {}) or {}
+            blocked = self._blocked(task, step_results, i)
+            if blocked:
+                return blocked
             try:
                 outcome = fn(**call_args)
                 step_results.append(outcome)

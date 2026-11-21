@@ -8,8 +8,6 @@ fleet_status（监工人设从此有了真实的监督对象）。
 """
 from __future__ import annotations
 
-from typing import Callable, List, Optional
-
 from proto.exec.contracts import builtin_parameters
 
 
@@ -25,9 +23,8 @@ def _fmt_age(ts: float, now: float) -> str:
 class FleetTools:
     """黑板 + 舰队状态（只读安全级：均不触碰主人可见世界）。"""
 
-    def __init__(self, agent, fleet_status: Optional[Callable[[], List[dict]]] = None):
+    def __init__(self, agent):
         self._agent = agent
-        self._fleet_status = fleet_status
 
     def register_all(self, registry) -> None:
         from proto.kernel.kernel import ActionCategory
@@ -75,9 +72,10 @@ class FleetTools:
         return f"已发到舰队黑板（#{nid}，kind={kind}）"
 
     def status(self) -> str:
-        if self._fleet_status is None:
+        fleet_status = self._agent._fleet_status_fn
+        if fleet_status is None:
             return "舰队状态不可用（独立模式）。可先用 blackboard_read 看协作动态。"
-        rows = self._fleet_status()
+        rows = fleet_status()
         if not rows:
             return "舰队暂无其他成员。"
         return "\n".join(

@@ -9,16 +9,22 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import threading
 import time
 import uuid
+from copy import copy
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from proto.runtime.agent import ProtoAgent
+from proto.runtime.agent import ProtoAgent, pools_config
+from proto.runtime.autonomy import AutonomyPolicy, load_policy, validate_mode
+from proto.runtime.coordination import CoordinationError
 from proto.storage.mongo_store import create_store
 from proto.runtime.collab import Blackboard
+from proto.runtime.personas import AgentProfile, DEFAULT_PERSONA, PERSONA_DEFAULTS, normalize_persona
+from proto.runtime.runs import RunCoordinator
 
 REGISTRY = "registry.json"
 
@@ -44,6 +50,7 @@ class AgentManager:
         self._cache: Dict[str, ProtoAgent] = {}
         self._lock = threading.Lock()
         self._registry_path = self.root / REGISTRY
+        self.runs = RunCoordinator(self)
 
     def enable_model_updates(self):
         from proto.llm.catalog import ModelCatalog
@@ -88,54 +95,81 @@ class AgentManager:
             pass
 
     # ---- 生命周期 ----
-    def create(self, name: str, persona: str = "", priority: str = "") -> dict:
+    def preview(self, name: str, persona: str = "", priority: str = "", mode: str = "manual") -> dict:
+        return self.preview_at(self.root, name, persona, priority, mode)
+
+    @staticmethod
+    def preview_at(fleet_root: Path, name: str, persona: str = "", priority: str = "",
+                   mode: str = "manual") -> dict:
+        if not isinstance(name, str) or not isinstance(priority, str) or len(priority) > 2000:
+            raise ValueError("invalid_agent_fields")
+        text = normalize_persona(persona)
+        preset = PERSONA_DEFAULTS.get(text, {})
+        root = os.environ.get("PROTO_PROJECTS_ROOT")
+        project = Path(root) / "<agent-id>" if root else fleet_root / "agents" / "<agent-id>" / "workspace"
+        return {
+            "name": name.strip()[:40] or "Agent", "persona": text, "priority": priority.strip(),
+            "profile": {"params": dict(preset.get("params", {})), "seed_goal": preset.get("seed_goal", ""),
+                        "defaults_status": "applied" if preset else "none" if text == DEFAULT_PERSONA else "pending"},
+            "autonomy": AutonomyPolicy(mode=validate_mode(mode)).to_dict(),
+            "scope": {"projects_root": str(project), "budget_caps": pools_config(),
+                      "tools": ["工作区读写与受限验证", "白名单资料阅读", "舰队黑板与状态"],
+                      "approval": "现有 L1 审批、超时风险限制和工作区隔离继续生效；人设不授予权限"},
+        }
+
+    def create(self, name: str, persona: str = "", priority: str = "", mode: str = "manual") -> dict:
+        draft = self.preview(name, persona, priority, mode)
         with self._lock:
             reg = self._load_registry()
-            info = {"id": uuid.uuid4().hex[:10], "name": name.strip()[:40] or "Agent",
+            info = {"id": uuid.uuid4().hex[:10], "name": draft["name"],
                     "created_at": time.time(), "paused": False}
+            agent = self._build(info, draft["persona"], AutonomyPolicy(mode=mode))
+            if draft["priority"]:
+                agent.set_priority_text(draft["priority"])
             reg["agents"].append(info)
             reg["current"] = reg["current"] or info["id"]
             self._save_registry(reg)
-        agent = self._build(info["id"], persona, priority)
-        return info
+            self._cache[info["id"]] = agent
+            return dict(info, autonomy=agent.autonomy_view())
 
     def adopt(self, agent: ProtoAgent, name: str = "默认") -> dict:
         """收编一个既有 Agent（单 Agent 旧布局兼容，幂等：同一目录只收一次）。"""
-        if self.models is not None:
-            agent.bind_model_catalog(self.models)
+        directory = agent.data_dir.resolve()
         with self._lock:
             reg = self._load_registry()
             existing = next((a for a in reg["agents"]
-                             if a.get("external_dir") == str(agent.data_dir)), None)
+                             if self._dir_for(a).resolve() == directory), None)
             if existing is not None:
-                self._cache[existing["id"]] = agent
-                return existing                    # 重启再收编 → 复用
-            info = {"id": agent.data_dir.name or uuid.uuid4().hex[:10],
+                agent = self._cache.get(existing["id"], agent)
+                self._cache[existing["id"]] = self._connect(agent, existing)
+                return existing
+            agent_id = directory.name
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", agent_id) or any(row["id"] == agent_id for row in reg["agents"]):
+                agent_id = uuid.uuid4().hex[:10]
+            info = {"id": agent_id,
                     "name": name, "created_at": time.time(), "paused": False,
-                    "external_dir": str(agent.data_dir)}
+                    "external_dir": str(directory)}
+            self._connect(agent, info)
             reg["agents"].append(info)
             reg["current"] = reg["current"] or info["id"]
             self._save_registry(reg)
-        self._cache[info["id"]] = agent
-        return info
+            self._cache[info["id"]] = agent
+            return info
 
     def _dir_for(self, info: dict) -> Path:
         return Path(info.get("external_dir") or self.root / "agents" / info["id"])
 
-    def _build(self, agent_id: str, persona: str, priority: str) -> ProtoAgent:
-        info = self.info(agent_id)
+    def _build(self, info: dict, persona: str = "", initial_autonomy=None) -> ProtoAgent:
         agent = ProtoAgent(data_dir=self._dir_for(info), llm=self._llm,
-                           fast_llm=self._fast, webtools=self._webtools,
-                           persona=persona or None,
-                           blackboard=self.blackboard,
-                           fleet_status=self._fleet_status_for(agent_id))
+                           fast_llm=self._fast, webtools=copy(self._webtools),
+                           persona=persona or None, initial_autonomy=initial_autonomy)
+        return self._connect(agent, info)
+
+    def _connect(self, agent: ProtoAgent, info: dict) -> ProtoAgent:
+        agent.bind_fleet(self.blackboard, self._fleet_status_for(info["id"]), info["id"], self.runs)
         if self.models is not None:
             agent.bind_model_catalog(self.models)
-        if priority:
-            agent.set_priority(priority)
-        if info.get("paused"):
-            agent.kernel.set_mute(True)   # 重启后恢复暂停态（registry 是权威）
-        self._cache[agent_id] = agent
+        agent.set_fleet_paused(bool(info.get("paused")))
         return agent
 
     def info(self, agent_id: str) -> Optional[dict]:
@@ -149,7 +183,9 @@ class AgentManager:
             info = self.info(agent_id)
             if info is None:
                 return None
-            return self._build(agent_id, "", "")
+            agent = self._build(info)
+            self._cache[agent_id] = agent
+            return agent
 
     def current_id(self) -> Optional[str]:
         return self._load_registry()["current"]
@@ -164,19 +200,34 @@ class AgentManager:
     def agent_for_request(self, agent_id: Optional[str]) -> Optional[ProtoAgent]:
         return self.get(agent_id) if agent_id else self.get(self.current_id())
 
-    def pause(self, agent_id: str, on: bool = True) -> None:
+    def pause(self, agent_id: str, on: bool = True) -> bool:
+        if type(on) is not bool:
+            raise ValueError("on_must_be_boolean")
         with self._lock:
             reg = self._load_registry()
-            for a in reg["agents"]:
-                if a["id"] == agent_id:
-                    a["paused"] = on
-            self._save_registry(reg)
-        agent = self._cache.get(agent_id)
-        if agent is not None:
-            agent.kernel.set_mute(on)
+            info = next((row for row in reg["agents"] if row["id"] == agent_id), None)
+            if info is None:
+                return False
+            if info.get("paused") is not on:
+                info["paused"] = on
+                self._save_registry(reg)
+            agent = self._cache.get(agent_id)
+            if agent is not None:
+                agent.set_fleet_paused(on)
+        self.runs.notify()
+        return True
 
     def archive(self, agent_id: str) -> bool:
         """归档（不删除）：数据移入 archive/，可手工恢复。"""
+        lock = self.ops_lock(agent_id)
+        if not lock.acquire(blocking=False):
+            raise CoordinationError("agent_busy")
+        try:
+            return self._archive(agent_id)
+        finally:
+            lock.release()
+
+    def _archive(self, agent_id: str) -> bool:
         with self._lock:
             reg = self._load_registry()
             info = next((a for a in reg["agents"] if a["id"] == agent_id), None)
@@ -227,11 +278,6 @@ class AgentManager:
                 self._ops_locks[agent_id] = lock
             return lock
 
-    def seed_if_dirty(self, agent) -> None:
-        """空闲时补做被推迟的优先级播种（M50 快通道遗留任务）。"""
-        if getattr(agent, "_priority_seed_dirty", False):
-            agent.seed_priority_goals()
-
     def _fleet_status_for(self, agent_id: str):
         """M47: 给每个 agent 一份'其他成员在干什么'的只读快照（闭包惰性求值）。"""
         def snapshot() -> list:
@@ -260,9 +306,16 @@ class AgentManager:
             agent = self._cache.get(info["id"])
             if agent is not None:
                 row.update(self.snapshot_of(agent))
-            elif info.get("paused"):
-                row["activity"] = {"status": "已暂停",
-                                   "detail": "暂停中（心跳停止，记忆/目标保留）"}
+            elif self._dir_for(info).is_dir():
+                store = create_store(self._dir_for(info))
+                profile = store.get("config", "persona") or {}
+                initial = AutonomyPolicy() if AgentProfile.from_doc(profile) is not None else None
+                policy, _ = load_policy(store, initial)
+                row["autonomy"] = dict(policy.to_dict(), blocked_reason=policy.blocker(paused=info.get("paused")))
+                row["persona"] = profile.get("text", "") if isinstance(profile, dict) else ""
+                if info.get("paused"):
+                    row["activity"] = {"status": "已暂停",
+                                       "detail": "暂停中（心跳停止，记忆/目标保留）"}
             rows.append(row)
         return rows
 
@@ -271,7 +324,8 @@ class AgentManager:
         goals = agent.goal_tree.all_active()
         progress = (sum(g.progress for g in goals) / len(goals)) if goals else 0.0
         activity = AgentManager.activity_of(agent.audit_tail(3))
-        if agent.kernel.muted and activity["status"] not in ("已暂停",):
+        autonomy = agent.autonomy_view()
+        if autonomy["blocked_reason"] in ("muted", "fleet_paused"):
             activity = dict(activity, status="已暂停",
                             detail="暂停中（心跳停止，记忆/目标保留）")
         return {
@@ -287,6 +341,7 @@ class AgentManager:
             "pending_proposals": len(agent.pending_proposals()),
             "goals_active": len(goals),
             "goals_progress": round(progress, 3),
+            "autonomy": autonomy,
             "muted": agent.kernel.muted,
         }
 
@@ -304,7 +359,6 @@ class AgentManager:
                 if not lock.acquire(timeout=0.2):
                     continue
                 try:
-                    self.seed_if_dirty(agent)   # 快通道推迟的播种在此补做
                     agent.maybe_proactive()
                 finally:
                     lock.release()
@@ -312,3 +366,19 @@ class AgentManager:
                 # 失败不致命但必须留痕——静默吞异常曾掩盖整段自主性停摆
                 import logging
                 logging.exception("heartbeat tick 失败 agent=%s", info.get("id"))
+
+    def enqueue_ticks(self) -> None:
+        import logging
+
+        for info in self._load_registry()["agents"]:
+            if info.get("paused"):
+                continue
+            try:
+                agent = self.get(info["id"])
+                if agent is not None and not agent.autonomy_blocker(suggestions=True):
+                    self.runs.enqueue(info["id"], "tick")
+            except CoordinationError as exc:
+                if exc.status not in (404, 429):
+                    logging.exception("Failed to enqueue heartbeat: %s", info["id"])
+            except Exception:
+                logging.exception("Failed to enqueue heartbeat: %s", info["id"])

@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
-"""M29: 人设 → 默认内在状态与种子目标（用户要求：指定人设即有对应配置）。
+"""Persona templates and the bounded recommendation contract."""
+import json
+import math
+from dataclasses import asdict, dataclass, field
 
-原则：
-- 预设人设带推荐参数与种子目标，应用时走 owner_override（审计）；
-- 只覆盖仍等于出厂值的参数——已被反馈塑造/主人手调的不动（成长不被抹掉）；
-- 自由文本人设由 LLM 生成推荐参数（离线跳过，保持出厂）。
-"""
+
+DEFAULT_PERSONA = (
+    "通用工程助手：好奇心驱动，先验证再下结论，讲证据不吹牛；"
+    "接到模糊任务先问清验收标准；发现自以为是的地方主动纠偏。"
+)
+MAX_PERSONA_LENGTH = 2000
 
 PERSONA_DEFAULTS = {
     "资深软件专家，重视工程质量与可验证性，喜欢把复杂问题拆解清楚": {
@@ -48,3 +52,52 @@ LLM_PERSONA_PROMPT = (
     "同时给出一个该人设的默认长期目标（seed_goal，一句话）。\n"
     '只输出 JSON：{"params": {"参数名": 数值}, "seed_goal": "..."}。'
 )
+
+PERSONA_PARAMS = frozenset(path for preset in PERSONA_DEFAULTS.values()
+                           for path in preset["params"])
+
+
+@dataclass(frozen=True)
+class AgentProfile:
+    text: str
+    revision: int = 1
+    defaults_status: str = "pending"
+    params: dict = field(default_factory=dict)
+    seed_goal: str = ""
+
+    def to_dict(self) -> dict:
+        return dict(asdict(self), schema_version=1)
+
+    @classmethod
+    def from_doc(cls, raw):
+        if (isinstance(raw, dict) and raw.get("schema_version") == 1
+                and isinstance(raw.get("text"), str) and raw["text"]
+                and type(raw.get("revision")) is int and raw["revision"] > 0
+                and raw.get("defaults_status") in ("pending", "applied", "none")
+                and isinstance(raw.get("params"), dict)
+                and isinstance(raw.get("seed_goal"), str)):
+            return cls(raw["text"], raw["revision"], raw["defaults_status"],
+                       raw["params"], raw["seed_goal"])
+        return None
+
+
+def normalize_persona(text: str) -> str:
+    if not isinstance(text, str) or len(text) > MAX_PERSONA_LENGTH:
+        raise ValueError("invalid_persona_text")
+    return text.strip() or DEFAULT_PERSONA
+
+
+def parse_recommendation(raw: str) -> dict:
+    text = raw.strip()
+    if text.startswith("```") and text.endswith("```"):
+        text = text.partition("\n")[2][:-3].strip()
+    data = json.loads(text)
+    if not isinstance(data, dict) or set(data) != {"params", "seed_goal"}:
+        raise ValueError("invalid_persona_recommendation")
+    params, seed = data["params"], data["seed_goal"]
+    if (not isinstance(params, dict) or not params or set(params) - PERSONA_PARAMS
+            or not isinstance(seed, str) or not 0 < len(seed.strip()) <= 200
+            or not all(type(value) in (float, int) and math.isfinite(value)
+                       and 0 <= value <= 1 for value in params.values())):
+        raise ValueError("invalid_persona_recommendation")
+    return {"params": params, "seed_goal": seed.strip()}

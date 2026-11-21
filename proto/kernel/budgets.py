@@ -74,6 +74,8 @@ class BudgetPools:
         self.breaker_tripped: bool = False
         self.on_trip: Optional[Callable[[str], None]] = None  # 由 Kernel 接线到审计
         self._lock = threading.RLock()   # M50：资源级锁（链消耗与主人充值并发安全）
+        self._model_reservations = {}
+        self._model_epoch = 0
         self._load()
 
     def _load(self) -> None:
@@ -145,14 +147,15 @@ class BudgetPools:
                     old = self._config[pool][unit]
                     self._config[pool][unit] = value
                     current = self._remaining[pool].get(unit, 0.0)
-                    self._remaining[pool][unit] = value if value > old else min(current, value)
+                    self._remaining[pool][unit] = (value - self._model_held(pool, unit)
+                                                   if value > old else min(current, value))
             self._save()
 
     def refill(self) -> None:
         """主人显式充值：今日各池恢复到配置上限（审计由调用方记）。"""
         with self._lock:
             self.ensure_cycle()
-            self._remaining = {name: dict(units)
+            self._remaining = {name: {unit: cap - self._model_held(name, unit) for unit, cap in units.items()}
                                for name, units in self._config.items()}
             self.breaker_tripped = False
             self._save()
@@ -165,6 +168,7 @@ class BudgetPools:
                     name: dict(units) for name, units in self._config.items()}
                 self.breaker_tripped = False
                 self._cycle_date = today
+                self._model_epoch += 1
                 self._save()
 
     def _trip(self, reason: str) -> BudgetDecision:
@@ -178,6 +182,36 @@ class BudgetPools:
                     amounts: Dict[str, float]) -> BudgetDecision:
         with self._lock:
             return self._try_consume_locked(pool, amounts)
+
+    def _model_held(self, pool, unit):
+        return sum(amounts.get(unit, 0) for epoch, source, amounts in self._model_reservations.values()
+                   if epoch == self._model_epoch and pool in ("global", source))
+
+    def reserve_model(self, request_id, pool, tokens, cycle=None):
+        amounts = {"tokens": tokens, "calls": 1}
+        with self._lock:
+            self.ensure_cycle()
+            if cycle is not None and cycle != self._cycle_date:
+                return BudgetDecision(False, "budget_cycle_changed")
+            if request_id in self._model_reservations:
+                return BudgetDecision(False, "duplicate_model_reservation")
+            decision = self._try_consume_locked(pool, amounts)
+            if decision.granted:
+                self._model_reservations[request_id] = (self._model_epoch, pool, amounts)
+            return decision
+
+    def finish_model(self, request_id, *, tokens=None, elapsed=0.0, unsent=False):
+        with self._lock:
+            ticket = self._model_reservations.pop(request_id, None)
+            if ticket is None:
+                return False
+            epoch, pool, reserved = ticket
+            self.ensure_cycle()
+            if epoch == self._model_epoch:
+                actual = ({} if unsent else {"tokens": reserved["tokens"] if tokens is None else tokens,
+                                             "calls": 1, "wallclock_s": elapsed})
+                self.settle(pool, reserved, actual)
+            return True
 
     def _try_consume_locked(self, pool: str,
                             amounts: Dict[str, float]) -> BudgetDecision:

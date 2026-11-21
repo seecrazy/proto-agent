@@ -52,6 +52,7 @@ class TestManager:
         infos = [manager.create(name=f"S{i}") for i in range(2)]
         for info in infos:
             g = manager.get(info["id"])
+            g.configure_autonomy(enabled=True, mode="auto")
             g.scheduler._last_goal -= 10 ** 9              # 强制到点
             g.state.set_within_bounds("desires.curiosity_gap", 0.9)
         manager.tick_all()
@@ -61,6 +62,7 @@ class TestManager:
     def test_pause_skips_tick(self, manager):
         info = manager.create(name="P")
         g = manager.get(info["id"])
+        g.configure_autonomy(enabled=True, mode="auto")
         g.scheduler._last_goal -= 10 ** 9
         g.state.set_within_bounds("desires.curiosity_gap", 0.9)
         manager.pause(info["id"])

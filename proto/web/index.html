@@ -155,6 +155,7 @@
   .fleetdots { display:flex; gap:3px; align-items:center }
   .fleetdots i { width:7px; height:7px; border-radius:50%; display:inline-block }
   .fleetdots i.run { background:#10B981 } .fleetdots i.paused { background:var(--warn) }
+  .fleetdots i.idle { background:var(--dim) }
   .kv { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
   .kv input[type=text] { flex: 1; }
   input {
@@ -163,21 +164,32 @@
   }
   input:focus { border-color: var(--accent); }
   .empty { color: var(--dim); font-size: 12px; padding: 6px 0; }
-  #model-panel { margin: auto; width: min(680px, calc(100vw - 24px)); max-height: 85vh;
+  #model-panel, .agent-panel { margin: auto; width: min(680px, calc(100vw - 24px)); max-height: 85vh;
     overflow: auto; background: var(--panel); color: var(--text); border: 1px solid var(--border);
     border-radius: 12px; padding: 20px; }
-  #model-panel::backdrop { background: rgba(0,0,0,.6); }
+  #model-panel::backdrop, .agent-panel::backdrop { background: rgba(0,0,0,.6); }
   #model { min-width: 0; max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #model-panel h2 { padding-right: 30px; }
   #model-close { position: absolute; top: 12px; right: 12px; }
   #model-panel h3 { margin: 14px 0 8px; }
-  #model-panel label { display: block; margin: 10px 0; }
-  #model-panel label > span { display: block; color: var(--dim); margin-bottom: 5px; }
-  #model-panel select, #model-panel input:not([type=checkbox]) { width: 100%; min-width: 0;
+  #model-panel label, .agent-panel label { display: block; margin: 10px 0; }
+  #model-panel label > span, .agent-panel label > span { display: block; color: var(--dim); margin-bottom: 5px; }
+  #model-panel select, #model-panel input:not([type=checkbox]),
+  .agent-panel input, .agent-panel select { width: 100%; min-width: 0;
     background: var(--panel2); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 7px; }
   #model-panel .model-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
   #model-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .agent-panel output, .agent-panel pre { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .agent-panel pre { font: inherit; padding: 8px; background: var(--panel2); border-radius: 6px; }
+  .coord-form { display: grid; gap: 8px; margin: 8px 0; }
+  .coord-form label { display: grid; gap: 4px; color: var(--dim); font-size: 12px; }
+  .coord-form input, .coord-form textarea, .coord-form select, #delivery-select { width: 100%; min-width: 0;
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+    font: inherit; padding: 6px 8px; }
+  .coord-form textarea { resize: vertical; }
+  .coord-row { overflow-wrap: anywhere; }
+  .coord-row .btns { flex-wrap: wrap; margin-top: 6px; }
   @media (max-width: 500px) { #model-panel .model-grid { grid-template-columns: 1fr; } }
 
   /* 额度面板（M44）：点顶栏额度打开 */
@@ -211,11 +223,12 @@
        role="button" tabindex="0" onclick="toggleBudget()"
        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleBudget()}"></div>
   <div class="meta" id="tension-view" title="内在张力（人格加权驱力×紧迫+唤醒）">张力…</div>
-  <div class="fleetdots" id="fleet-dots" title="舰队运行态（绿=运行 黄=暂停）"></div>
+  <div class="fleetdots" id="fleet-dots" title="舰队自治（绿=自动 黄=暂停/静音 灰=其他）"></div>
   <span class="topbadge" id="pending-badge" title="待审批的主动提议" role="button"
         aria-label="待审批提议" onclick="showCat('work')" style="display:none">待批 0</span>
   <select id="agent-select" onchange="switchAgent(this.value)" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px"></select>
   <button onclick="showCreateAgent()" style="font-size:12px">＋Agent</button>
+  <button id="autonomy-btn" onclick="openAutonomy()" title="当前 Agent 的自治设置">自治</button>
   <div class="spacer"></div>
   <button id="view-btn" onclick="toggleView()" aria-label="切换工程/伙伴视角" title="工程视角看仪表，伙伴视角只留相处">🤝伙伴视角</button>
   <button id="awake-btn" onclick="toggleAwake()">☕防休眠</button>
@@ -257,6 +270,41 @@
   <div class="btns"><button class="primary" onclick="saveModelProfile()">保存接入</button>
     <button onclick="closeModels()">关闭</button></div>
   <p class="empty" id="model-message" role="status" aria-live="polite"></p>
+</dialog>
+
+<dialog id="agent-create-panel" class="agent-panel" aria-labelledby="agent-create-heading">
+  <h2 id="agent-create-heading">新增 Agent</h2>
+  <p class="empty">先预览，再保存草稿。保存不会启用自主工作。</p>
+  <label><span>名称</span><input id="agent-create-name" maxlength="40" oninput="invalidateAgentPreview()"></label>
+  <label><span>人设预设（可选）</span><select id="agent-create-template" onchange="setDraftTemplate()"></select></label>
+  <label><span>人设</span><input id="agent-create-persona" maxlength="2000" oninput="invalidateAgentPreview()"></label>
+  <label><span>主人优先级</span><input id="agent-create-priority" maxlength="2000" oninput="invalidateAgentPreview()"></label>
+  <pre id="agent-create-preview" aria-live="polite">填写后可预览。</pre>
+  <div class="btns"><button id="agent-preview-btn" onclick="previewAgent()">预览</button>
+    <button id="agent-create-save" class="primary" onclick="saveAgentDraft()" disabled>保存草稿</button>
+    <button onclick="document.getElementById('agent-create-panel').close()">关闭</button></div>
+  <output id="agent-create-message" class="empty" aria-live="polite"></output>
+</dialog>
+
+<dialog id="autonomy-panel" class="agent-panel" aria-labelledby="autonomy-heading" onclose="autonomyEditor = null">
+  <h2 id="autonomy-heading">自治设置</h2>
+  <p id="autonomy-current" class="empty"></p>
+  <label><span>自治模式</span><select id="autonomy-mode">
+    <option value="manual">仅指派（只执行主人明确指派）</option>
+    <option value="suggest">仅建议（不执行、不调用模型生成建议）</option>
+    <option value="auto">自动执行（仍受工作区、预算与现有审批限制）</option>
+  </select></label>
+  <pre id="autonomy-scope"></pre>
+  <div class="btns"><button id="autonomy-save" class="primary" onclick="saveAutonomy(true)" disabled>确认启用</button>
+    <button id="autonomy-disable" onclick="saveAutonomy(false)" disabled>停用自治</button>
+    <button onclick="document.getElementById('autonomy-panel').close()">关闭</button></div>
+  <output id="autonomy-message" class="empty" aria-live="polite"></output>
+</dialog>
+
+<dialog id="coord-detail" class="agent-panel" aria-labelledby="coord-detail-title">
+  <form method="dialog"><button>关闭</button></form>
+  <h2 id="coord-detail-title"></h2>
+  <pre id="coord-detail-content"></pre>
 </dialog>
 
 <main>
@@ -319,6 +367,8 @@
         <input type="text" id="persona-input" placeholder="人设，例：资深软件专家（自由描述均可）">
         <button onclick="savePersona()">设人设</button>
       </div>
+      <p id="profile-state" class="empty"></p>
+      <p id="autonomy-state" class="empty"></p>
       <div class="kv">
         <input type="text" id="priority-input" placeholder="优先级，例：补齐支付模块的单元测试">
         <button onclick="savePriority()">保存</button>
@@ -328,6 +378,53 @@
     <div data-cat="ov" class="card">
       <h3>Agent 舰队（多自主 Agent 总览）</h3>
       <div id="fleet" class="empty">（加载中…）</div>
+    </div>
+
+    <div data-cat="ov" class="card">
+      <h3>舰队额度与运行</h3>
+      <div id="fleet-budget-state" class="empty"></div>
+      <details>
+        <summary>调整舰队模型总额</summary>
+        <form class="coord-form" id="fleet-budget-form" onsubmit="saveFleetBudget(event)">
+          <label>每日 tokens<input name="tokens" type="number" min="0" max="1000000000000" required></label>
+          <label>每日 calls<input name="calls" type="number" min="0" max="1000000000000" required></label>
+          <button type="submit">保存上限</button>
+        </form>
+      </details>
+      <div id="runs-err" class="empty" role="status"></div>
+      <div id="run-list"></div>
+    </div>
+
+    <div data-cat="delivery" class="card">
+      <h3>项目 · 交付与验收</h3>
+      <p class="empty">项目只交接明确引用的文本产物。可独立自动验收，也可指定另一位 Agent 评审。</p>
+      <label for="delivery-select">项目</label>
+      <select id="delivery-select" onchange="selectDelivery(this.value)"></select>
+      <div id="delivery-description" class="empty coord-row"></div>
+      <details>
+        <summary>新建项目</summary>
+        <form class="coord-form" onsubmit="createDelivery(event)">
+          <label>项目名称<input name="name" required maxlength="50"></label>
+          <label>说明<textarea name="description" rows="2" maxlength="1000"></textarea></label>
+          <button class="primary" type="submit">创建</button>
+        </form>
+      </details>
+      <details id="work-create" hidden>
+        <summary>指派交付项</summary>
+        <form class="coord-form" onsubmit="createWork(event)">
+          <label>标题<input name="title" required maxlength="50"></label>
+          <label>需求说明<textarea name="brief" required rows="3" maxlength="2000"></textarea></label>
+          <label>生产 Agent<select name="assignee" id="work-assignee" required></select></label>
+          <label>评审 Agent（可选）<select name="reviewer" id="work-reviewer"></select></label>
+          <label>关联生产 Agent 的目标 ID（可选）<input name="goal_ref" maxlength="128"></label>
+          <label>前置交付项（可多选）<select name="requires" id="work-requires" multiple size="3"></select></label>
+          <label>产物清单与硬条件（JSON）<textarea name="outputs" required rows="4">[{"path":"README.md","contains":[]}]</textarea></label>
+          <p class="empty">每个声明文件必非空；可填 <code>contains</code> 必含文本或 <code>json_keys</code> 必含的 JSON 顶层键。</p>
+          <button class="primary" type="submit">指派并入队</button>
+        </form>
+      </details>
+      <div id="delivery-err" class="empty" role="status"></div>
+      <div id="delivery-work"></div>
     </div>
 
     <div data-cat="work" class="card">
@@ -359,7 +456,7 @@
       <h3>指派任务</h3>
       <div class="kv">
         <input type="text" id="task-input" placeholder="例：看看现在几点">
-        <button class="primary" onclick="runTask()">执行</button>
+        <button class="primary" onclick="runTask(this)">执行</button>
       </div>
       <div id="task-result" class="empty"></div>
       <div class="btns" id="task-resume" style="display:none;margin-top:6px">
@@ -450,7 +547,7 @@ if (!TOKEN) document.body.innerHTML = "<p style='padding:30px'>缺少访问令�
  * 一次，点任何一侧绝不牵动另一侧（M55 的"同类让位"联动是败笔）。 */
 const SIDE_CATS = {
   left: [["ov", "📋概览"], ["inner", "💛内在"]],
-  right: [["work", "🛠工作"], ["tech", "🔧工程"]],
+  right: [["work", "🛠工作"], ["delivery", "项目"], ["tech", "🔧工程"]],
 };
 const PANEL = {
   left: { cat: localStorage.getItem("proto-panel-left") || "ov" },
@@ -490,6 +587,8 @@ function setPanelCat(side, cat) {
   const main = document.querySelector("main");
   main.classList.remove("hide-" + side);   // 收起时点分类自动展开
   syncHandles();
+  if (cat === "delivery") SAFE("delivery", refreshDelivery)();
+  if (cat === "ov") SAFE("runs", refreshRuns)();
 }
 function distribute() {
   const pool = document.getElementById("side");
@@ -580,12 +679,13 @@ document.addEventListener("click", e => {
     panel.classList.remove("open");
 });
 
-async function api(method, path, body) {
+async function api(method, path, body, requestKey) {
   // GET/HEAD 绝不带 body（浏览器 fetch 会直接拒绝——曾致全页卡片静默挂死）
   const payload = (method === "GET" || method === "HEAD")
     ? undefined : (body ? JSON.stringify(body) : undefined);
   const resp = await fetch(path, {
     method, headers: { "X-Proto-Token": TOKEN,
+                       ...(requestKey ? {"Idempotency-Key": requestKey} : {}),
                        ...(payload ? {"Content-Type": "application/json"} : {}) },
     body: payload,
   });
@@ -714,7 +814,6 @@ async function sendChat() {
   try {
     const data = await api("POST", "/api/chat", { text });
     addMsg(data.reply, "agent");
-    refreshSide();
     refreshInboxOnce();
   } catch (e) { /* 已提示 */ }
   btn.disabled = false; btn.textContent = "发送";
@@ -881,6 +980,10 @@ async function refreshState() {
   document.getElementById("model").title = `${s.model} — 点击管理接入与热切换（舰队共享）`;
   document.getElementById("chain-dot").className = "dot " + (s.chain_ok ? "ok" : "bad");
   document.getElementById("mute-btn").textContent = s.muted ? "解除静音" : "静音";
+  document.getElementById("autonomy-btn").textContent = `自治 · ${autonomyLabel(s.autonomy)}`;
+  document.getElementById("autonomy-state").textContent =
+    `自治：${autonomyLabel(s.autonomy)}${s.autonomy?.suggestion ? " · " + s.autonomy.suggestion : ""}`;
+  document.getElementById("profile-state").textContent = profileLabel(s.profile);
   document.getElementById("awake-btn").textContent = s.awake ? "☕防休眠中" : "☕防休眠";
   const b = s.budgets || {};
   const kfmt = (p) => {   // 顶栏紧凑展示（k 单位防折行）；面板里仍是精确值
@@ -965,6 +1068,19 @@ const PERSONA_PRESETS = [
   ["产品全栈", "产品型全栈工程师，关注用户体验与交付价值，反对过度设计"],
   ["毒舌评审", "毒舌但公正的代码评审员，直言不讳但每句批评都给出依据"],
 ];
+const AUTONOMY_LABELS = {manual: "仅指派", suggest: "仅建议", auto: "自动执行"};
+const AUTONOMY_BLOCKERS = {
+  fleet_paused: "舰队已暂停", muted: "已静音", not_enabled: "待启用",
+  manual_only: "仅指派", suggestions_only: "仅建议",
+};
+function autonomyLabel(policy) {
+  return policy ? (AUTONOMY_BLOCKERS[policy.blocked_reason] || AUTONOMY_LABELS[policy.mode] || "待启用") : "未加载";
+}
+function profileLabel(profile) {
+  if (profile?.defaults_status === "pending") return "人设文字已保存；参数推荐待应用（可连模型后重新保存）。";
+  if (profile?.defaults_status === "applied") return `已应用人设推荐 · 目标：${profile.seed_goal}`;
+  return "使用通用人设 / 无额外推荐。";
+}
 (function renderPersonaPresets() {
   const box = document.getElementById("persona-presets");
   for (const [name, text] of PERSONA_PRESETS) {
@@ -973,24 +1089,27 @@ const PERSONA_PRESETS = [
     b.title = text;
     b.onclick = async () => {
       document.getElementById("persona-input").value = text;
-      const r = await api("POST", "/api/persona", { text });
-      addMsg(`人设已切换：「${name}」——已应用配套的内在状态与种子长期目标（未被塑造过的参数才会覆盖），独处学习与反思随之变化。`, "system");
+      await savePersona();
     };
     box.appendChild(b);
   }
 })();
 async function savePersona() {
   const text = document.getElementById("persona-input").value.trim();
-  const r = await api("POST", "/api/persona", { text });
-  addMsg(`人设已设为：「${r.persona}」——独处学习将围绕这个人设展开。`, "system");
+  try {
+    const r = await api("POST", "/api/persona", { text });
+    document.getElementById("profile-state").textContent = profileLabel(r.profile);
+    addMsg(`人设已设为：「${r.persona}」。${profileLabel(r.profile)}`, "system");
+  } catch (e) { addMsg("人设保存失败：" + e.message, "system"); }
 }
 async function refreshFleet() {
   const r = await api("GET", "/api/agents");
+  fleetMembers = r.agents;
   const sel = document.getElementById("agent-select");
   sel.innerHTML = "";
   for (const a of r.agents) {
     const opt = document.createElement("option");
-    opt.value = a.id; opt.textContent = a.name + (a.paused ? "（暂停）" : "");
+    opt.value = a.id; opt.textContent = `${a.name}（${a.paused ? "暂停" : autonomyLabel(a.autonomy)}）`;
     opt.selected = a.id === r.current;
     sel.appendChild(opt);
   }
@@ -1005,7 +1124,7 @@ async function refreshFleet() {
     d.innerHTML =
       (a.paused ? `<div style="font-size:11px;color:var(--warn);margin-bottom:4px;border-bottom:1px dashed var(--border);padding-bottom:3px">⏸ 已暂停 —— 心跳停止，记忆/目标保留</div>` : "") +
       `<div style="margin-bottom:4px"><b>${esc(a.name)}</b>` +
-      (a.paused ? ' <span class="badge lock">已暂停</span>' : "") +
+      ` <span class="badge lock">${esc(a.paused ? "已暂停" : autonomyLabel(a.autonomy))}</span>` +
       ` <span class="badge">${esc((a.persona || "").slice(0, 12))}</span>` +
       ` <span class="badge hot">${esc(act.status || "?")}</span>` +
       (act.at ? ` <span style="color:var(--dim);font-size:10px">@${esc(fmtTime(act.at))}</span>` : "") + `</div>` +
@@ -1017,12 +1136,16 @@ async function refreshFleet() {
       `<button style="font-size:11px" onclick="forceAct('${a.id}', this)">立即行动</button>` +
       `<button style="font-size:11px" onclick="toggleActivity('${a.id}')">活动</button>` +
       `<button class="danger" style="font-size:11px" onclick="archiveAgent('${a.id}')">归档</button></div>`;
+    const settings = document.createElement("button");
+    settings.textContent = "自治设置";
+    settings.onclick = () => openAutonomy(a.id);
+    d.querySelector(".btns").appendChild(settings);
     d.dataset.events = JSON.stringify(a.last_events || []);
     box.appendChild(d);
   }
   const dots = document.getElementById("fleet-dots");
   dots.innerHTML = r.agents.filter(a => !a.id.includes("proto_data"))
-    .map(a => `<i class="${a.paused ? "paused" : "run"}" title="${esc(a.name)}${a.paused ? "（暂停）" : ""}"></i>`).join("");
+    .map(a => `<i class="${a.paused || a.muted ? "paused" : a.autonomy?.blocked_reason === "" ? "run" : "idle"}" title="${esc(a.name)}（${esc(a.paused ? "暂停" : autonomyLabel(a.autonomy))}）"></i>`).join("");
 }
 function toggleActivity(id) {
   const el = document.getElementById("act-" + id);
@@ -1054,30 +1177,13 @@ function toggleActivity(id) {
 }
 async function forceAct(id, btn) {
   if (!btn) return;
-  btn.disabled = true; btn.textContent = "行动中…";
-  addMsg("〔立即行动〕已启动——后台执行中（学习→目标→提案全链路，可能需要 1-3 分钟）", "system");
+  btn.disabled = true;
   try {
-    const r = await api("POST", `/api/agents/${id}/act`, {});
-    if (r.job) {
-      // 轮询 job 直到完成
-      const poll = setInterval(async () => {
-        try {
-          const job = await api("GET", `/api/jobs/${r.job}`);
-          if (job.status === "running") return;
-          clearInterval(poll);
-          const res = job.result || {};
-          addMsg(res.message || ("行动未成：" + (res.reason || "未知原因")), "system");
-          await refreshFleet(); await refreshScratch();
-          await refreshGoalTree(); await refreshBlackboard();
-        } catch (e) { clearInterval(poll); }
-      }, 3000);
-      // 安全兜底 5 分钟停轮
-      setTimeout(() => clearInterval(poll), 300000);
-    } else {
-      addMsg(r.message || ("行动未成：" + (r.reason || "")), "system");
-    }
+    const run = await api("POST", "/api/runs", {kind: "act", agent_id: id}, newRequestKey());
+    addMsg(`〔立即行动〕已入队 #${run.id.slice(0, 8)}，可在「舰队额度与运行」查看。`, "system");
+    await refreshRuns();
   } catch (e) { addMsg("立即行动提交失败：" + e.message, "system"); }
-  btn.disabled = false; btn.textContent = "立即行动";
+  finally { btn.disabled = false; }
 }
 async function switchAgent(id) {
   await api("POST", `/api/agents/${id}/select`, {});
@@ -1090,7 +1196,7 @@ async function pauseAgent(id, on, btn) {
     if (on) {
       addMsg("⏸ 已暂停该 Agent：心跳停止（不再学习/反思/自主行动），记忆与目标完整保留；对话仍可进行。", "system");
     } else {
-      addMsg("▶ 已恢复该 Agent：心跳重启，它从中断处继续自主行动。", "system");
+      addMsg("▶ 已解除舰队暂停；Agent 仍按原自治模式与静音状态运行。", "system");
     }
     await refreshFleet();
   } catch (e) {
@@ -1104,11 +1210,124 @@ async function archiveAgent(id) {
   await api("POST", `/api/agents/${id}/archive`, {});
   location.reload();
 }
+let draftAgent = null;
 function showCreateAgent() {
-  const name = prompt("Agent 名字："); if (!name) return;
-  const persona = prompt("人设（可空，如：资深软件专家）：") || "";
-  const priority = prompt("主人优先级（可空）：") || "";
-  api("POST", "/api/agents", { name, persona, priority }).then(() => location.reload());
+  const template = document.getElementById("agent-create-template");
+  template.replaceChildren(new Option("自由描述 / 通用人设", ""),
+    ...PERSONA_PRESETS.map(([name, text]) => new Option(name, text)));
+  for (const field of ["name", "persona", "priority"]) document.getElementById(`agent-create-${field}`).value = "";
+  invalidateAgentPreview();
+  document.getElementById("agent-create-panel").showModal();
+}
+function setDraftTemplate() {
+  document.getElementById("agent-create-persona").value = document.getElementById("agent-create-template").value;
+  invalidateAgentPreview();
+}
+function readDraftAgent() {
+  return Object.fromEntries(["name", "persona", "priority"].map(field =>
+    [field, document.getElementById(`agent-create-${field}`).value.trim()]));
+}
+function invalidateAgentPreview() {
+  draftAgent = null;
+  document.getElementById("agent-create-save").disabled = true;
+  document.getElementById("agent-create-preview").textContent = "填写后可预览。";
+  document.getElementById("agent-create-message").textContent = "";
+}
+async function previewAgent() {
+  const input = readDraftAgent(), button = document.getElementById("agent-preview-btn");
+  const message = document.getElementById("agent-create-message");
+  invalidateAgentPreview();
+  if (!input.name) { message.textContent = "请填写名称。"; return; }
+  button.disabled = true;
+  try {
+    const { preview } = await api("POST", "/api/agents/preview", input);
+    if (JSON.stringify(input) !== JSON.stringify(readDraftAgent())) return;
+    draftAgent = input;
+    const profile = preview.profile, scope = preview.scope;
+    const values = Object.entries(profile.params).map(([name, value]) => `${name}: ${value}`).join("\n");
+    const limits = Object.entries(scope.budget_caps).map(([pool, units]) =>
+      `${pool}: ${Object.entries(units).map(([unit, cap]) => `${cap} ${unit}`).join(" / ")}`).join("\n");
+    const defaults = profile.defaults_status === "applied" ? `将应用预设 · 目标：${profile.seed_goal}`
+      : profile.defaults_status === "pending" ? "自由文本将保存；参数推荐待应用。" : "使用通用人设。";
+    document.getElementById("agent-create-preview").textContent =
+      `${preview.name} · 待启用（默认仅指派）\n${preview.persona}\n优先级：${preview.priority || "未设置"}` +
+      `\n${defaults}${values ? "\n" + values : ""}\n工作区：${scope.projects_root}` +
+      `\n工具：${scope.tools.join(" / ")}\n${scope.approval}\n额度：\n${limits}`;
+    document.getElementById("agent-create-save").disabled = false;
+  } catch (e) { message.textContent = "预览失败：" + e.message; }
+  finally { button.disabled = false; }
+}
+async function saveAgentDraft() {
+  if (!draftAgent || JSON.stringify(draftAgent) !== JSON.stringify(readDraftAgent())) return;
+  const save = document.getElementById("agent-create-save");
+  save.disabled = true;
+  try {
+    await api("POST", "/api/agents", draftAgent);
+    draftAgent = null;
+    location.reload();
+  } catch (e) {
+    document.getElementById("agent-create-message").textContent = "创建失败：" + e.message;
+    save.disabled = !draftAgent;
+  }
+}
+let autonomyEditor = null;
+function renderAutonomy(result) {
+  const policy = result.autonomy, scope = result.scope;
+  autonomyEditor.policy = policy;
+  document.getElementById("autonomy-heading").textContent = `${result.name} · 自治设置`;
+  document.getElementById("autonomy-current").textContent =
+    `当前：${autonomyLabel(policy)}${policy.suggestion ? " · " + policy.suggestion : ""}。不影响主人对话和明确指派。`;
+  document.getElementById("autonomy-mode").value = policy.mode;
+  const limits = Object.entries(scope.budgets).map(([pool, units]) => `${pool}: ${units.cap_tokens ?? "—"} tokens`).join(" / ");
+  document.getElementById("autonomy-scope").textContent =
+    `工作区：${scope.projects_root}\n工具（仍按现有审批和沙盒规则）：${scope.tools.join("、")}\n额度上限：${limits}`;
+  const save = document.getElementById("autonomy-save");
+  save.textContent = policy.enabled ? "保存模式" : "确认启用";
+  save.disabled = false;
+  document.getElementById("autonomy-disable").disabled = !policy.enabled;
+}
+async function openAutonomy(id = document.getElementById("agent-select").value) {
+  if (!id) return;
+  const editor = {id}, panel = document.getElementById("autonomy-panel");
+  const message = document.getElementById("autonomy-message");
+  autonomyEditor = editor;
+  for (const key of ["current", "scope"]) document.getElementById(`autonomy-${key}`).textContent = "";
+  for (const key of ["save", "disable"]) document.getElementById(`autonomy-${key}`).disabled = true;
+  message.textContent = "加载中…";
+  if (!panel.open) panel.showModal();
+  try {
+    const result = await api("GET", `/api/agents/${encodeURIComponent(id)}/autonomy`);
+    if (autonomyEditor !== editor) return;
+    renderAutonomy(result);
+    message.textContent = "";
+  } catch (e) { if (autonomyEditor === editor) message.textContent = "读取失败：" + e.message; }
+}
+async function saveAutonomy(enabled) {
+  const editor = autonomyEditor;
+  if (!editor?.policy || editor.busy) return;
+  editor.busy = true;
+  const save = document.getElementById("autonomy-save"), disable = document.getElementById("autonomy-disable");
+  const message = document.getElementById("autonomy-message");
+  save.disabled = disable.disabled = true;
+  const mode = enabled ? document.getElementById("autonomy-mode").value : editor.policy.mode;
+  try {
+    const result = await api("POST", `/api/agents/${encodeURIComponent(editor.id)}/autonomy`,
+      {enabled, mode, expected_revision: editor.policy.revision});
+    if (autonomyEditor !== editor) return;
+    renderAutonomy(result);
+    message.textContent = "自治策略已保存。";
+    await Promise.allSettled([refreshFleet(), refreshState()]);
+  } catch (e) {
+    if (autonomyEditor !== editor) return;
+    if (e.message === "autonomy_revision_conflict") {
+      await openAutonomy(editor.id);
+      message.textContent = "策略已被更新，请核对当前模式后再提交。";
+    } else {
+      message.textContent = "保存失败：" + e.message;
+      save.disabled = false;
+      disable.disabled = !editor.policy.enabled;
+    }
+  } finally { editor.busy = false; }
 }
 async function refreshGoalTree() {
   const r = await api("GET", "/api/goaltree");
@@ -1286,8 +1505,10 @@ async function refreshScratch() {
 }
 async function savePriority() {
   const text = document.getElementById("priority-input").value.trim();
-  await api("POST", "/api/priority", { text });
-  addMsg(`主人优先级已更新：「${text}」——目标仲裁将优先对齐它。`, "system");
+  try {
+    await api("POST", "/api/priority", { text });
+    addMsg(`主人优先级已更新：「${text}」——目标仲裁将优先对齐它。`, "system");
+  } catch (e) { addMsg("优先级保存失败：" + e.message, "system"); }
 }
 async function toggleAwake() {
   const s = await api("GET", "/api/state");
@@ -1303,6 +1524,7 @@ async function toggleMute() {
   document.getElementById("mute-btn").textContent = r.muted ? "解除静音" : "静音";
 }
 let pausedTaskId = null;
+let trackedTaskRunId = null;
 function renderTaskResult(result) {
   const verdict = result.verified === true ? "✓独立验证通过（做对了）"
     : result.verified === false ? "✗验证未过：缺少 " + (result.missing || []).join("；")
@@ -1320,20 +1542,29 @@ function renderTaskResult(result) {
     pausedTaskId = null; box.style.display = "none";
   }
 }
-async function runTask() {
+async function runTask(button) {
   const input = document.getElementById("task-input");
   const text = input.value.trim(); if (!text) return;
-  input.value = "";
-  addMsg(`〔任务〕${text}`, "owner");
-  const r = await api("POST", "/api/task", { text });
-  renderTaskResult(r);
-  addMsg(`任务 ${r.status}。`, "agent");
+  button.disabled = true;
+  try {
+    const response = await api("POST", "/api/task", {text, async: true}, newRequestKey());
+    trackedTaskRunId = response.run;
+    input.value = "";
+    addMsg(`〔任务〕${text}`, "owner");
+    renderTaskResult({status: "queued", reason: `已入队 #${response.run.slice(0, 8)}`});
+    await refreshTrackedTask();
+  } finally { button.disabled = false; }
 }
 async function resumeTask(approved) {
   if (!pausedTaskId) return;
-  const r = await api("POST", `/api/task/${pausedTaskId}/resume`, { approved });
-  renderTaskResult(r);
-  refreshSide();
+  const response = await api("POST", `/api/task/${pausedTaskId}/resume`, {approved, async: true});
+  if (response.run) {
+    trackedTaskRunId = response.run;
+    renderTaskResult({status: "queued", reason: "续批已入队"});
+    await refreshTrackedTask();
+  } else {
+    renderTaskResult(response);
+  }
 }
 async function addRule() {
   const input = document.getElementById("rule-input");
@@ -1450,7 +1681,7 @@ async function decide(id, action, btn) {
     const r = await api("POST", `/api/proposals/${id}/${action}`, {});
     if (action === "accept" && r.session_id) renderTaskResult(r);
     addMsg(action === "accept"
-      ? `审批结果：${r.status}${r.reason ? " — " + r.reason : ""}`
+      ? `审批结果：${r.status}${r.reason ? " — " + (AUTONOMY_BLOCKERS[r.reason] || r.reason) : ""}`
       : `已拒绝，触发阈值上调至 ${r.threshold}（阻尼生效）`, "system");
     refreshProposals();
     refreshState();
@@ -1550,6 +1781,219 @@ function fmtTime(ts) {
 }
 function esc(s) { const d = document.createElement("i"); d.textContent = s; return d.innerHTML; }
 
+let fleetMembers = [];
+let chosenProject = "";
+let requestSequence = 0;
+const RUN_STATES = {
+  queued: "排队", running: "执行中", awaiting_approval: "待批准 / 续接",
+  succeeded: "完成", failed: "失败", blocked: "受阻", cancelled: "取消",
+  needs_reconciliation: "需核对", submitted: "待评审", reviewing: "评审中",
+  verified: "已验收", rework: "需返工", dropped: "已丢弃",
+};
+const RUN_KINDS = {task: "主人任务", tick: "心跳", act: "立即行动", resume: "恢复", accept: "批准",
+  deny: "拒绝", work: "生产", review: "评审"};
+function newRequestKey() {
+  return globalThis.crypto?.randomUUID?.() || `ui-${Date.now()}-${++requestSequence}`;
+}
+function agentLabel(id) {
+  return fleetMembers.find(member => member.id === id)?.name || id || "—";
+}
+function coordinationRow(title, detail) {
+  const row = document.createElement("div");
+  row.className = "proposal coord-row";
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  const description = document.createElement("p");
+  description.className = "empty";
+  description.textContent = detail;
+  const actions = document.createElement("div");
+  actions.className = "btns";
+  row.append(heading, description, actions);
+  return {row, actions};
+}
+function coordinationAction(parent, label, action) {
+  const button = document.createElement("button");
+  button.textContent = label;
+  button.onclick = async () => {
+    button.disabled = true;
+    try { await action(); } finally { button.disabled = false; }
+  };
+  parent.appendChild(button);
+}
+function showCoordinationDetail(title, value) {
+  const dialog = document.getElementById("coord-detail");
+  document.getElementById("coord-detail-title").textContent = title;
+  document.getElementById("coord-detail-content").textContent = value;
+  if (!dialog.open) dialog.showModal();
+}
+function drawFleetBudget(budget) {
+  const {cycle, caps, remaining, uncertain, in_flight} = budget;
+  document.getElementById("fleet-budget-state").textContent =
+    `${cycle} 本地周期｜剩余 ${remaining.tokens} / ${caps.tokens} tokens，${remaining.calls} / ${caps.calls} calls；在途 ${in_flight}、估算待核 ${uncertain}`;
+  const form = document.getElementById("fleet-budget-form");
+  if (!form.dataset.loaded) {
+    form.elements.tokens.value = caps.tokens;
+    form.elements.calls.value = caps.calls;
+    form.dataset.loaded = "1";
+  }
+}
+async function saveFleetBudget(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const body = {tokens: form.elements.tokens.valueAsNumber, calls: form.elements.calls.valueAsNumber};
+  drawFleetBudget(await api("POST", "/api/fleet-budget", body));
+  addMsg("舰队模型上限已保存，今日已占用额度保留。", "system");
+}
+async function refreshRuns() {
+  if (PANEL.left.cat !== "ov") return;
+  const [budget, active, recent] = await Promise.all([
+    api("GET", "/api/fleet-budget"), api("GET", "/api/runs?active=true"), api("GET", "/api/runs"),
+  ]);
+  drawFleetBudget(budget);
+  const list = document.getElementById("run-list");
+  list.replaceChildren();
+  const shown = [...active.runs];
+  const seen = new Set(shown.map(run => run.id));
+  shown.push(...recent.runs.filter(run => !seen.has(run.id) && run.kind !== "tick").slice(0, 10));
+  if (!shown.length) list.textContent = "暂无运行记录。";
+  for (const run of shown) {
+    const reason = run.blocked_reason || run.reason;
+    const {row, actions} = coordinationRow(`${agentLabel(run.agent_id)} · ${RUN_KINDS[run.kind] || run.kind}`,
+      `${RUN_STATES[run.status] || run.status} #${run.id.slice(0, 8)}${reason ? " · " + (AUTONOMY_BLOCKERS[reason] || reason) : ""}`);
+    coordinationAction(actions, "详情 / 用量", async () => {
+      const detail = await api("GET", `/api/runs/${run.id}`);
+      showCoordinationDetail("运行详情", JSON.stringify(detail, null, 2));
+    });
+    if (["queued", "running", "awaiting_approval"].includes(run.status) && !run.cancel_requested) {
+      coordinationAction(actions, "取消", () => changeRun(run, "cancel", {}));
+    }
+    if (run.status === "awaiting_approval" && !run.cancel_requested) {
+      const label = run.waiting?.reason === "confirmed_checkpoint" ? "从回执续接" : "批准并继续";
+      coordinationAction(actions, label, () => changeRun(run, "resume", {approved: true}));
+    }
+    if (run.status === "needs_reconciliation") {
+      coordinationAction(actions, "关闭待核对", async () => {
+        if (confirm("确认你已检查外部状态？关闭不会重跑，也不会撤销已发生的效果。")) {
+          await changeRun(run, "reconcile", {confirmed: true});
+        }
+      });
+    }
+    list.appendChild(row);
+  }
+  document.getElementById("runs-err").textContent = "";
+}
+async function changeRun(run, action, body) {
+  await api("POST", `/api/runs/${run.id}/${action}`, {...body, generation: run.generation});
+  await Promise.all([refreshRuns(), refreshTrackedTask()]);
+}
+async function refreshTrackedTask() {
+  if (!trackedTaskRunId) return;
+  const run = await api("GET", `/api/runs/${trackedTaskRunId}`);
+  if (run.id !== trackedTaskRunId) return;
+  if (run.status === "awaiting_approval") {
+    renderTaskResult({...run.result, status: "paused", task_id: run.waiting.task_id});
+  } else if (["queued", "running"].includes(run.status)) {
+    renderTaskResult({status: RUN_STATES[run.status], reason: run.blocked_reason || `#${run.id.slice(0, 8)}`});
+  } else {
+    renderTaskResult(run.result || {status: run.status, reason: run.reason});
+    trackedTaskRunId = null;
+  }
+}
+function selectOptions(element, rows, selected) {
+  element.replaceChildren(...rows.map(([value, label]) => new Option(label, value, false, selected.includes(value))));
+}
+async function selectDelivery(projectId) {
+  chosenProject = projectId;
+  document.getElementById("work-requires").replaceChildren();
+  await refreshDelivery();
+}
+async function refreshDelivery() {
+  if (PANEL.right.cat !== "delivery") return;
+  const {projects} = await api("GET", "/api/projects");
+  const picker = document.getElementById("delivery-select");
+  if (!projects.some(project => project.id === chosenProject)) chosenProject = projects[0]?.id || "";
+  selectOptions(picker, projects.map(project => [project.id, `${project.name} (${project.verified}/${project.work_count})`]),
+    [chosenProject]);
+  document.getElementById("work-create").hidden = !chosenProject;
+  const projectId = chosenProject;
+  if (!projectId) {
+    document.getElementById("delivery-work").textContent = "请先创建项目。";
+    return;
+  }
+  const project = await api("GET", `/api/projects/${projectId}`);
+  if (chosenProject !== projectId) return;
+  document.getElementById("delivery-description").textContent = project.description;
+  const members = fleetMembers.map(member => [member.id, agentLabel(member.id)]);
+  const assignee = document.getElementById("work-assignee"), reviewer = document.getElementById("work-reviewer");
+  selectOptions(assignee, members, [assignee.value || document.getElementById("agent-select").value]);
+  selectOptions(reviewer, [["", "独立：自动硬验收"], ...members], [reviewer.value]);
+  const requires = document.getElementById("work-requires");
+  selectOptions(requires, project.work.map(item => [item.id, `${item.title} · ${RUN_STATES[item.state]}`]),
+    [...requires.selectedOptions].map(option => option.value));
+  const list = document.getElementById("delivery-work");
+  list.replaceChildren();
+  const names = new Map(project.work.map(item => [item.id, item.title]));
+  for (const item of project.work) {
+    const status = RUN_STATES[item.state] || item.state;
+    const team = [agentLabel(item.assignee), item.reviewer ? agentLabel(item.reviewer) : "自动硬验收"].join(" → ");
+    const waiting = item.blocked_reason || item.reason;
+    const dependency = item.depends_on.map(id => names.get(id) || id).join("、");
+    const {row, actions} = coordinationRow(item.title, `${status} · ${team}${dependency ? "｜前置：" + dependency : ""}${waiting ? "｜" + waiting : ""}`);
+    coordinationAction(actions, "契约", () => showCoordinationDetail("交付契约", JSON.stringify(item, null, 2)));
+    for (const version of item.versions) {
+      coordinationAction(actions, `产物 v${version.version}`, () => openArtifact(projectId, item.id, version.version));
+    }
+    if (item.state === "rework") coordinationAction(actions, "重试", () => changeWork(projectId, item, "retry"));
+    if (["queued", "submitted", "rework"].includes(item.state)) {
+      coordinationAction(actions, "丢弃", async () => {
+        if (confirm("丢弃后，依赖此交付项的任务不会自动放行。确定丢弃？")) await changeWork(projectId, item, "drop");
+      });
+    }
+    list.appendChild(row);
+  }
+  if (!list.childElementCount) list.textContent = "暂无交付项。";
+  document.getElementById("delivery-err").textContent = "";
+}
+async function createDelivery(event) {
+  event.preventDefault();
+  const form = event.currentTarget, fields = new FormData(form);
+  event.submitter.disabled = true;
+  try {
+    const project = await api("POST", "/api/projects", Object.fromEntries(fields), newRequestKey());
+    form.reset();
+    await selectDelivery(project.id);
+  } finally { event.submitter.disabled = false; }
+}
+async function createWork(event) {
+  event.preventDefault();
+  const form = event.currentTarget, fields = new FormData(form);
+  if (!chosenProject) return;
+  let outputs;
+  try { outputs = JSON.parse(fields.get("outputs")); }
+  catch (_) { throw new Error("产物清单不是有效 JSON"); }
+  const spec = {title: fields.get("title"), brief: fields.get("brief"), assignee: fields.get("assignee"),
+    reviewer: fields.get("reviewer") || null, goal_ref: fields.get("goal_ref") || null,
+    depends_on: fields.getAll("requires"), outputs};
+  event.submitter.disabled = true;
+  try {
+    await api("POST", `/api/projects/${chosenProject}/work`, spec, newRequestKey());
+    form.reset();
+    await refreshDelivery();
+  } finally { event.submitter.disabled = false; }
+}
+async function changeWork(projectId, item, action) {
+  await api("POST", `/api/projects/${projectId}/work/${item.id}/${action}`, {revision: item.revision});
+  await refreshDelivery();
+}
+async function openArtifact(projectId, workId, version) {
+  const artifact = await api("GET", `/api/projects/${projectId}/work/${workId}/artifacts/${version}`);
+  const checks = artifact.checks.map(check => `${check.passed ? "✓" : "✗"} ${check.path} · ${check.rule} ${check.expected || ""}`);
+  const review = artifact.review ? `评审：${agentLabel(artifact.review.reviewer)}｜${artifact.review.accepted ? "通过" : "退回"}\n${artifact.review.note}` : "";
+  const files = Object.entries(artifact.files).map(([path, file]) => `${path}\nSHA-256: ${file.sha256}\n\n${file.text}`);
+  showCoordinationDetail(`产物 v${version} · ${agentLabel(artifact.producer)}`,
+    [checks.join("\n"), review, ...files].filter(Boolean).join("\n\n"));
+}
+
 const SAFE = (name, fn) => async () => {
   try { await fn(); } catch (e) {                 // 单卡片失败不拖死其他刷新
     console.warn(`[proto] ${name} 刷新失败:`, e);
@@ -1558,11 +2002,6 @@ const SAFE = (name, fn) => async () => {
   }
 };
 async function loop() {
-  // tick 不await：它可能被长心跳/任务占锁数分钟，队头阻塞会让全部卡片停在旧数据
-  if (!loop.tickBusy) {
-    loop.tickBusy = true;
-    api("POST", "/api/tick", {}).catch(() => {}).finally(() => { loop.tickBusy = false; });
-  }
   await SAFE("inbox", async () => {
     const inbox = await api("GET", "/api/inbox");
     for (const m of inbox.messages) addMsg(m, "agent");
@@ -1572,7 +2011,8 @@ async function loop() {
     ["scratch", refreshScratch], ["memory", refreshMemory],
     ["goaltree", refreshGoalTree], ["world", refreshWorld], ["fleet", refreshFleet],
     ["identity", refreshIdentity], ["activity", refreshActivity],
-    ["buckets", refreshBuckets]]) {
+    ["buckets", refreshBuckets], ["runs", refreshRuns], ["delivery", refreshDelivery],
+    ["tracked-task", refreshTrackedTask]]) {
     await SAFE(name, fn)();
   }
   setTimeout(loop, 8000);

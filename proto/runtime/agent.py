@@ -12,7 +12,9 @@ import json
 import os
 import secrets as pysecrets
 import stat
+import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import List, Optional
 
@@ -51,6 +53,15 @@ from proto.state.emotion import PAD, circadian_arousal_setpoint
 from proto.state.modulation import AttributionAccumulator, ModulationPipeline
 from proto.storage.mongo_store import create_store
 from proto.storage.store import FileSystemStore
+from proto.runtime.autonomy import (
+    AutonomyConflict, AutonomyPolicy, autonomous_entry, autonomous_origin, load_policy, validate_mode,
+)
+from proto.runtime.coordination import CoordinationError
+from proto.runtime.personas import (
+    AgentProfile, DEFAULT_PERSONA, LLM_PERSONA_PROMPT, PERSONA_DEFAULTS,
+    normalize_persona, parse_recommendation,
+)
+from proto.runtime.runcontext import current_run
 
 SYSTEM_PROMPT = (
     "你是 PROTO，一个能力完整、内在状态可被主人塑造的成长型 Agent。"
@@ -112,11 +123,13 @@ class ProtoAgent:
     def __init__(self, data_dir: Path, llm=None, now=time.time,
                  goal_interval_s: float = 4 * 3600,
                  persona: str = None, webtools=None, fast_llm=None,
-                 blackboard=None, fleet_status=None):
+                 blackboard=None, fleet_status=None, initial_autonomy=None):
         self._now = now
         self.blackboard = blackboard
+        self._fleet_runs = None
         self._fleet_status_fn = fleet_status   # M47: manager 注入的舰队快照
         self.data_dir = Path(data_dir)
+        self.fleet_id = self.data_dir.resolve().name
         self.data_dir.mkdir(parents=True, exist_ok=True)
         try:
             self.data_dir.chmod(0o700)
@@ -126,18 +139,19 @@ class ProtoAgent:
         self.llm_fast = fast_llm if fast_llm is not None else llm  # 高频低风险调用用快模型
         self._breaker = CircuitBreaker()
         self._model_breakers = {}
-        import threading
         self._model_breakers_lock = threading.Lock()
         self._praise_times = []   # 享乐适应：近期夸奖时间戳
 
         store = create_store(self.data_dir)   # 文件默认；PROTO_STORE=mongo 切换
-        # 人设：持久化（OWNER 可改），注入系统提示词与学习主题
-        persona_doc = store.get("config", "persona")
-        self.persona = persona or (persona_doc or {}).get("text") or (
-            "通用工程助手：好奇心驱动，先验证再下结论，讲证据不吹牛；"
-            "接到模糊任务先问清验收标准；发现自以为是的地方主动纠偏。")
-        if persona and not persona_doc:
-            store.put("config", "persona", {"text": persona})  # 首启即持久化
+        self._autonomy_lock = threading.Lock()
+        self._fleet_paused = False
+        profile_doc = store.get("config", "persona")
+        if initial_autonomy is None and AgentProfile.from_doc(profile_doc) is not None:
+            initial_autonomy = AutonomyPolicy()
+        self._autonomy, missing_policy = load_policy(store, initial_autonomy)
+        if missing_policy:
+            store.put("config", "autonomy", self._autonomy.to_dict())
+        self._suggestion = store.get("config", "autonomy_suggestion") or {}
         self.webtools = webtools
         if self.webtools is None:
             from proto.exec.webtools import WebToolkit
@@ -177,8 +191,10 @@ class ProtoAgent:
         raw = store.get("state", "main")
         self.state = AgentState.from_dict(raw) if raw else AgentState()
         self.mgr = StateManager(store, self.state, self.kernel, self.spine, agent_id="main")
-        if raw is None:
-            self.mgr.save()   # 首启即落盘：备份始终有意义
+        self.mgr.initialize_param_origins()
+        pending_priority = store.get("config", "priority_seed") or {}
+        self._priority_seed_dirty = bool(self.state.owner_priority
+                                         and pending_priority.get("pending") == self.state.owner_priority)
 
         self.attributor = (LLMAttributor(_GuardedClient(self, llm)) if llm is not None
                            else HeuristicAttributor())
@@ -215,6 +231,7 @@ class ProtoAgent:
         self.methods_lib = MethodLibrary(store)   # M37：方法策展（多元+自发明）
         self.memory = MemoryStream(store)
         self.goal_tree = GoalTree(store)
+        self._initialize_profile(persona, profile_doc)
         self.goal_forge = GoalForge(store, now)
         self.goal_tree.on_milestone = self._on_milestone
         self.world = WorldModel(store)
@@ -246,7 +263,7 @@ class ProtoAgent:
         # 并在提示词中声明为素材非指令。
         self.webtools.register_readonly(self.tools)
         from proto.exec.fleettools import FleetTools
-        FleetTools(self, fleet_status=self._fleet_status_fn).register_all(self.tools)
+        FleetTools(self).register_all(self.tools)
         from proto.exec.bridge import CodingBridge
         self.bridge = CodingBridge.autodetect(os.environ.get("PROTO_BRIDGE_CLI", ""))
         if self.bridge and self.bridge.available:
@@ -258,8 +275,9 @@ class ProtoAgent:
                 owner_only=True, parameters=builtin_parameters("delegate_coding"))
         self.router = Router(self.kernel, self.queue, self.workspace,
                              self.checkpoints, self.tools,
-                             code_workspace=self.code_workspace)
-        self.planner = (LLMPlanner(self.llm_fast, self.tools)
+                             code_workspace=self.code_workspace,
+                             autonomy_check=self._blocked_dispatch)
+        self.planner = (LLMPlanner(_GuardedClient(self, self.llm_fast), self.tools)
                         if self.llm_fast is not None else None)
         self.injector = StateInjector()
         self.pad = PAD(self.state.emotion)
@@ -311,8 +329,58 @@ class ProtoAgent:
         from proto.llm.catalog import ModelRoleClient
         self._offline_attributor = HeuristicAttributor()
         self._live_attributor = LLMAttributor(_GuardedClient(self, ModelRoleClient(catalog, "main")))
-        self._live_planner = LLMPlanner(ModelRoleClient(catalog, "fast"), self.tools)
+        self._live_planner = LLMPlanner(_GuardedClient(self, ModelRoleClient(catalog, "fast")), self.tools)
         self._model_catalog = catalog
+
+    def bind_fleet(self, blackboard, fleet_status, agent_id: str, runs=None) -> None:
+        self.blackboard = blackboard
+        self._fleet_status_fn = fleet_status
+        self.fleet_id = agent_id
+        self._fleet_runs = runs
+
+    def set_fleet_paused(self, on: bool) -> None:
+        self._fleet_paused = on
+
+    def autonomy_blocker(self, *, suggestions: bool = False, policy=None) -> str:
+        policy = self._autonomy if policy is None else policy
+        return policy.blocker(paused=self._fleet_paused, muted=self.kernel.muted, suggestions=suggestions)
+
+    def autonomy_view(self) -> dict:
+        policy = self._autonomy
+        return dict(policy.to_dict(), paused=self._fleet_paused,
+                    blocked_reason=self.autonomy_blocker(policy=policy),
+                    suggestion=self._suggestion.get("message", "")
+                    if not self.autonomy_blocker(suggestions=True, policy=policy)
+                    and policy.mode == "suggest" else "")
+
+    def _blocked_dispatch(self, autonomous: bool) -> str:
+        lease = current_run.get()
+        if lease is not None and lease.agent is self:
+            reason = lease.reason()
+            if reason:
+                return reason
+        return self.autonomy_blocker() if autonomous or autonomous_origin.get() is self else ""
+
+    def configure_autonomy(self, *, enabled=None, mode=None, expected_revision=None) -> dict:
+        if enabled is not None and type(enabled) is not bool:
+            raise ValueError("enabled_must_be_boolean")
+        if mode is not None:
+            validate_mode(mode)
+        if expected_revision is not None and type(expected_revision) is not int:
+            raise ValueError("invalid_autonomy_revision")
+        with self._autonomy_lock:
+            policy = self._autonomy
+            if expected_revision is not None and expected_revision != policy.revision:
+                raise AutonomyConflict("autonomy_revision_conflict")
+            updated = replace(policy, enabled=policy.enabled if enabled is None else enabled,
+                              mode=policy.mode if mode is None else mode)
+            if updated != policy or updated.revision == 0:
+                updated = replace(updated, revision=policy.revision + 1)
+                self.spine.store.put("config", "autonomy", updated.to_dict())
+                self._autonomy = updated
+                self.spine.append(AuditEvent.OWNER_OVERRIDE,
+                                  dict(updated.to_dict(), action="set_autonomy"))
+            return self.autonomy_view()
 
     def _on_task_completed(self, result) -> None:
         self.distiller.distill(result, domain="chat")
@@ -368,7 +436,10 @@ class ProtoAgent:
         self.interest.on_change = self._persist_metacog
         self.damping.on_change = self._persist_metacog
 
+    @autonomous_entry
     def _run_goal_forge(self, trigger: str):
+        if self.autonomy_blocker():
+            return None
         """调度器入口：真正执行定时目标生成，而不是只留下事件名。"""
         return self.goal_forge.maybe_create(self, trigger=trigger)
 
@@ -400,6 +471,9 @@ class ProtoAgent:
         """熔断 + 预算守卫的 LLM 调用。"""
         from proto.llm.client import LLMError
         from proto.llm.catalog import ModelRoleClient
+        reason = self._blocked_dispatch(False)
+        if reason:
+            raise LLMError(reason)
         breaker = self._breaker
         if isinstance(client, ModelRoleClient):
             client = client.pin()
@@ -408,34 +482,51 @@ class ProtoAgent:
         if not breaker.allow():
             raise LLMError("circuit_breaker_open")
         estimated_in = max(1, (len(system) + len(user)) // 4)
-        reserved = self.kernel.pools.try_consume(
-            pool, {"tokens": estimated_in, "calls": 1})
+        fleet_budget = self._fleet_runs.budget if self._fleet_runs is not None else None
+        ticket = None
+        if fleet_budget is not None:
+            lease = current_run.get()
+            try:
+                ticket = fleet_budget.reserve(self.fleet_id, pool, estimated_in,
+                                              lease.id if lease and lease.agent is self else None)
+            except CoordinationError as exc:
+                raise LLMError(str(exc)) from exc
+        request_id = ticket.id if ticket else pysecrets.token_hex(16)
+        reserved = self.kernel.pools.reserve_model(request_id, pool, estimated_in,
+                                                   ticket.cycle if ticket else None)
         if not reserved.granted:
+            if ticket is not None:
+                fleet_budget.settle(ticket.id, unsent=True)
             raise LLMError(f"budget_exhausted:{reserved.reason}")
-        started = time.time()
+        reason = self._blocked_dispatch(False)
+        if reason:
+            if ticket is not None:
+                fleet_budget.settle(ticket.id, unsent=True)
+            self.kernel.pools.finish_model(request_id, unsent=True)
+            raise LLMError(reason)
+        started = time.monotonic()
         try:
             reply = client.complete(system, user)
+            usage = getattr(client, "last_usage", None)
+            amounts = [usage.get(unit, 0) for unit in ("input_tokens", "output_tokens")] if isinstance(usage, dict) else []
+            total = (sum(amounts) if amounts and all(type(amount) is int and 0 <= amount <= 10**11 for amount in amounts)
+                     else 0)
+            if not total:
+                total = max(1, (len(system) + len(user) + len(reply)) // 4)
         except Exception:
             breaker.record_failure()
-            self.kernel.pools.settle(
-                pool, {}, {"wallclock_s": max(0.0, time.time() - started)})
+            if ticket is not None:
+                fleet_budget.settle(ticket.id)
+            self.kernel.pools.finish_model(request_id, elapsed=time.monotonic() - started)
             if (breaker.state == "open"
                     and not self.spine.find(lambda d: d["event_type"] == "llm_breaker_trip")):
                 self.spine.append("llm_breaker_trip",
                                   {"fails": breaker._fails})
             raise
         breaker.record_success()
-        # M48 真实用量计费：API 回执的 usage（含 thinking token）优先；
-        # 协议无 usage 回退字符估算。修复"预算烧得比账面快"的失真。
-        usage = getattr(client, "last_usage", None)
-        if usage and (usage.get("input_tokens") or usage.get("output_tokens")):
-            total = (usage.get("input_tokens") or 0) + \
-                    (usage.get("output_tokens") or 0)
-        else:
-            total = max(1, (len(system) + len(user) + len(reply)) // 4)
-        self.kernel.pools.settle(
-            pool, {"tokens": estimated_in},
-            {"tokens": total, "wallclock_s": max(0.0, time.time() - started)})
+        if ticket is not None:
+            fleet_budget.settle(ticket.id, tokens=total)
+        self.kernel.pools.finish_model(request_id, tokens=total, elapsed=time.monotonic() - started)
         return reply
 
     def _system_prompt(self) -> str:
@@ -479,61 +570,56 @@ class ProtoAgent:
     def _audit_fetch(self, url: str) -> None:
         self.spine.append("web_fetch", {"url": url})
 
-    def set_persona(self, text: str) -> None:
-        self.persona = text
-        self.spine.store.put("config", "persona", {"text": text})
-        self.spine.append("owner_override", {"action": "set_persona", "text": text})
-        self._apply_persona_defaults(text)
+    @property
+    def persona(self) -> str:
+        return self.profile.text
 
-    def _apply_persona_defaults(self, persona_text: str) -> None:
-        """人设 → 推荐内在状态与种子目标（M29）。只覆盖仍等于出厂值的参数——
-        反馈塑造/主人手调过的成长痕迹不抹掉。"""
-        import json as _json
-        import re as _re
-        from proto.runtime.personas import LLM_PERSONA_PROMPT, PERSONA_DEFAULTS
-        from proto.state.schema import DEFAULT_SPECS
-        preset = PERSONA_DEFAULTS.get(persona_text.strip())
-        if preset is not None:
-            params, seed_goal = preset["params"], preset["seed_goal"]
-        elif self.llm_fast is not None:
-            try:
-                raw = self._complete(self.llm_fast, LLM_PERSONA_PROMPT, persona_text)
-                cleaned = _re.sub(r"```(?:json)?", "", raw).strip()
-                start, end = cleaned.find("{"), cleaned.rfind("}")
-                data = _json.loads(cleaned[start:end + 1])
-                params = {k: float(v) for k, v in data.get("params", {}).items()}
-                seed_goal = str(data.get("seed_goal", "")).strip()
-            except Exception:
-                return
-        else:
+    @persona.setter
+    def persona(self, text: str) -> None:
+        self.set_persona(text, recommend=False)
+
+    def _initialize_profile(self, persona, raw) -> None:
+        loaded = AgentProfile.from_doc(raw)
+        if loaded is not None:
+            self.profile = loaded
             return
-        applied = {}
-        for path, value in params.items():
+        prior_text = raw.get("text") if isinstance(raw, dict) else None
+        text = prior_text if isinstance(prior_text, str) and prior_text.strip() else normalize_persona(persona or "")
+        self._apply_profile(AgentProfile(text), PERSONA_DEFAULTS.get(text.strip()))
+
+    def set_persona(self, text: str, *, recommend: bool = True) -> dict:
+        text = normalize_persona(text)
+        profile = replace(self.profile, text=text, revision=self.profile.revision + 1,
+                          defaults_status="pending")
+        preset = PERSONA_DEFAULTS.get(text)
+        if preset is None and text != DEFAULT_PERSONA:
+            self._save_profile(profile)
+        self.spine.append(AuditEvent.OWNER_OVERRIDE, {"action": "set_persona", "text": text})
+        if recommend and preset is None and text != DEFAULT_PERSONA and self.llm_fast is not None:
             try:
-                current = self.state.get(path)
-                group, _, name = path.partition(".")
-                factory = DEFAULT_SPECS.get(group, {}).get(name, {}).get("value")
-                if factory is not None and current != factory:
-                    continue                      # 已被塑造，保留成长
-                if self.state.spec(path).get("owner_locked"):
-                    continue
-                result = self.state.set_within_bounds(path, value)
-                applied[path] = result.value
-            except (KeyError, ValueError):
-                continue
-        if applied:
-            self.mgr.save()
-            self.spine.append("persona_defaults",
-                              {"persona": persona_text[:60], "applied": applied})
-        if seed_goal and not any(g.text == seed_goal
-                                 for g in self.goal_tree.all_active()):
-            # 人设驱动的种子是 agent 自己的长期议程，不是主人当日指派；
-            # 预算/统计走 self_initiated。
-            self.goal_tree.seed_from_priority(seed_goal, self.llm_fast,
-                                              source="self",
-                                              complete=lambda client, system, user:
-                                              self._complete(client, system, user,
-                                                             pool="self_initiated"))
+                preset = parse_recommendation(self._complete(self.llm_fast, LLM_PERSONA_PROMPT, text))
+            except Exception:
+                self.spine.append("persona_defaults_pending", {"revision": profile.revision})
+        return self._apply_profile(profile, preset).to_dict()
+
+    def _save_profile(self, profile: AgentProfile) -> None:
+        self.spine.store.put("config", "persona", profile.to_dict())
+        self.profile = profile
+
+    def _apply_profile(self, profile: AgentProfile, preset) -> AgentProfile:
+        if preset is not None or profile.text == DEFAULT_PERSONA:
+            defaults = preset or {"params": {}, "seed_goal": ""}
+            applied = self.mgr.apply_persona_defaults(defaults["params"])
+            if defaults["seed_goal"]:
+                self.goal_tree.seed_persona(defaults["seed_goal"])
+            profile = replace(profile, params=dict(defaults["params"]), seed_goal=defaults["seed_goal"],
+                              defaults_status="applied" if preset is not None else "none")
+            if applied:
+                self.spine.append("persona_defaults", {
+                    "revision": profile.revision, "applied": applied, "persona": profile.text[:60]})
+        if getattr(self, "profile", None) != profile:
+            self._save_profile(profile)
+        return profile
 
     _HISTORY_TURNS = 8
 
@@ -715,9 +801,13 @@ class ProtoAgent:
                for s in (result.get("trace") or [])])
         return [m.name for m in methods_lib.methods if m.name in blob]
 
+    @autonomous_entry
     def work_on_goal(self, node) -> dict:
         """目标牵引执行：在 projects/<目标slug>/ 下自主开发，验收走质量门。"""
         with self.sessions.lock:
+            reason = self._blocked_dispatch(True)
+            if reason:
+                return {"status": "blocked", "reason": reason, "goal_id": node.id}
             if node.status != "active":
                 return {"status": "cancelled", "goal_id": node.id}
             pending = self.sessions.pending_for_goal(node.id)
@@ -760,6 +850,9 @@ class ProtoAgent:
                 self.llm_fast, f"{node.text}（产出落在 {project_dir}）",
                 complete=lambda client, system, user:
                     self._complete(client, system, user, pool=pool))
+            reason = self.autonomy_blocker()
+            if reason:
+                return {"status": "blocked", "reason": reason, "goal_id": node.id}
             if not acceptance:
                 # 快模型解析失败也不允许标准漂移：用确定性最低证据门。
                 acceptance = (
@@ -851,8 +944,12 @@ class ProtoAgent:
     def force_act(self) -> dict:
         """立即行动（观察入口）：缺口不足先注入好奇刺激，再走完整
         学习→目标→提案链。尊重静音/主人锁定；审计 force_act。"""
-        if self.kernel.muted:
-            return {"acted": False, "reason": "已静音——解除静音后再试"}
+        reason = self._blocked_dispatch(True)
+        if reason:
+            suggestion = ((self.maybe_proactive() or self.autonomy_view()["suggestion"])
+                          if reason == "suggestions_only" else "")
+            return {"acted": False, "reason_code": reason, "message": suggestion or "",
+                    "reason": "已静音——解除静音后再试" if reason == "muted" else reason}
         gap = self.state.get("desires.curiosity_gap")
         threshold = self.state.desires["curiosity_gap"]["threshold"]
         if gap < threshold:
@@ -869,6 +966,9 @@ class ProtoAgent:
         message = self.maybe_proactive()
         self._save_transient()
         if message is None:
+            stopped = self._blocked_dispatch(True)
+            if stopped:
+                return {"acted": False, "message": "", "reason_code": stopped, "reason": stopped}
             remaining = self.kernel.pools.remaining_all()
             min_budget = min(
                 remaining.get("global", {}).get("tokens", 0.0),
@@ -882,32 +982,33 @@ class ProtoAgent:
             elif min_budget < 2000.0:
                 reason = (f"自主预算不足（剩余 {round(min_budget)} tokens）："
                           "充值、调高自主池上限或等每日重置")
+            elif self.sessions.pending_goal_ids():
+                reason = "现有目标正在等待审批或核对"
             elif not self.goal_tree.all_active():
                 reason = "本轮未生成可通过本地质量门的目标（详见 goal_forge 审计）"
             else:
                 reason = "本轮没有产生可汇报产出（详见活动中心与审计轨迹）"
             return {"acted": False, "message": "", "reason": reason}
         if isinstance(message, dict):
+            reason = message.get("reason", "")
             text = (f"目标推进 {message.get('status', 'unknown')}；"
-                    f"产出目录 {message.get('project_dir', '见活动中心')}。"
-                    f"{message.get('reason', '')}".strip())
-        else:
-            text = str(message)
-        return {"acted": True, "message": text, "reason": ""}
+                    f"产出目录 {message.get('project_dir', '见活动中心')}。{reason}".strip())
+            return {**message, "acted": True, "message": text, "reason": reason}
+        return {"acted": True, "message": str(message), "reason": ""}
 
     def post_to_blackboard(self, text: str, kind: str = "help") -> str:
         """向舰队黑板发帖（求助/分享）。无黑板时静默返回空。"""
         if self.blackboard is None:
             return ""
-        nid = self.blackboard.post(self.data_dir.name, text, kind=kind)
+        nid = self.blackboard.post(self.fleet_id, text, kind=kind)
         self.spine.append(AuditEvent.BLACKBOARD,
                           {"action": "post", "note_id": nid, "kind": kind})
         return nid
 
     def answer_blackboard(self, note_id: str, text: str) -> None:
         if self.blackboard is not None:
-            self.blackboard.claim(note_id, self.data_dir.name)
-            self.blackboard.reply(note_id, self.data_dir.name, text)
+            self.blackboard.claim(note_id, self.fleet_id)
+            self.blackboard.reply(note_id, self.fleet_id, text)
             self.spine.append(AuditEvent.BLACKBOARD,
                               {"action": "reply", "note_id": note_id})
 
@@ -916,7 +1017,7 @@ class ProtoAgent:
 
     def read_blackboard_replies(self) -> list:
         notes = self.read_blackboard()
-        me = self.data_dir.name
+        me = self.fleet_id
         out = []
         for n in notes:
             if n["from"] == me:
@@ -1046,11 +1147,14 @@ class ProtoAgent:
         "草稿只落在你的私人 scratch 区，不会打扰任何人。只输出草稿正文。"
     )
 
+    @autonomous_entry
     def _maybe_timeout_decide(self) -> None:
         """M38 主人超时自主裁决：等批超过 owner_timeout_s 的提议按
         timeout_policy 裁决——低风险+当日配额内自行批准并续跑；
         高危（IRREVERSIBLE）/高权限（owner_only 工具）永远只等主人。
         每提议只裁一次（不刷屏）；批与不批都审计+收件箱告知。"""
+        if self.autonomy_blocker():
+            return
         pending = self.queue.pending_with_ts()
         if not pending:
             return
@@ -1059,8 +1163,12 @@ class ProtoAgent:
         from proto.runtime.timeout_policy import decide as timeout_decide
         now = self._now()
         for proposal, submitted_at in pending:
+            if self._blocked_dispatch(True):
+                return
             pid = proposal.proposal_id
             if now - submitted_at < self.owner_timeout_s or pid in self._timeout_kept:
+                continue
+            if self._fleet_runs is not None and self._fleet_runs.find_link(self.fleet_id, proposal.task_id):
                 continue
             minutes = max(1, int((now - submitted_at) // 60))
             pool = "self_initiated" if proposal.self_initiated else "owner_tasks"
@@ -1068,6 +1176,8 @@ class ProtoAgent:
                 proposal, self.tools, self.llm_fast,
                 lambda client, system, user:
                 self._complete(client, system, user, pool=pool), minutes)
+            if self._blocked_dispatch(True):
+                return
             if decision.action != "auto_approve":
                 self._timeout_kept.add(pid)
                 self.spine.append("owner_timeout_keep", {
@@ -1187,11 +1297,42 @@ class ProtoAgent:
             return False
         return True
 
+    def _suggest_autonomy(self) -> Optional[str]:
+        goal = self.goal_tree.select_executable(self.state.owner_priority)
+        candidate = goal.text if goal is not None else self.state.owner_priority
+        key = goal.id if goal is not None else candidate
+        suggestion = ({"key": key, "message": f"〔仅建议〕可明确指派：{candidate[:200]}"}
+                      if candidate else {})
+        if self.autonomy_blocker(suggestions=True) or self._autonomy.mode != "suggest":
+            return None
+        if suggestion == self._suggestion:
+            return None
+        self.spine.store.put("config", "autonomy_suggestion", suggestion)
+        self._suggestion = suggestion
+        return suggestion.get("message")
+
+    def _goals_with_live_sessions(self):
+        deferred = self.sessions.pending_goal_ids()
+        for goal_id in tuple(deferred):
+            node = self.goal_tree.get(goal_id)
+            while node is not None and node.parent_id and node.parent_id not in deferred:
+                deferred.add(node.parent_id)
+                node = self.goal_tree.get(node.parent_id)
+        return deferred
+
+    @autonomous_entry
     def maybe_proactive(self) -> Optional[str]:
         """无人交互时的生活（服务端心跳驱动，浏览器开不开都活着）：
         欲望增长 + 情绪衰减 + 定时目标生成；缺口超阈值时——
         ① 自主在 scratch 写工作草稿（read_draft，零外部性，不等人）；
         ② 提交"晋升为可见文档"提案（visible_write，等主人批准）。"""
+        reason = self._blocked_dispatch(True)
+        if reason:
+            return self._suggest_autonomy() if reason == "suggestions_only" else None
+        if self._priority_seed_dirty:
+            self.seed_priority_goals()
+        if self._blocked_dispatch(True):
+            return None
         self.desires.evolve(self._now(), self._last_owner_ts)
         self.pad.tick(1)                       # 情绪随时间向设定点衰减
         self.mgr.save()
@@ -1202,13 +1343,17 @@ class ProtoAgent:
         self._review_predictions()          # L3：预测误差闭环
         self._morning_brief()               # 专家习惯：每日晨间领域扫描
         self._maybe_timeout_decide()        # M38：主人超时自主裁决（高危/高权限除外）
+        if self._blocked_dispatch(True):
+            return None
         # M28 专家工作模型：有活干活（目标牵引优先），缺口只管开新方向。
         # M36.1：目标牵引不得被欲望门控饿死——干完活欲望被满足回落阈值下
         # 是常态，此时有 active 目标就必须继续推进（用户核心诉求：自主做事）。
         # M39：统一张力信号（人格加权 Σ 驱力×紧迫 + 唤醒项）作为"想动"的
         # 内生来源；张力越阈投递内在事件，低于阈值但已积蓄时显式记录 wait。
-        selected = self.goal_tree.select_executable(
-            self.state.owner_priority or "")
+        deferred = self._goals_with_live_sessions()
+        selected = self.goal_tree.select_executable(self.state.owner_priority or "", excluded=deferred)
+        if selected is None and deferred:
+            return None
         has_work = selected is not None
         tension = self.tension()
         tension_threshold = float(__import__("os").environ.get(
@@ -1230,12 +1375,11 @@ class ProtoAgent:
         if selected is None and gap_ready:
             created = self._run_goal_forge("drive")
             if created is not None:
-                selected = self.goal_tree.select_executable(
-                    self.state.owner_priority or "")
+                selected = self.goal_tree.select_executable(self.state.owner_priority or "", excluded=deferred)
                 has_work = selected is not None
         # M59：冷却→意义门控。agent 不会累：有活+预算+没卡住就连续干；
         # 停止只因真实原因（预算地板/无目标/全目标连败/秒败熔断）。
-        if not self._may_start_chain():
+        if self._blocked_dispatch(True) or not self._may_start_chain():
             return None
         if ("goal_generation" not in fired) and not (has_work or gap_ready):
             # 模型有权不行动：张力已积蓄但未越阈 → 显式记录 wait（限频防噪）
@@ -1285,12 +1429,16 @@ class ProtoAgent:
         # ① 自主学习：读 GitHub 开源项目 → 带来源的学习笔记（read_draft 自主执行）
         from proto.runtime.study import autonomous_study
         study = autonomous_study(self, goal_text)
+        if study is None or self._blocked_dispatch(True):
+            return None
         note_path = study["path"]
         draft_result = TaskResult(task_id="note", status="completed")
         # ② 晋升提案：visible_write 等主人
         from proto.exec.proposal_writing import rewrite_proposal
         proposal_text = rewrite_proposal(
             self, f"晋升草稿为可见文档：{goal_text}")
+        if self._blocked_dispatch(True):
+            return None
         sub = self.queue.submit(ActionProposal(
             ActionCategory.VISIBLE_WRITE, proposal_text,
             {"goal": goal_text, "note": note_path, "goal_id": selected_id},
@@ -1365,10 +1513,12 @@ class ProtoAgent:
         import re as _re
         import time as _time
         for pred in self.world.due_predictions(limit=2):
+            if self._blocked_dispatch(False):
+                return
             topic = pred["topic"]
             repos = self.webtools.github_search_repos(topic)
             material = ""
-            if repos:
+            if repos and not self._blocked_dispatch(False):
                 readme = self.webtools.github_readme(repos[0]["full_name"])
                 material = readme.get("text", "")[:2000]
             verdict, evidence = "unknown", ""
@@ -1423,6 +1573,8 @@ class ProtoAgent:
         """专家习惯：每日第一次心跳做领域扫描（简报进 scratch + 收件箱）。
         同日幂等；离线无 LLM 时跳过正文但 trending 标题仍记录。"""
         import time as _time
+        if self._blocked_dispatch(False):
+            return
         today = _time.strftime("%Y-%m-%d", _time.localtime(self._now()))
         key = "brief"
         doc = self.spine.store.get("habits", key) or {}
@@ -1444,6 +1596,8 @@ class ProtoAgent:
                     "\n".join(lines), pool="self_initiated")
             except Exception:
                 body = ""
+        if self._blocked_dispatch(False):
+            return
         note = (f"# 晨间简报 {today}\n\n主题：{topic}\n\n"
                 + ("\n".join(lines) or "（趋势抓取失败）")
                 + (f"\n\n{body}" if body else ""))
@@ -1528,6 +1682,9 @@ class ProtoAgent:
                          if p.proposal_id == proposal_id), None)
         if proposal is None:
             return {"status": "failed", "reason": "no_such_proposal"}
+        reason = self._blocked_dispatch(proposal.self_initiated)
+        if reason:
+            return {"status": "blocked", "reason": reason}
         resumed = self._resume_proposal(proposal, approved=True)
         if resumed is not None:
             return resumed
@@ -1657,12 +1814,12 @@ class ProtoAgent:
             return {"status": "failed", "reason": "not_paused"}
         task = Task(id=task_id, description=spec["description"],
                     steps=spec["steps"], owner_assigned=spec.get("owner_assigned", True),
-                    desire_dim=spec.get("desire_dim"))
+                    desire_dim=spec.get("desire_dim"), autonomous=spec.get("autonomous") is True)
         result = self.router.resume(task, human_approved=approved)
         if result.status == "completed":
             self.pad.apply_event("task_success")
         self.scheduler.on_task_completed(result)
-        return {"status": result.status, "step_results": result.step_results}
+        return {"status": result.status, "step_results": result.step_results, "reason": result.reason}
 
     # ------------------ 管理接口（Web 控制台用） ------------------
     def lock_param(self, param: str, on: bool) -> dict:
@@ -1680,6 +1837,8 @@ class ProtoAgent:
     def set_priority_text(self, text: str) -> dict:
         """M50 快通道：只写文本+方法限定（全部单资源写，免 agent 锁）。
         目标播种（LLM，分钟级）推迟到空闲心跳补做。"""
+        if not isinstance(text, str) or len(text) > 2000:
+            raise ValueError("invalid_priority_text")
         self.state.owner_priority = text
         self.arbiter.owner_priority = text
         self.mgr.save()
@@ -1690,7 +1849,8 @@ class ProtoAgent:
             if restriction:
                 self.spine.append(AuditEvent.OWNER_OVERRIDE,
                                   {"action": "method_restriction", "text": restriction})
-        self._priority_seed_dirty = True          # 播种由 seed_priority_goals 补做
+        self.spine.store.put("config", "priority_seed", {"pending": text})
+        self._priority_seed_dirty = bool(text)
         return {"owner_priority": text,
                 "method_restriction": self.methods_lib.restriction,
                 "seed_deferred": True}
@@ -1701,7 +1861,9 @@ class ProtoAgent:
         if text:
             self.goal_tree.seed_from_priority(text, self.llm_fast,
                                               complete=self._complete)
-        self._priority_seed_dirty = False
+        if text == self.state.owner_priority:
+            self.spine.store.put("config", "priority_seed", {"pending": None})
+            self._priority_seed_dirty = False
 
     def set_priority(self, text: str) -> dict:
         """完整路径：文本+播种一气呵成（需持 agent 锁，链运行时会 409）。"""

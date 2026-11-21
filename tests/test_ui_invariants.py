@@ -14,13 +14,13 @@ SCRIPT = (re.search(r"<script>(.*)</script>", HTML, re.S) or [None, ""])[1]
 
 
 def test_i1_tabs_unique_and_partitioned():
-    """I1/I6：四类别静态分区，每类别页签定义恰好一次。"""
-    m = re.search(r"const SIDE_CATS = \{(.*?)\};", SCRIPT, re.S)
-    assert m, "SIDE_CATS 定义缺失"
-    body = m.group(1)
-    cats = re.findall(r'\["(\w+)",\s*"[^"]+"\]', body)
-    assert sorted(cats) == ["inner", "ov", "tech", "work"]
-    assert len(cats) == len(set(cats)), "类别在页签定义中重复"
+    """I1/I6：左右静态分区，每类别页签定义恰好一次。"""
+    tabs = re.search(r"const SIDE_CATS = \{(.*?)\};", SCRIPT, re.S)
+    assert tabs, "SIDE_CATS 定义缺失"
+    for side, expected in (("left", ["ov", "inner"]), ("right", ["work", "delivery", "tech"])):
+        partition = re.search(rf"{side}:([^\n]+)", tabs.group(1))
+        assert partition, f"missing {side} tabs"
+        assert re.findall(r'\["(\w+)",\s*"[^"]+"\]', partition.group(1)) == expected
 
 
 def test_i2_js_referenced_ids_exist():
@@ -45,14 +45,11 @@ def test_i2_onclick_handlers_defined():
 
 
 def test_cards_all_categorized():
-    """数据面完备：每张卡片都有合法 data-cat，四类计数与 UISPEC 一致。"""
+    """数据面完备：每张卡片都有合法 data-cat，与当前总设计一致。"""
     cards = re.findall(r'<div data-cat="(\w+)" class="card[^"]*"', HTML)
     from collections import Counter
-    c = Counter(cards)
-    assert sum(c.values()) == len(re.findall(r'<div[^>]*class="card[ "]', HTML)) \
-        or True  # 池内卡片全带标签即可
-    assert set(c) <= {"ov", "inner", "work", "tech"}, c
-    assert c["ov"] == 3 and c["inner"] == 5 and c["work"] == 5 and c["tech"] == 5
+    assert len(cards) == len(re.findall(r'<div[^>]*class="card[ "]', HTML))
+    assert Counter(cards) == {"ov": 4, "inner": 5, "work": 5, "delivery": 1, "tech": 5}
 
 
 def test_i6_no_cross_panel_linkage():

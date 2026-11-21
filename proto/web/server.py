@@ -14,12 +14,12 @@ import logging
 import re
 import secrets
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from proto.runtime.agent import ProtoAgent
+from proto.runtime.coordination import CoordinationError
 
 INDEX_PATH = Path(__file__).with_name("index.html")
 
@@ -52,8 +52,15 @@ CONTROL_POSTS = {"/api/mute", "/api/awake", "/api/budget/refill",
                  "/api/budget/caps", "/api/priority"}
 _CONTROL_POST_RE = [
     re.compile(r"^/api/goals/[0-9a-f]+/drop$"),
-    re.compile(r"^/api/agents/[A-Za-z0-9_-]+/(pause|select)$"),
+    re.compile(r"^/api/agents/[A-Za-z0-9_-]+/(pause|select|archive)$"),
 ]
+_AUTONOMY_RE = re.compile(r"^/api/agents/([A-Za-z0-9_-]+)/autonomy$")
+_ACT_RE = re.compile(r"^/api/agents/([A-Za-z0-9_-]+)/act$")
+_RESUME_RE = re.compile(r"^/api/task/([A-Za-z0-9_-]+)/resume$")
+_PROPOSAL_RE = re.compile(r"^/api/proposals/([0-9a-f]+)/(accept|deny)$")
+_RUN_RE = re.compile(r"^/api/runs/([0-9a-f]{32})(?:/(cancel|resume|reconcile))?$")
+_PROJECT_RE = re.compile(r"^/api/projects/([0-9a-f]{32})(/work)?$")
+_WORK_RE = re.compile(r"^/api/projects/([0-9a-f]{32})/work/([0-9a-f]{32})/(retry|drop|artifacts/([1-9][0-9]{0,8}))$")
 
 READ_ONLY_GETS = {
     "/api/state", "/api/audit", "/api/proposals", "/api/rules",
@@ -111,6 +118,8 @@ class _Handler(BaseHTTPRequestHandler):
             return fn()
         except _HTTPError as exc:
             return self._json(exc.status, {"error": exc.message})
+        except CoordinationError as exc:
+            return self._json(exc.status, {"error": str(exc)})
         except Exception:
             logging.exception("API 路由异常")
             return self._json(500, {"error": "internal"})
@@ -146,14 +155,22 @@ class _Handler(BaseHTTPRequestHandler):
     # ---- 路由入口（锁分离） ----
     def _api(self, method: str, parsed):
         server: ProtoWebServer = self.server
-        if parsed.path in {"/api/models", "/api/models/select", "/api/models/reload"}:
-            return self._models(method, parsed.path, server)
-        agent = server.manager.agent_for_request(
-            self.headers.get("X-Proto-Agent"))
         path, query = parsed.path, parse_qs(parsed.query)
-        if method == "GET" and path.startswith("/api/jobs/"):
-            return self._safely(lambda: self._routes(method, path, query,
-                                                    agent, server))
+        if path in {"/api/models", "/api/models/select", "/api/models/reload"}:
+            return self._models(method, path, server)
+        autonomy = _AUTONOMY_RE.fullmatch(path)
+        if autonomy:
+            return self._autonomy(method, server.manager, autonomy.group(1))
+        if method == "POST" and path in ("/api/agents/preview", "/api/agents"):
+            return self._agent_creation(path, server.manager)
+        if path == "/api/projects" or path.startswith("/api/projects/"):
+            return self._project_routes(method, path, server.manager.runs.projects)
+        agent_id = self.headers.get("X-Proto-Agent") or server.manager.current_id()
+        if (path in ("/api/runs", "/api/fleet-budget") or path.startswith(("/api/jobs/", "/api/runs/"))
+                or (method == "POST" and (path in ("/api/task", "/api/tick")
+                    or any(pattern.fullmatch(path) for pattern in (_ACT_RE, _RESUME_RE, _PROPOSAL_RE))))):
+            return self._run_routes(method, path, query, agent_id, server.manager.runs)
+        agent = server.manager.get(agent_id)
         if method == "POST" and path == "/api/judge":
             return self._safely(lambda: self._routes(method, path, query,
                                                     agent, server))
@@ -164,17 +181,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._routes(method, path, query, agent, server)
         if method == "GET" and path in READ_ONLY_GETS:
             return self._routes(method, path, query, agent, server)
-        if method == "POST" and path == "/api/agents":
-            # 舰队注册表操作：保留全局锁（registry 是共享单资源）
-            if not server.mut_lock.acquire(timeout=3.0):
-                return self._json(409, {"error": "agent_busy",
-                                        "hint": "注册表操作冲突，稍后重试"})
-            try:
-                return self._routes(method, path, query, agent, server)
-            finally:
-                server.mut_lock.release()
         # M50：per-agent 单写者锁——A 的长链只挡 A 的操作，不再挡全舰队
-        lock = (server.manager.ops_lock(agent.data_dir.name)
+        lock = (server.manager.ops_lock(agent_id)
                 if agent is not None else server.mut_lock)
         if not lock.acquire(timeout=3.0):
             return self._json(409, {"error": "agent_busy",
@@ -184,6 +192,167 @@ class _Handler(BaseHTTPRequestHandler):
             return self._routes(method, path, query, agent, server)
         finally:
             lock.release()
+
+    def _run_routes(self, method, path, query, agent_id, runs):
+        if path == "/api/fleet-budget":
+            if method == "GET":
+                return self._json(200, runs.budget.view())
+            body = self._body()
+            return self._json(200, runs.budget.configure(body.get("tokens"), body.get("calls")))
+        key = self.headers.get("Idempotency-Key")
+        if path == "/api/runs":
+            if method == "GET":
+                try:
+                    before = int(query["before"][0]) if "before" in query else None
+                    if before is not None and not 0 < before < 2**63:
+                        raise ValueError
+                except ValueError:
+                    raise _HTTPError(400, "invalid_run_cursor")
+                return self._json(200, {"runs": runs.list(query.get("agent", [None])[0], before=before,
+                                                         active=query.get("active") == ["true"])})
+            body = self._body()
+            kind = body.get("kind")
+            if kind not in ("task", "act", "tick"):
+                raise _HTTPError(400, "invalid_run_kind")
+            target_id = body.get("agent_id", agent_id)
+            if not isinstance(target_id, str):
+                raise _HTTPError(400, "agent_id_required")
+            args = (self._task_args(body) if kind == "task" else {"explicit": True} if kind == "tick" else {})
+            return self._json(202, runs.enqueue(target_id, kind, args, key=key))
+        match = _RUN_RE.fullmatch(path)
+        if match:
+            run_id, action = match.groups()
+            if method == "GET" and not action:
+                run = runs.get(run_id)
+                return self._json(200, dict(run, budget=runs.budget.for_run(run_id),
+                                            blocked_reason=runs.blocked_reason(run)))
+            if method == "POST" and action:
+                body = self._body()
+                if action == "cancel":
+                    return self._json(200, runs.cancel(run_id))
+                if action == "resume":
+                    return self._json(202, runs.decide(run_id, body.get("approved"), body.get("generation")))
+                if body.get("confirmed") is not True:
+                    raise _HTTPError(400, "reconciliation_confirmation_required")
+                return self._json(200, runs.close_reconciliation(run_id, body.get("generation")))
+        job = re.fullmatch(r"/api/jobs/([0-9a-f]+)", path)
+        if method == "GET" and job:
+            try:
+                run = runs.get(job.group(1))
+            except CoordinationError as exc:
+                raise _HTTPError(exc.status, "no_such_job") from exc
+            status = "running" if run["status"] in ("queued", "running") else "done"
+            if run["status"] in ("failed", "needs_reconciliation"):
+                status = "error"
+            return self._json(200, {"status": status, "result": run["result"], "agent": run["agent_id"],
+                                    "created_at": run["created_at"],
+                                    "done_at": run["updated_at"] if status != "running" else None})
+        if method != "POST":
+            raise _HTTPError(404, "not_found")
+        act = _ACT_RE.fullmatch(path)
+        if act:
+            run = runs.enqueue(act.group(1), "act", key=key)
+            return self._json(200, {"job": run["id"], "status": "running"})
+        if path == "/api/tick":
+            return self._wait_run(runs, runs.enqueue(agent_id, "tick", {"explicit": True}, key=key))
+        if path == "/api/task":
+            body = self._body()
+            run = runs.enqueue(agent_id, "task", self._task_args(body), key=key)
+            return self._wait_run(runs, run, asynchronous=body.get("async") is True)
+        resume, proposal = _RESUME_RE.fullmatch(path), _PROPOSAL_RE.fullmatch(path)
+        if resume or proposal:
+            body = self._body()
+            identifier = (resume or proposal).group(1)
+            kind = "resume" if resume else proposal.group(2)
+            approved = body.get("approved") if resume else kind == "accept"
+            if type(approved) is not bool:
+                raise _HTTPError(400, "approved_must_be_boolean")
+            run = runs.find_link(agent_id, identifier)
+            if run:
+                if run["status"] == "awaiting_approval":
+                    run = runs.decide(run["id"], approved, run["generation"])
+                elif not run["decision"] or run["decision"]["approved"] is not approved:
+                    raise _HTTPError(409, "run_not_waiting")
+            else:
+                args = {"identifier": identifier, "approved": approved}
+                run = runs.enqueue(agent_id, kind, args, key=key)
+            return self._wait_run(runs, run, asynchronous=body.get("async") is True)
+        raise _HTTPError(404, "not_found")
+
+    @staticmethod
+    def _task_args(body):
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip() or len(text) > 16000:
+            raise _HTTPError(400, "invalid_task_text")
+        return {"text": text}
+
+    def _wait_run(self, runs, run, *, asynchronous=False):
+        if not asynchronous:
+            run = runs.wait(run["id"])
+            if run["status"] not in ("queued", "running") and run["result"] is not None:
+                return self._json(200, run["result"])
+        return self._json(202, {"run": run["id"], "status": run["status"]})
+
+    def _project_routes(self, method, path, projects):
+        key = self.headers.get("Idempotency-Key")
+        if path == "/api/projects":
+            if method == "GET":
+                return self._json(200, {"projects": projects.list()})
+            body = self._body()
+            return self._json(201, projects.create(body.get("name"), body.get("description", ""), key=key))
+        project = _PROJECT_RE.fullmatch(path)
+        if project:
+            project_id, work = project.groups()
+            if method == "GET" and not work:
+                return self._json(200, projects.view(project_id))
+            if method == "POST" and work:
+                return self._json(202, projects.add_work(project_id, self._body(), key=key))
+        item = _WORK_RE.fullmatch(path)
+        if item:
+            project_id, work_id, action, version = item.groups()
+            if method == "GET" and version:
+                return self._json(200, projects.artifact(project_id, work_id, int(version)))
+            if method == "POST" and not version:
+                return self._json(200, projects.change(project_id, work_id, self._body().get("revision"), action))
+        raise _HTTPError(404, "not_found")
+
+    def _agent_creation(self, path, manager):
+        fields = self._body()
+        if "name" not in fields or set(fields) - {"name", "persona", "priority", "mode"}:
+            raise _HTTPError(400, "invalid_agent_fields")
+        try:
+            if path.endswith("/preview"):
+                return self._json(200, {"preview": manager.preview(**fields)})
+            info = manager.create(**fields)
+        except ValueError as exc:
+            raise _HTTPError(400, str(exc)) from exc
+        manager.set_current(info["id"])
+        return self._json(200, {"created": info, "agents": manager.list()})
+
+    def _autonomy(self, method, manager, agent_id):
+        from proto.runtime.autonomy import AutonomyConflict
+        info = manager.info(agent_id)
+        agent = manager.get(agent_id)
+        if info is None or agent is None:
+            raise _HTTPError(404, "no_such_agent")
+        if method == "POST":
+            fields = self._body()
+            if (set(fields) - {"enabled", "mode", "expected_revision"}
+                    or not {"enabled", "mode"}.intersection(fields)
+                    or any(value is None for value in fields.values())):
+                raise _HTTPError(400, "invalid_autonomy_fields")
+            try:
+                view = agent.configure_autonomy(**fields)
+            except AutonomyConflict as exc:
+                raise _HTTPError(409, str(exc)) from exc
+            except ValueError as exc:
+                raise _HTTPError(400, str(exc)) from exc
+        else:
+            view = agent.autonomy_view()
+        return self._json(200, {"autonomy": view, "name": info["name"],
+                                "scope": {"projects_root": agent.projects_root(),
+                                          "budgets": _budget_view(agent),
+                                          "tools": sorted(agent.tools.names())}})
 
     def _models(self, method, path, server):
         from proto.llm.catalog import ModelConfigError, ModelRevisionConflict
@@ -218,58 +387,17 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/agents" and method == "GET":
             return self._json(200, {"agents": server.manager.list(),
                                     "current": server.manager.current_id()})
-        if path == "/api/agents" and method == "POST":
-            info = server.manager.create(**{
-                k: v for k, v in self._body().items()
-                if k in ("name", "persona", "priority")})
-            server.manager.set_current(info["id"])
-            return self._json(200, {"created": info,
-                                    "agents": server.manager.list()})
-        m5 = re.match(r"^/api/agents/([A-Za-z0-9_-]+)/act$", path)
-        if m5 and method == "POST":
-            # 异步 job：浏览器 fetch 会在约 100s 断开，完整自主链路可能跑几分钟
-            target = server.manager.get(m5.group(1))
-            if target is None:
-                return self._json(404, {"error": "no_such_agent"})
-            import threading as _th
-            import uuid as _uuid
-            job_id = _uuid.uuid4().hex[:12]
-            server._purge_jobs()
-            server.jobs[job_id] = {"status": "running", "result": None,
-                                    "agent": m5.group(1),
-                                    "created_at": time.time(), "done_at": None}
-
-            def _run():
-                try:
-                    with server.manager.ops_lock(m5.group(1)):
-                        result = target.force_act()
-                    target._inbox.append(
-                        result.get("message")
-                        or f"行动未成：{result.get('reason', '')}")
-                    server.jobs[job_id]["result"] = result
-                    server.jobs[job_id]["status"] = "done"
-                    server.jobs[job_id]["done_at"] = time.time()
-                except Exception as exc:
-                    server.jobs[job_id]["result"] = {"acted": False,
-                                                      "reason": str(exc)[:200]}
-                    server.jobs[job_id]["status"] = "error"
-                    server.jobs[job_id]["done_at"] = time.time()
-
-            _th.Thread(target=_run, daemon=True).start()
-            return self._json(200, {"job": job_id, "status": "running"})
-        m7 = re.match(r"^/api/jobs/([0-9a-f]+)$", path)
-        if m7 and method == "GET":
-            job = server.jobs.get(m7.group(1))
-            if job is None:
-                return self._json(404, {"error": "no_such_job"})
-            return self._json(200, job)
         m4 = re.match(r"^/api/agents/([A-Za-z0-9_-]+)/(select|pause|archive)$", path)
         if m4 and method == "POST":
             aid, action = m4.group(1), m4.group(2)
             if action == "select":
                 server.manager.set_current(aid)
             elif action == "pause":
-                server.manager.pause(aid, bool(self._body().get("on", True)))
+                on = self._body().get("on", True)
+                if type(on) is not bool:
+                    raise _HTTPError(400, "on_must_be_boolean")
+                if not server.manager.pause(aid, on):
+                    raise _HTTPError(404, "no_such_agent")
             elif action == "archive":
                 if not server.manager.archive(aid):
                     return self._json(404, {"error": "no_such_agent"})
@@ -284,33 +412,16 @@ class _Handler(BaseHTTPRequestHandler):
             reply = agent.chat(body.get("text", ""))
             self._json(200, {"reply": reply})   # 先回包，主人零等待
             agent.remember_turn(body.get("text", ""), reply)
-            proposal = agent.maybe_proactive()
-            if proposal:
-                agent._inbox.append(proposal)   # 下轮轮询经收件箱可见
+            if not agent.autonomy_blocker(suggestions=True):
+                try:
+                    server.manager.runs.enqueue(agent.fleet_id, "tick")
+                except CoordinationError as exc:
+                    if exc.status != 429:
+                        logging.exception("Cannot enqueue post-chat heartbeat")
             return None
-
-        if path == "/api/task" and method == "POST":
-            return self._json(200, agent.run_task(self._body().get("text", "")))
-        m3 = re.match(r"^/api/task/([A-Za-z0-9_-]+)/resume$", path)
-        if m3 and method == "POST":
-            body = self._body()
-            if not isinstance(body, dict) or type(body.get("approved")) is not bool:
-                return self._json(400, {"error": "approved_must_be_boolean"})
-            result = agent.resume_task(m3.group(1), body["approved"])
-            return self._json(200, result)
 
         if path == "/api/proposals" and method == "GET":
             return self._json(200, {"proposals": agent.pending_proposals()})
-        m = re.match(r"^/api/proposals/([0-9a-f]+)/(accept|deny)$", path)
-        if m and method == "POST":
-            pid, action = m.group(1), m.group(2)
-            if action == "deny":
-                threshold = agent.deny_proposal(pid)
-                return self._json(200, {"denied": pid, "threshold": threshold})
-            return self._json(200, agent.accept_proposal(pid))
-
-        if path == "/api/tick" and method == "POST":
-            return self._json(200, {"proposal": agent.maybe_proactive()})
 
         if path == "/api/audit" and method == "GET":
             n = int(query.get("n", ["20"])[0])
@@ -354,7 +465,9 @@ class _Handler(BaseHTTPRequestHandler):
                                {"action": "budget_refill"})
             return self._json(200, {"refilled": True, "remaining": remaining})
         if path == "/api/mute" and method == "POST":
-            on = bool(self._body().get("on"))
+            on = self._body().get("on")
+            if type(on) is not bool:
+                raise _HTTPError(400, "on_must_be_boolean")
             agent.kernel.set_mute(on)
             return self._json(200, {"muted": agent.kernel.muted})
 
@@ -369,8 +482,11 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/api/priority" and method == "POST":
             # M50 快通道：文本即存；目标播种由空闲心跳补做（seed_deferred）
-            return self._json(200,
-                              agent.set_priority_text(self._body().get("text", "")))
+            try:
+                result = agent.set_priority_text(self._body().get("text", ""))
+            except ValueError as exc:
+                raise _HTTPError(400, str(exc)) from exc
+            return self._json(200, result)
         if path == "/api/projects-root" and method == "GET":
             return self._json(200, {"root": agent.projects_root()})
         if path == "/api/projects-root" and method == "POST":
@@ -401,8 +517,11 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(200, {"verdicts": verdicts,
                                     "score": weighted_score(verdicts)})
         if path == "/api/persona" and method == "POST":
-            agent.set_persona(self._body().get("text", ""))
-            return self._json(200, {"persona": agent.persona})
+            try:
+                profile = agent.set_persona(self._body().get("text"))
+            except ValueError as exc:
+                raise _HTTPError(400, str(exc)) from exc
+            return self._json(200, {"persona": agent.persona, "profile": profile})
 
         if path == "/api/awake" and method == "POST":
             on = bool(self._body().get("on"))
@@ -601,6 +720,8 @@ def _state_payload(agent: ProtoAgent, server: ProtoWebServer = None) -> dict:
                    "bounds": spec["bounds"],
                    "owner_locked": bool(spec.get("owner_locked")),
                    "dormant": bool(spec.get("dormant"))}
+            if "origin" in spec:
+                row["origin"] = spec["origin"]
             if "threshold" in spec:
                 row["threshold"] = spec["threshold"]
             rows.append(row)
@@ -611,6 +732,8 @@ def _state_payload(agent: ProtoAgent, server: ProtoWebServer = None) -> dict:
         "emotion": dict(agent.state.emotion),
         "owner_priority": agent.state.owner_priority,
         "persona": agent.persona,
+        "profile": agent.profile.to_dict(),
+        "autonomy": agent.autonomy_view(),
         "budgets": _budget_view(agent),
         "model": (agent.llm.describe() if hasattr(agent.llm, "describe")
                   else "已接 LLM") if agent.llm else "离线模式",
@@ -627,7 +750,7 @@ class ProtoWebServer(ThreadingHTTPServer):
 
     def __init__(self, agent: ProtoAgent = None, host: str = "127.0.0.1",
                  port: int = 8420, token: str = None, heartbeat_s: float = 30.0,
-                 keep_awake=None, manager=None):
+                 keep_awake=None, manager=None, workers: int = 2):
         from proto.runtime.manager import AgentManager
         if manager is None:
             assert agent is not None, "需要 agent 或 manager 之一"
@@ -645,9 +768,13 @@ class ProtoWebServer(ThreadingHTTPServer):
         self.keeper = keep_awake if keep_awake is not None else KeepAwake()
         self.lock = threading.Lock()      # 遗留别名（心跳）
         self.mut_lock = threading.Lock()  # 变更长锁：chat/task/evolve
-        self.jobs = {}                    # 异步任务（立即行动等长链路）
         self._hb_stop = threading.Event()
         super().__init__((host, port), _Handler)
+        try:
+            manager.runs.start(workers)
+        except BaseException:
+            super().server_close()
+            raise
         if heartbeat_s > 0:
             threading.Thread(target=self._heartbeat, args=(heartbeat_s,),
                              daemon=True, name="proto-heartbeat").start()
@@ -657,37 +784,18 @@ class ProtoWebServer(ThreadingHTTPServer):
         """昼夜节律节流：默认 8-23 点为活跃期，夜间间隔×5——凌晨的 PROTO 也在睡觉。"""
         return interval if 8 <= hour < 23 else interval * 5
 
-    def _purge_jobs(self, max_jobs: int = 100, ttl_s: float = 3600.0) -> None:
-        """清理已完成/过期异步 job，防止长驻控制台内存缓慢增长。"""
-        now = time.time()
-        for job_id, job in list(self.jobs.items()):
-            if job.get("done_at") is not None and now - job["done_at"] > ttl_s:
-                self.jobs.pop(job_id, None)
-            elif job.get("status") == "running" and now - job.get("created_at", now) > 30 * 60:
-                # 兜底标记：线程异常未更新时避免前端无限轮询。
-                job.update(status="error", done_at=now,
-                           result={"acted": False, "reason": "job_timeout"})
-        while len(self.jobs) > max_jobs:
-            oldest = min(self.jobs, key=lambda k: self.jobs[k].get("created_at", 0))
-            self.jobs.pop(oldest, None)
-
     def _heartbeat(self, interval: float) -> None:
         import time as _time
         while not self._hb_stop.wait(
                 self._effective_interval(interval, _time.localtime().tm_hour)):
             try:
-                # 主人优先：锁被交互占用就跳过本轮自主节律（欲望会累积，不丢）
-                if not self.mut_lock.acquire(timeout=0.2):
-                    continue
-                try:
-                    self.manager.tick_all()      # M21：驱动整支舰队
-                finally:
-                    self.mut_lock.release()
+                self.manager.enqueue_ticks()
             except Exception:
-                pass  # 心跳失败不致命——下个周期重试
+                logging.exception("Fleet heartbeat enqueue failed")
 
     def server_close(self) -> None:
         self._hb_stop.set()
+        self.manager.runs.stop()
         super().server_close()
 
     @property

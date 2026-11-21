@@ -88,7 +88,10 @@ class FileSystemStore(DocumentStore):
         with self._lock:
             if not path.exists():
                 return None
-            return json.loads(path.read_text(encoding="utf-8"))
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if value is None:
+                raise ValueError("null_document")
+            return value
 
     def delete(self, collection: str, doc_id: str) -> None:
         path = self._path(collection, doc_id)

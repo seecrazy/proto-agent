@@ -245,17 +245,3 @@ def test_activity_payload_does_not_claim_removed_cooldown():
     source = (Path(server.__file__).read_text(encoding="utf-8"))
     assert '"cooldown_s"' not in source
     assert '"idle_policy": "meaning_gate"' in source
-
-
-def test_web_job_store_is_bounded_and_expires():
-    from proto.web.server import ProtoWebServer
-    class Server:
-        jobs = {}
-    s = Server()
-    s.jobs = {
-        "done-old": {"status": "done", "created_at": 0, "done_at": 0},
-        "running-old": {"status": "running", "created_at": 0, "done_at": None},
-    }
-    ProtoWebServer._purge_jobs(s)
-    assert "done-old" not in s.jobs
-    assert s.jobs["running-old"]["status"] == "error"

@@ -208,6 +208,47 @@ class StateManager:
         self._audit = audit
         self._agent_id = agent_id
 
+    def initialize_param_origins(self) -> None:
+        candidates = [path for path in self.state.all_params()
+                      if path.split(".")[0] != "desires"
+                      and self.state.spec(path).get("origin") not in
+                      ("factory", "template", "learned", "owner")]
+        if not candidates:
+            return
+        learned = {entry.get("param") for entry in self.state.modulation_log
+                   if entry.get("delta")}
+        owner = {event["payload"].get("param") for event in self._audit.find(
+            lambda event: event.get("event_type") == AuditEvent.OWNER_OVERRIDE
+            and "post" in event.get("payload", {}))}
+        for path in candidates:
+            group, name = path.split(".")
+            spec = self.state.spec(path)
+            baseline = DEFAULT_SPECS[group][name]["value"]
+            spec["origin"] = ("owner" if path in owner else "learned"
+                              if path in learned or spec["value"] != baseline else "factory")
+        self.save()
+
+    def apply_persona_defaults(self, recommendations: dict) -> dict:
+        applied = {}
+        for path in self.state.all_params():
+            spec = self.state.spec(path)
+            origin = spec.get("origin")
+            if (origin not in ("factory", "template") or spec.get("owner_locked")
+                    or spec.get("dormant")):
+                continue
+            if path in recommendations:
+                value, updated_origin = recommendations[path], "template"
+            elif origin == "template":
+                group, name = path.split(".")
+                value, updated_origin = DEFAULT_SPECS[group][name]["value"], "factory"
+            else:
+                continue
+            applied[path] = self.state.set_within_bounds(path, value).value
+            spec["origin"] = updated_origin
+        if applied:
+            self.save()
+        return applied
+
     def apply_modulation(self, param: str, delta: float, source: str,
                          accumulated: float = None) -> ModulationResult:
         spec = self.state.spec(param)
@@ -222,6 +263,8 @@ class StateManager:
         current = spec["value"]
         target = current + delta
         result = self.state.set_within_bounds(param, target)
+        if result.value != current and spec.get("origin") != "owner":
+            spec["origin"] = "learned"
         audit_seq = self._audit.append(AuditEvent.MODULATION, {
             "param": param, "delta": delta, "source": source,
             "pre": _round4(current), "post": result.value, "clamped": result.clamped,
@@ -287,6 +330,7 @@ class StateManager:
                 "param": path, "reason": "owner_locked", "source": "owner_override"})
             raise PermissionError(f"{path} 已被主人锁定，override 亦不可写（先解锁）")
         result = self.state.set_within_bounds(path, value)
+        self.state.spec(path)["origin"] = "owner"
         self._audit.append(AuditEvent.OWNER_OVERRIDE, {"param": path, "post": result.value, "clamped": result.clamped})
         self.save()
         return result

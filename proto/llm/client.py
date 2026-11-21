@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
@@ -28,7 +29,17 @@ class LLMClient(ABC):
     self.last_usage = {"input_tokens", "output_tokens"}（协议无 usage 时为 None，
     调用方回退字符估算）。"""
 
-    last_usage = None
+    @property
+    def last_usage(self):
+        local = vars(self).get("_request_usage")
+        return getattr(local, "value", None)
+
+    @last_usage.setter
+    def last_usage(self, value):
+        local = vars(self).get("_request_usage")
+        if local is None:
+            local = vars(self).setdefault("_request_usage", threading.local())
+        local.value = value
 
     @abstractmethod
     def complete(self, system: str, user: str) -> str:

@@ -109,9 +109,7 @@ def main() -> int:
                                fast_llm=stack["fast"] if stack else None, models=models)
         agent = ProtoAgent(data_dir=data_root, llm=llm,
                            fast_llm=stack["fast"] if stack else None)
-        info = manager.adopt(agent, name="默认")
-        if info.get("paused"):
-            agent.kernel.set_mute(True)   # 恢复 registry 记录的暂停态
+        manager.adopt(agent, name="默认")
     else:
         manager = AgentManager(root=data_root, llm=llm,
                                fast_llm=stack["fast"] if stack else None, models=models)

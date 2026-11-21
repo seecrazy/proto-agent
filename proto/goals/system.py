@@ -160,13 +160,14 @@ class GoalTree:
             self.on_milestone(parent)
         self._repropagate(parent.parent_id)      # 逐级上传
 
-    def select_executable(self, owner_priority: str) -> Optional[GoalNode]:
+    def select_executable(self, owner_priority: str, *, excluded=()) -> Optional[GoalNode]:
         """选当前最值得执行的目标：0.4×主人对齐 + 0.4×深度 + 0.2×进度。
         对齐度沿父链继承——子目标语义从属于父（词面重叠看不见），取整链最大值。"""
         priority = owner_priority.strip()
+        eligible = (node for node in self.all_active() if node.id not in excluded)
         if not priority:
             # 无优先级时退化为深度偏好 + 同一套平局裁决（验收优先/失败轮转）
-            return max(self.all_active(),
+            return max(eligible,
                        key=lambda n: (DEPTH_BONUS[n.level],
                                       1 if (n.acceptance or "").strip() else 0,
                                       -n.fail_streak), default=None)
@@ -180,7 +181,7 @@ class GoalTree:
             return best
 
         best_node, best_score = None, (-1.0, -1)
-        for node in self.all_active():
+        for node in eligible:
             score = (0.4 * inherited_alignment(node)
                      + 0.4 * DEPTH_BONUS[node.level]
                      + 0.2 * node.progress)
@@ -257,6 +258,13 @@ class GoalTree:
             long_goal = self.add(owner_priority[:200], "long", source=source)
         self.decompose(long_goal, llm, complete=complete)
         return long_goal
+
+    def seed_persona(self, text: str) -> GoalNode:
+        with self._lock:
+            existing = next((node for node in self._nodes.values()
+                             if node.text == text and node.level == "long"
+                             and node.source == "self"), None)
+            return existing if existing is not None else self.add(text, "long", source="self")
 
     def snapshot(self) -> dict:
         def node_view(n):

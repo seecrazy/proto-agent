@@ -135,6 +135,7 @@ def test_all_observability_payloads_carry_time():
         g.memory.add("fact", "事实T", ts=1700000000)
         g.world.record_prediction("t", "预测T", deadline_ts=1999999999,
                                   created_at=1700000000)
+        g.goal_tree.add("目标T", "long", source="owner")
         aid = info["id"]
 
         def acall(path):

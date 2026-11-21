@@ -28,12 +28,20 @@ class ExecutionSessions:
         return matches[0] if matches else None
 
     def pending_for_goal(self, goal_id):
-        matches = self.store.find("execution_sessions", lambda candidate:
-                                  isinstance(candidate.get("context"), dict)
-                                  and candidate["context"].get("goal_id") == goal_id
-                                  and (not isinstance(candidate.get("status"), str)
-                                       or candidate["status"] not in TERMINAL_STATES))
+        matches = self.store.find("execution_sessions", lambda candidate: self._pending_goal(candidate) == goal_id)
         return matches[0] if matches else None
+
+    @staticmethod
+    def _pending_goal(candidate):
+        context, state = candidate.get("context"), candidate.get("status")
+        if isinstance(context, dict) and (not isinstance(state, str) or state not in TERMINAL_STATES):
+            goal_id = context.get("goal_id")
+            if isinstance(goal_id, str) and goal_id:
+                return goal_id
+        return None
+
+    def pending_goal_ids(self):
+        return {self._pending_goal(session) for session in self.store.find("execution_sessions", self._pending_goal)}
 
     @staticmethod
     def compatible(session):
@@ -53,6 +61,8 @@ class ExecutionSessions:
                 "profile", "owner_priority", "task", "acceptance", "pool", "goal_id", "workspace", "project_dir")):
             return False
         if context["pool"] not in ("owner_tasks", "self_initiated"):
+            return False
+        if "autonomous" in session and type(session["autonomous"]) is not bool:
             return False
         instructions, active = context.get("instructions"), context.get("active_instructions")
         if not isinstance(instructions, dict) or not isinstance(active, list):
