@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
 """M6: Web 控制台——JSON API（token 鉴权）+ 页面服务。"""
 import json
+import re
+import shutil
+import subprocess
 import threading
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -40,9 +44,10 @@ def server(tmp_path):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield srv
     srv.shutdown()
+    srv.server_close()
 
 
-def call(srv, method, path, body=None, token=None):
+def call(srv, method, path, body=None, token=None, agent_id=None):
     url = f"http://127.0.0.1:{srv.port}{path}"
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -50,6 +55,8 @@ def call(srv, method, path, body=None, token=None):
         req.add_header("Content-Type", "application/json")
     if token:
         req.add_header("X-Proto-Token", token)
+    if agent_id:
+        req.add_header("X-Proto-Agent", agent_id)
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, json.loads(resp.read().decode())
@@ -91,6 +98,122 @@ class TestStateAndChat:
         call(server, "POST", "/api/chat", {"text": "hi"}, token=server.token)
         status, data = call(server, "GET", "/api/audit?n=5", token=server.token)
         assert status == 200 and data["chain_ok"] and data["events"]
+
+
+class TestActivityChat:
+    def test_status_ignores_running_agent_lock_without_mutating(self, server, monkeypatch):
+        agent = server.agent
+        runs = server.manager.runs
+        entered, release = threading.Event(), threading.Event()
+
+        def hold_tick():
+            entered.set()
+            assert release.wait(15)
+
+        def unexpected_dialogue(*args):
+            pytest.fail("状态问询不应调用聊天或记忆固化")
+
+        monkeypatch.setattr(agent, "maybe_proactive", hold_tick)
+        monkeypatch.setattr(agent, "chat", unexpected_dialogue)
+        monkeypatch.setattr(agent, "remember_turn", unexpected_dialogue)
+        other = server.manager.create("另一个 Agent")["id"]
+        budget = runs.budget.view()
+        history = agent._load_history()
+        active = runs.enqueue(agent.fleet_id, "tick")
+        try:
+            assert entered.wait(4)
+            status, data = call(server, "POST", "/api/chat", {"text": "在干嘛？"}, token=server.token)
+            assert status == 200 and data == {"reply": "我正在进行后台自主检查。", "read_only": True}
+            monkeypatch.setattr(agent, "_current_op", {"goal": "核对项目进展"}, raising=False)
+            status, data = call(server, "POST", "/api/chat", {"text": "你现在在做什么呢?"}, token=server.token)
+            assert status == 200 and "核对项目进展" in data["reply"]
+            status, data = call(server, "POST", "/api/chat", {"text": "在干嘛"},
+                                token=server.token, agent_id=other)
+            assert status == 200 and "没有正在运行" in data["reply"]
+            status, data = call(server, "POST", "/api/chat", {"text": "在干嘛？顺便写个报告"}, token=server.token)
+            assert status == 409 and data["error"] == "agent_busy"
+            assert agent._load_history() == history
+            assert runs.budget.view() == budget
+            assert [row["id"] for row in runs.list(agent.fleet_id)] == [active["id"]]
+        finally:
+            release.set()
+
+    def test_status_works_offline_and_requires_authentication(self, server, monkeypatch):
+        monkeypatch.setattr(server.agent, "llm", None)
+        status, _ = call(server, "POST", "/api/chat", {"text": "在干嘛"})
+        assert status == 401
+        status, data = call(server, "POST", "/api/chat", {"text": " 在干嘛？ "}, token=server.token)
+        assert status == 200 and data["read_only"] and "没有正在运行" in data["reply"]
+        assert server.manager.runs.list() == []
+        assert not server.agent._load_history()
+        status, data = call(server, "POST", "/api/chat", {"text": "在干嘛"},
+                            token=server.token, agent_id="missing")
+        assert status == 404 and data == {"error": "no_such_agent"}
+
+    @pytest.mark.parametrize("body", [{}, {"text": " "}, {"text": 1}, {"text": ["在干嘛"]}])
+    def test_rejects_invalid_chat_text(self, server, body):
+        status, data = call(server, "POST", "/api/chat", body, token=server.token)
+        assert status == 400 and data == {"error": "invalid_chat_text"}
+
+
+def test_chat_script_shows_errors_and_does_not_repeat_send():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is not installed")
+    html = (Path(__file__).resolve().parents[1] / "proto/web/index.html").read_text(encoding="utf-8")
+    script = re.search(r"async function sendChat\(\) \{.*?(?=async function refreshInboxOnce)", html, re.S).group()
+    harness = r'''
+const assert = require("assert");
+const input = {value: "你好"};
+const button = {disabled: false, textContent: "发送"};
+const document = {getElementById: () => input, querySelector: () => button};
+const messages = [];
+const calls = [];
+let inboxReads = 0;
+let respond;
+function addMsg(text, role) { messages.push({text, role}); }
+function refreshInboxOnce() { inboxReads++; }
+async function api(method, path, body) {
+  calls.push({method, path, body});
+  return respond();
+}
+'''
+    assertions = r'''
+(async () => {
+  let finish;
+  respond = () => new Promise(resolve => { finish = resolve; });
+  const pending = sendChat();
+  assert.equal(button.disabled, true);
+  input.value = "别重发";
+  await sendChat();
+  assert.equal(calls.length, 1);
+  assert.equal(input.value, "别重发");
+  finish({reply: "普通回复"});
+  await pending;
+  assert.equal(inboxReads, 1);
+
+  respond = () => { throw new Error("agent_busy：占锁"); };
+  await sendChat();
+  assert.equal(messages.at(-1).role, "system");
+  assert.match(messages.at(-1).text, /没有执行/);
+  assert.equal(button.disabled, false);
+
+  input.value = "在干嘛";
+  respond = () => ({reply: "工作中", read_only: true});
+  await sendChat();
+  assert.deepEqual(messages.at(-1), {text: "工作中", role: "agent"});
+  assert.equal(inboxReads, 1);
+
+  input.value = "网络错误";
+  respond = () => { throw new Error("private provider error"); };
+  await sendChat();
+  assert.match(messages.at(-1).text, /未收到聊天回复/);
+  assert(!JSON.stringify(messages).includes("private provider error"));
+  assert.equal(button.textContent, "发送");
+  assert.equal(calls.length, 4);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+'''
+    subprocess.run([node], input=harness + script + assertions, text=True, check=True, timeout=10)
 
 
 class TestProposalsAndControls:

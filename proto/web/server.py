@@ -4,7 +4,7 @@
 - 仅绑定 127.0.0.1；一次性令牌置 URL 片段，API 强制 X-Proto-Token（防跨站）；
 - 锁分离：只读接口（state/audit/…）无锁直读，变更操作走 mut_lock——
   长对话不再卡住界面轮询；
-- chat 先回包后固化：主人零等待，记忆/抽取在响应发出后落盘。
+- chat 先回包后固化：记忆/抽取在响应发出后落盘。
 """
 from __future__ import annotations
 
@@ -62,6 +62,10 @@ _PROPOSAL_RE = re.compile(r"^/api/proposals/([0-9a-f]+)/(accept|deny)$")
 _RUN_RE = re.compile(r"^/api/runs/([0-9a-f]{32})(?:/(cancel|resume|reconcile))?$")
 _PROJECT_RE = re.compile(r"^/api/projects/([0-9a-f]{32})(/work)?$")
 _WORK_RE = re.compile(r"^/api/projects/([0-9a-f]{32})/work/([0-9a-f]{32})/(retry|drop|artifacts/([1-9][0-9]{0,8}))$")
+
+_ACTIVITY_QUESTION = re.compile(
+    r"(?:你)?(?:现在|目前)?在(?:干嘛|干吗|干什么|干啥|做什么|做啥|忙什么)[呢啊呀]?[?？]*"
+)
 
 READ_ONLY_GETS = {
     "/api/state", "/api/audit", "/api/proposals", "/api/rules",
@@ -172,6 +176,16 @@ class _Handler(BaseHTTPRequestHandler):
                     or any(pattern.fullmatch(path) for pattern in (_ACT_RE, _RESUME_RE, _PROPOSAL_RE, _PLAN_APPROVE_RE))))):
             return self._run_routes(method, path, query, agent_id, server.manager.runs)
         agent = server.manager.get(agent_id)
+        chat_text = None
+        if method == "POST" and path == "/api/chat":
+            if agent is None:
+                raise _HTTPError(404, "no_such_agent")
+            chat_text = self._body().get("text")
+            if not isinstance(chat_text, str) or not chat_text.strip():
+                raise _HTTPError(400, "invalid_chat_text")
+            if _ACTIVITY_QUESTION.fullmatch(chat_text.strip()):
+                reply = _activity_reply(agent, server.manager.runs)
+                return self._json(200, {"reply": reply, "read_only": True})
         if method == "POST" and path == "/api/judge":
             return self._safely(lambda: self._routes(method, path, query,
                                                     agent, server))
@@ -190,9 +204,22 @@ class _Handler(BaseHTTPRequestHandler):
                                     "hint": "该 agent 自学习或长任务进行中，"
                                             "稍后重试（不影响其他 agent）"})
         try:
+            if chat_text is not None:
+                return self._chat(chat_text, agent, server)
             return self._routes(method, path, query, agent, server)
         finally:
             lock.release()
+
+    def _chat(self, text, agent, server):
+        reply = agent.chat(text)
+        self._json(200, {"reply": reply})
+        agent.remember_turn(text, reply)
+        if not agent.autonomy_blocker(suggestions=True):
+            try:
+                server.manager.runs.enqueue(agent.fleet_id, "tick")
+            except CoordinationError as exc:
+                if exc.status != 429:
+                    logging.exception("Cannot enqueue post-chat heartbeat")
 
     def _run_routes(self, method, path, query, agent_id, runs):
         if path == "/api/fleet-budget":
@@ -418,19 +445,6 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/state" and method == "GET":
             return self._json(200, _state_payload(agent, server))
 
-        if path == "/api/chat" and method == "POST":
-            body = self._body()
-            reply = agent.chat(body.get("text", ""))
-            self._json(200, {"reply": reply})   # 先回包，主人零等待
-            agent.remember_turn(body.get("text", ""), reply)
-            if not agent.autonomy_blocker(suggestions=True):
-                try:
-                    server.manager.runs.enqueue(agent.fleet_id, "tick")
-                except CoordinationError as exc:
-                    if exc.status != 429:
-                        logging.exception("Cannot enqueue post-chat heartbeat")
-            return None
-
         if path == "/api/proposals" and method == "GET":
             return self._json(200, {"proposals": agent.pending_proposals()})
 
@@ -651,6 +665,21 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(200, {"promoted": ok})
 
         return self._json(404, {"error": "not_found"})
+
+
+def _activity_reply(agent: ProtoAgent, runs) -> str:
+    current = getattr(agent, "_current_op", None)
+    if current and current.get("goal"):
+        return f"我正在处理：{current['goal'][:80]}。"
+    kind = runs.running_kind(agent.fleet_id)
+    if kind is None:
+        return "我目前没有正在运行的后台任务。可以在「它现在在干嘛」查看最近活动。"
+    label = {
+        "tick": "进行后台自主检查", "act": "执行自主行动", "task": "处理你指派的任务",
+        "plan": "生成只读计划", "planned_task": "执行你批准的计划",
+        "work": "处理项目工作", "review": "评审项目产物",
+    }.get(kind, "处理后台任务")
+    return f"我正在{label}。"
 
 
 def _activity_view(agent: ProtoAgent) -> dict:

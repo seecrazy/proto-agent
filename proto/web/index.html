@@ -833,17 +833,24 @@ function addMsg(text, who) {
 
 async function sendChat() {
   const input = document.getElementById("chat-input");
-  const text = input.value.trim(); if (!text) return;
+  const btn = document.querySelector("#composer button.primary");
+  const text = input.value.trim(); if (!text || btn.disabled) return;
   input.value = "";
   addMsg(text, "owner");
-  const btn = document.querySelector("#composer button.primary");
   btn.disabled = true; btn.textContent = "思考中…";
   try {
     const data = await api("POST", "/api/chat", { text });
     addMsg(data.reply, "agent");
-    refreshInboxOnce();
-  } catch (e) { /* 已提示 */ }
-  btn.disabled = false; btn.textContent = "发送";
+    if (!data.read_only) refreshInboxOnce();
+  } catch (error) {
+    if (error.message === "agent_busy" || error.message.startsWith("agent_busy：")) {
+      addMsg("当前 Agent 正忙，这条消息没有执行。可以先问「在干嘛」查看后台活动。", "system");
+    } else if (error.message !== "unauthorized") {
+      addMsg("未收到聊天回复。请检查控制台连接，或稍后再试。", "system");
+    }
+  } finally {
+    btn.disabled = false; btn.textContent = "发送";
+  }
 }
 async function refreshInboxOnce() {
   try {

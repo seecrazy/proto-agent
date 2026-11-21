@@ -138,6 +138,13 @@ class RunCoordinator:
             raise CoordinationError("no_such_run", 404)
         return _record(row)
 
+    def running_kind(self, agent_id):
+        with self.database.connect() as connection:
+            row = connection.execute("""
+                SELECT kind FROM runs WHERE agent_id = ? AND status = 'running'
+            """, (agent_id,)).fetchone()
+        return row["kind"] if row else None
+
     def list(self, agent_id=None, *, limit=60, before=None, active=False, reviewable=False):
         with self.database.connect() as connection:
             rows = connection.execute("""

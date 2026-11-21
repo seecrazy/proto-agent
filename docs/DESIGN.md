@@ -641,6 +641,8 @@ API 默认绑定 `127.0.0.1:8420`，使用强令牌与恒定时间比较；限�
 
 活动、待批和预算及时反馈；时/天/周/月/年汇总接入 8 秒轮询。所有 refresh 函数需有真实调用点；失败展示错误，不让空 catch 永远显示加载中。执行 dict 结果要序列化成人可读文本，不出现 `[object Object]`。主动未行动原因要区分无模型、无目标、预算、暂停与失败保护。
 
+M69 的 `sendChat` 复用 `#composer` 和 `#messages`：普通聊天等待 Agent 写锁时仍显示发送状态，遇 `agent_busy` 以系统消息提示未执行。活动短问句沿用对话显示，只查询 `#activity-card` 同类的运行态，不增卡片、样式或持久化键。见[活动问询契约](#console-activity-chat)。
+
 M64 模型管理由顶栏 `#model` 打开独立 `#model-panel` 对话框，不增加侧栏卡片，不修改原有 localStorage 键。顶栏模型按钮单行截断，完整配置保留在提示；对话框内部滚动、窄屏表单单列，顶部 `model-close` 和底部关闭按钮/Escape 均可退出。面板包含主/快模型选择、新增/编辑接入（名称、协议、URL、模型名、密钥）、刷新目录与从磁盘重新加载；保存接入和应用选择分开，避免新增即意外切换。密钥输入为 password，编辑默认留空表示保留，显式清除另设选项；不回填、缓存或回显密钥。`model-main/model-fast/model-profile/model-name/model-style/model-base/model-id/model-key/model-clear-key/model-message` 是表单与反馈邻接点。外部文字转义，失败可见；切换后刷新顶栏，表单提交期间禁用操作，关闭时清空密钥。
 
 M65 顶栏「＋Agent」用 `#agent-create-panel` 的 `agent-create-{name,template,persona,priority,preview,save,message}` 和 `agent-preview-btn` 完成预览/保存；编辑字段后必须重做预览。`#autonomy-btn` 管当前成员，舰队卡片动作管该卡成员；共用 `#autonomy-panel` 及 `autonomy-{heading,current,mode,scope,save,disable,message}`，始终绑定目标 ID 和修订号。`profile-state` 与 `autonomy-state` 贴在人设/优先级卡片，展示待应用、待启用及只读建议；舰队暂停与页头静音仍各管其职责。对话框内部滚动、窄屏单列、失败可见，不增加卡片或 localStorage 键。API 使用 `POST /api/agents/preview`、`POST /api/agents` 创建草稿，`GET/POST /api/agents/{id}/autonomy` 查看范围或显式启用/切换（并发旧版本返回 409）。
@@ -716,6 +718,19 @@ CI 配置覆盖 Ubuntu Python 3.9–3.12，并有 mongo/graph 可选依赖作业
 - [x] H10：完整回归、Python/页面 JS 静态检查、设计/README/进度同步，验证后本地提交，不推送。
 
 实现入口为 `proto/llm/catalog.py`、`proto/runtime/agent.py`、`proto/runtime/manager.py` 与 Web/REPL/舰队 CLI；验证证据见第 16.3 节。新代码启用后，后续新增与切换不需重启；本轮未重启或更新正在运行的真实实例。
+
+<a id="console-activity-chat"></a>
+### 14.5 M69：控制台活动问询与聊天反馈
+
+**目标与非目标。** 后台模型慢或不可用时，主人仍能用「在干嘛」查看当前 Agent 的实际活动；普通聊天不能执行时明确告知。保持聊天的单写者约束，不中断后台任务，不增加自动重试、聊天队列或模型探测；模型接入和 CLI 不变。取舍见 [ADR 0008](adr/0008-read-only-console-activity.md)。
+
+**使用流程与关键交互。** Web 主人在聊天框发「在干嘛？」「你现在在做什么？」等独立短问句。`POST /api/chat` 完整匹配有限句式后直接返回 `reply` 与 `read_only: true`（页面不因此拉取收件箱）；带任务或反馈的长句仍走原聊天路径。普通聊天等锁超时仍返回 `409 agent_busy`，页面以系统消息解释本条未执行；其它发送失败也显示反馈，失效令牌沿用现有提示。页面不自动重发，同一页面上一条请求未返回时不重复发送。
+
+**数据与状态。** 只读复用当前 Agent 的实时执行标记、调度表中至多一条 `running` Run；有执行目标时显示其有界摘要，否则以 Run 类型说明当前工作。无活动时明确没有观测到运行中的后台任务，不将排队或待审批说成执行中。无需新表，不读取工作区文件或对话内容，不改历史、记忆、任务、额度及模型熔断状态。
+
+**边界与错误。** 活动问询与聊天共享现有控制台令牌和 Agent 选择。非法/空文本返回 400，不存在的 Agent 返回 404。只读分支不争用 Agent 写锁、不调用模型、不触发事后记忆或心跳；常规聊天继续串行，未知发送结果不自动重试。页面用文本显示回复和固定错误提示，不渲染供应商原始响应或密钥。
+
+**验收清单。** 忙碌和离线时均可查询；有活动、仅有 Run、空闲三种状态可区分；只读问询不写历史且无模型调用、对其他 Agent 隔离；未认证和坏请求受拒；普通聊天仍受锁保护、安全显示错误且恢复发送。
 
 <a id="roadmap"></a>
 ## 15. 模型交互演进与已知边界
@@ -851,6 +866,7 @@ CI 配置覆盖 Ubuntu Python 3.9–3.12，并有 mongo/graph 可选依赖作业
 | 自主性与运行时不变量 | `test_m45_momentum.py`、`test_m59_continuous.py`、`test_m61_autonomy.py`、`test_m62_runtime_invariants.py` |
 | 上下文、工具契约与执行会话 | `test_m63_execution_sessions.py`（70 项，含重启/审批/在途核对/HTTP/页面脚本交互） |
 | 模型热接入、切换与持久配置 | `test_m64_live_models.py`（62 项，含双协议/在途请求/舰队/审批续跑/并发/鉴权/页面/终端） |
+| 活动短问询与聊天反馈 | `test_web.py`、`test_m36_hardening.py::TestBusyLock`、`test_m51_activity.py` |
 | 并发、UI 与舰队 | `test_m43_audit_concurrency.py`、`test_m49_control_routes.py`、`test_m50_per_agent_locks.py`、`test_ui_invariants.py` |
 | 进化与可选适配 | `test_stage7.py`、`test_stage8.py`、`test_integrations.py` |
 
@@ -872,6 +888,7 @@ M64 最终完整验证：同日同环境，**868 passed, 2 skipped，76.97s**；
 | [0005：模型目录与热切换](adr/0005-live-model-catalog.md) | 持久目录、按请求固定模型绑定、后续请求切换 | 第 13、14.4 节 |
 | [0006：Agent 生命周期与任务协作](adr/0006-agent-lifecycle-and-work-coordination.md) | 人设与授权分离；目标/任务/尝试分工；调度前约束，版本化证据验收 | 第 12 节，M65–M67 已实现 |
 | [0007：只读计划与交付证据](adr/0007-reviewed-task-plans.md) | 只读计划与工具授权分离；同库幂等批准；固定证据与语义双门 | 第 7.3、12.9、13 节 |
+| [0008：只读活动问询](adr/0008-read-only-console-activity.md) | 本地短句查状态；普通聊天保留单写者并展示占锁错误 | 第 13.3、14.5 节 |
 
 ADR 保留“为什么这样选”和当时替代方案；本文件给出累计后的完整方案。新增架构决策继续写 ADR 并同步相关正文，不另建竞争的总设计。
 
