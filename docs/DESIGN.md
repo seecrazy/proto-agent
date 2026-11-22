@@ -2,7 +2,7 @@
 
 > **当前设计的唯一入口与正文。** 阅读本文件即可理解产品、架构、内在机制、自主工作、模型交互、工具授权、数据、进化治理、控制台和运行部署，不需要按日期拼接旧设计。
 >
-> 更新日期：2026-11-22。版本 `0.33.0` 未重新发布；本地包含 [M76 模型组](#model-groups)、[自主项目目录优化](#autonomous-project-dirs)、[自主想法质量循环](#idea-forge)及[自我认知与生命周期](#grounded-self-knowledge)，验证范围见[项目进度](PROGRESS.md)。
+> 更新日期：2026-11-22。版本 `0.33.0` 未重新发布；本地包含 [M76 模型组](#model-groups)、[自主项目目录优化](#autonomous-project-dirs)、[自主想法质量循环](#idea-forge)、[自我认知与生命周期](#grounded-self-knowledge)和[工程技能与本机回执](#engineering-skills-and-evidence)，验证范围见[项目进度](PROGRESS.md)。
 
 ## 阅读与维护约定
 
@@ -411,6 +411,21 @@ Scratch 保存静默草稿；晋升为可见写入时需经过审批，并绑定
 网页工具仅 GET、无登录态，使用域名白名单和响应大小界。重定向的每一跳都重新检查协议和目标，不能从白名单站点跳到不允许的资源；响应头和实际读取都要受大小限制。输出只是低信任材料，不能要求读取本机秘密、改规则或对外发送数据。
 
 网络失败、超时、不允许的跳转、超大响应返回可见错误；不能静默把错误页当成功知识，也不能通过自动降权来重试受限访问。
+
+<a id="engineering-skills-and-evidence"></a>
+### 8.5 工程技能、环境探测与本机回执
+
+**目标与非目标。** 让任务执行者自己完成「读项目规则和验收 → 按需要设计或复现 → 改最小切片 → 运行真实检查 → 修复并汇报可核对证据」，不把代码贴在聊天里当作交付。只知道 `xcodebuild` 或 `swiftc` 在 PATH 不是成功证据；没有探测也不是失败证据。不替 Agent 拿它的真实项目来人工验收；不自动安装依赖、切换 Xcode、打开终端、启动持久服务器、签名上架或拍浏览器/真机截图。取舍见 [ADR 0018](adr/0018-engineering-skills-and-local-evidence.md)。
+
+**对标与现状。** [ZCode 的 ADE 工具](https://zcode.z.ai/en/docs/ADE-tools)把同一工位的终端、日志、浏览器和后台命令放在同一个任务里；[ZCode Skills](https://zcode.z.ai/en/docs/skill)把开发和测试做成可复用流程。[Codex 的技能机制](https://learn.chatgpt.com/docs/build-skills)先露出名称/描述、按需加载正文；[Claude Code 的工程实践](https://code.claude.com/docs/en/best-practices)区分规格、实际检查与完成时的硬挡板。PROTO 已有范围内 `AGENTS.md`、分页读、精确改、沙盒命令、硬验收/接力；原来缺少从工作流发现适合的命令、及时做首个验证，以及以程序证据驳回自报。保留 PROTO 的独立目标、人设、持续工作、进度留痕和原会话接续作为优势，不以增加无限制命令换取表面能力。
+
+**流程与接口。** 工具目录公布内置技能，`read_skill({name})` 按需返回 Markdown 正文与 SHA-256：`design-development-verification`、`swift-ios-build`、`local-verification`。只从产品包加载，文件大小受限；历史保存技能/命令回执，不把技能正文复制进冻结规则。工程任务开局用只读快照提供最新可见路径/入口；`inspect_build({cwd})` 查单一、已授权目录，未填时使用任务工位（无工位则是工作区根）。有限枚举 Xcode 工程/工作区、Swift Package、Python 测试入口和 npm/pnpm/yarn 脚本线索；识别超出白名单的常见工程，不虚报已验证。给当前目录可直接复制到 `run_command` 的诊断或首个检查，查 SDK、scheme、依赖和测试执行依然要跑命令。已登录 Web/REPL 的独立能力问询由快通道报告后端与 PATH，不用模型、不派任务、不占执行锁；查询本身不启动编译，混合任务不被快通道截走。
+
+**状态与回执。** 探测区分「可尝试、审批、无可用执行后端、命令未找到」，以及工位不存在、未识别入口、扫描不完整。成功、退出失败、超时及启动受限分别记录；命令日志只记后端、退出码及原因码，不暴露参数和输出。诊断命令退出 0 不算编译/测试。新模型执行会话对明确、肯定要求的本地编译/构建或测试，冻结对应检查项，提交时检查同工位/子目录的真实沙盒回执，拒绝版本、帮助、干跑、失败、以及本次会话相应命令后执行者再改文件的旧结果。普通回执只证明本次操作，不声称已覆盖所有功能、子项目或外部改动。iPhone 阶段仍要求产物、源码指纹及必要的真实 XCTest；用 `-workspace` 时只为已确认在同工位内引用 Xcode 工程的工作区保存回执。缺证据给当前工作片至多一次补正，仍缺则标未验收。既有会话继续按原验收规则恢复，不新增追溯拦截，也不重放未知副作用。
+
+**只开放实际需要的能力。** 隔离样例发现 pytest 写默认日志的空设备时，原 `sandbox-exec` 将 `/dev/null` 当成要拒写的宿主文件，版本命令正常而测试初始化失败。仅给系统 `/dev/null` 精确的 `file-write-data` 规则，不允许改设备元数据，不放宽其他宿主路径、受保护数据、联网或审批。
+
+**验收。** 验证沙盒有/无、已装但尚未试、只有版本或返回失败、项目/SDK/测试区别、工作区和符号链接、旧回执复用边界。用替身模型和临时工程走完整执行循环，再用本机隔离的最小 Xcode 工程实际编译；不改既有 Agent 数据、不调真实模型。浏览器交互、受监控的长命令和更广工具链见 [D18](DEBT.md#engineering-parity-gap)。
 
 <a id="quality"></a>
 ## 9. 想法质量与完成验收
@@ -1007,6 +1022,7 @@ CI 配置覆盖 Ubuntu Python 3.9–3.12，并有 mongo/graph 可选依赖作业
 - [x] 新执行会话审批续接原循环；重启保留上下文/步数/预算来源，已知结果接纳、未知在途不重放。
 - [x] 只读计划与执行分离；摘要批准幂等，规则或输出基线漂移拒绝执行；可选文件证据先于语义判断（M68 离线回归、浏览器验收见[进度](PROGRESS.md#m68)）。
 - [x] 工作观察按字节限额，保留旧文件/检查回执；真实进程退出后恢复同一已知断点，不重跑已完成工具，未知动作保持待核对。
+- [x] 工程能力问询不执行项目；新会话的显式本机检查不能仅凭模型自述完成。Python、npm 与 iOS 的最小独立工位用实际命令验收；浏览器交互和其他工具链不包含在内。
 
 ### 16.2 未完成项不得勾选
 
@@ -1014,7 +1030,7 @@ CI 配置覆盖 Ubuntu Python 3.9–3.12，并有 mongo/graph 可选依赖作业
 - [ ] 原生工具调用消息往返、请求级 usage、token-aware compaction 与流式协议。
 - [ ] 未知副作用自动核对、完整会话管理界面和在途进程取消；旧无会话任务不自动补造历史。
 - [ ] 跨进程事务、无 TOCTOU 文件操作、完整主机读取隔离和 Linux runsc 实证。
-- [ ] 确定性本机验收、可信非空进化评测、报告绑定和安全运行时激活。
+- [ ] 通用功能/可视化验收、更多本机工具链和长命令；可信非空进化评测、报告绑定和安全运行时激活。
 - [ ] 授权文本与包元数据经权利人确认一致。
 
 ### 16.3 代码与测试映射
@@ -1024,6 +1040,7 @@ CI 配置覆盖 Ubuntu Python 3.9–3.12，并有 mongo/graph 可选依赖作业
 | 认证、边界、审计、调制 | `test_anchor.py`、`test_kernel.py`、`test_audit.py`、`test_modulation.py`、`test_round4_safety.py` |
 | 内在状态、记忆、目标、身份 | `test_agent_state.py`、`test_metacog.py`、`test_m13_memory.py`、`test_m20_l3.py`、`test_m39_identity.py` |
 | 循环、工具、验收、交付 | `test_m16_loop.py`、`test_m16_tools.py`、`test_m23_quality.py`、`test_m41_pipeline.py`、`test_m48_capabilities.py` |
+| 工程技能、工具链探测与本机回执 | `test_engineering_skills.py`、`test_m72_evidence_delivery.py`（含真实 Xcode opt-in 样例） |
 | 审批、恢复、预算、工作区 | `test_router.py`、`test_m36_hardening.py`、`test_m38_timeout.py`、`test_m44_budget_control.py`、`test_m52_budget_config.py` |
 | 自主性与运行时不变量 | `test_m45_momentum.py`、`test_m59_continuous.py`、`test_m61_autonomy.py`、`test_m62_runtime_invariants.py` |
 | 上下文、工具契约与执行会话 | `test_m63_execution_sessions.py`（70 项，含重启/审批/在途核对/HTTP/页面脚本交互） |
@@ -1059,6 +1076,7 @@ M64 最终完整验证：同日同环境，**868 passed, 2 skipped，76.97s**；
 | [0012：公司组织与定向通信](adr/0012-company-organization-and-messaging.md) | 职位图不等于执行授权；按实时组织路由，消息历史绑定实际收件人 | 第 13.6 节 |
 | [0013：模型组与有界回退](adr/0013-model-group-failover.md) | 角色选单模型或有序组；按请求绑定、逐次结算、同源不绕限流 | 第 13.3、14.4 节 |
 | [0017：运行时自我事实](adr/0017-runtime-self-knowledge.md) | 区分出生、存在下限与本次加载；离线可读；自我事实不写进人设和记忆 | 第 11.1、13.7 节 |
+| [0018：工程技能与本机回执](adr/0018-engineering-skills-and-local-evidence.md) | 技能按需加载，探测不执行项目；完成依据来自工具回执 | 第 8.5 节 |
 
 ADR 保留“为什么这样选”和当时替代方案；本文件给出累计后的完整方案。新增架构决策继续写 ADR 并同步相关正文，不另建竞争的总设计。
 

@@ -2,6 +2,14 @@
 
 > 当前完整方案统一阅读 [DESIGN.md](DESIGN.md)。本文件只记录里程碑、实现状态与验证证据，不作为第二份设计。
 
+## 工程技能与本机验证（2026-11-22，本地交付）
+
+- **已定位并实现**：旧对话确认未探测 Swift/Xcode 就判断不能编译；本机发现 Xcode 不能代替项目验证。补上按需加载的三个内置工程技能、`inspect_build`、离线只读问询、真实命令回执和一次同片补正。Xcode 工位识别兼容局部 workspace；隔离样例另发现并修复 pytest 默认日志对 `/dev/null` 的拒写。[工程设计](DESIGN.md#engineering-skills-and-evidence)、[ADR 0018](adr/0018-engineering-skills-and-local-evidence.md)。
+- **定向验证**：新增 44 项；相关套件 **82 passed**（启用真实 Xcode，10.98 秒）。替身模型驱动 Agent 自己落盘设计和 Python 实现、跑 pytest；另实跑 npm 构建和测试、`.xcodeproj` / `.xcworkspace` 的 iOS Simulator `.app` 构建。覆盖只有版本、失败、过期回执、重启不重跑、授权和只读界限；wheel 中三份技能可由 Python 3.9.2 直接加载，页面 JS 语法检查通过。
+- **全量验证**：本机系统 Python 3.9.6（SQLite 3.54），隔离外网、保留回环并启用 Xcode，**1174 passed, 2 skipped**（135.62 秒；缺少可选 `pymongo`、`langgraph`）。
+- **原有回归波动**：Python 3.9.2 所带 SQLite 3.34 偶尔把 JSON 重试时间解析到约 0.24 微秒之后，让定在精确截止时刻的限流测试拿不到候选。用失败时钟值在未修改的基线上复现；本次不改模型调度。
+- **边界**：未操作原 Agent 工作区、调用已配置真实模型、启动新的模拟器或重启现有控制台。浏览器交互、持续后台命令和更多工具链列入 [D18](DEBT.md#engineering-parity-gap)。
+
 ## 自我认知与生命周期（2026-11-22，本地交付）
 
 - **已定位并实现**：旧对话只有人设和记忆，没有身份与时间真值；注册表的创建和收编时间不能混用。独立保存每位成员的创建证据，分开计算年龄和本次加载时长；只读快通道覆盖时间、名称、ID、人设、任职及自治状态。普通对话和每步执行收到实时数据，「名称 / ID」可查时长快照。[设计与验收](DESIGN.md#grounded-self-knowledge)、[ADR 0017](adr/0017-runtime-self-knowledge.md)。

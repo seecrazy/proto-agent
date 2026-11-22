@@ -26,5 +26,8 @@ proto-app = "proto.appshell.__main__:main"
 [tool.setuptools.packages.find]
 include = ["proto*"]
 
+[tool.setuptools.package-data]
+"proto.skills" = ["*/SKILL.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

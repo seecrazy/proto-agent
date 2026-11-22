@@ -37,6 +37,8 @@ _BUILTINS = {
         "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 32},
         "cwd": {"type": "string", "default": ""},
         "timeout_s": {"type": "integer", "minimum": 1, "maximum": 300, "default": 120}}, ["argv"]),
+    "inspect_build": object_schema({"cwd": {"type": "string", "maxLength": 512}}),
+    "read_skill": object_schema({"name": {"type": "string", "minLength": 1, "maxLength": 64}}, ["name"]),
     "web_fetch": object_schema({"url": {"type": "string", "minLength": 1}}, ["url"]),
     "github_search": object_schema({
         "query": {"type": "string", "minLength": 1},

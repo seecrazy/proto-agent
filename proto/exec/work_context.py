@@ -23,7 +23,7 @@ def clipped(text, limit):
 
 
 def target_args(arguments):
-    names = ("path", "paths", "cwd", "offset", "limit", "pattern", "query")
+    names = ("path", "paths", "cwd", "offset", "limit", "pattern", "query", "name")
     selected = {name: arguments[name] for name in names if name in arguments}
     argv = arguments.get("argv")
     if isinstance(argv, list) and argv:
@@ -48,8 +48,15 @@ def tool_receipt(tool, arguments, result):
     path = written_file(tool, arguments, result)
     if path:
         return f"已写入 {path}（不等于通过验收）"
+    if tool == "read_skill" and isinstance(result, dict) and result.get("sha256"):
+        return f"已加载技能 {result['name']}（sha256={result['sha256']}）"
     if tool in ("run_python", "run_command") and isinstance(result, dict) and type(result.get("exit")) is int:
-        return f"{tool} {target_args(arguments)}：{'超时，' if result.get('timeout') else ''}退出码 {result['exit']}"
+        detail = target_args(arguments)
+        reason = result.get("reason") or ("timeout" if result.get("timeout") else "")
+        if tool == "run_command":
+            detail = clipped(json.dumps({"argv": arguments.get("argv"), "cwd": arguments.get("cwd", ".")},
+                                        ensure_ascii=False), 220)
+        return f"{tool} {detail}：退出码 {result['exit']}{'，' + reason if reason else ''}"
     return ""
 
 

@@ -100,6 +100,9 @@ class ExecutionSessions:
                 return False
         if any(not isinstance(session.get(key), str) for key in ("feedback", "journal_path")):
             return False
+        checks = session.get("local_checks", [])
+        if not isinstance(checks, list) or len(checks) > 2 or any(check not in ("build", "test") for check in checks):
+            return False
         if "prompt_blocks" in session and (not isinstance(session["prompt_blocks"], list)
                 or len(session["prompt_blocks"]) != 4
                 or any(not isinstance(block, str) for block in session["prompt_blocks"])):

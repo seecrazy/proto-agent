@@ -7,8 +7,10 @@ import plistlib
 import re
 import stat
 import unicodedata
+import xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
 
+from proto.exec.engineering import XCODE_INPUTS, command_check, read_manifest, xcode_manifest
 from proto.runtime.activity import artifact_path
 
 
@@ -163,7 +165,8 @@ def main_project(agent, node):
             original = directory
         if not folder.is_dir():
             continue
-        rank = (any(folder.glob("*.xcodeproj/project.pbxproj")),
+        rank = (any(folder.glob("*.xcodeproj/project.pbxproj"))
+                or any(folder.glob("*.xcworkspace/contents.xcworkspacedata")),
                 ios_stage(root, related) == "build", (folder / "Package.swift").is_file(),
                 related is root, -related.created_at)
         candidates.append((rank, directory))
@@ -259,24 +262,56 @@ def _app_binary(bundle):
     return None
 
 
+def _local_xcode_workspace(folder, manifest):
+    try:
+        data = read_manifest(manifest).decode("utf-8")
+        if "<!DOCTYPE" in data.upper():
+            return False
+        root = ET.fromstring(data)
+        if root.tag != "Workspace":
+            return False
+        todo = [(folder, item) for item in root]
+        found = count = 0
+        while todo:
+            parent, item = todo.pop()
+            count += 1
+            kind, _, location = item.attrib.get("location", "").partition(":")
+            relative = Path(location)
+            if (count > 128 or kind not in ("group", "container") or relative.is_absolute()
+                    or any(part == ".." or part.startswith(".") or part in _GENERATED for part in relative.parts)):
+                return False
+            target = (parent if kind == "group" else folder) / relative
+            if target.resolve() != target:
+                return False
+            if item.tag == "Group":
+                todo.extend((target, child) for child in item)
+            elif item.tag == "FileRef" and xcode_manifest(target.parent, "-project", target.name):
+                found += 1
+            else:
+                return False
+        return found > 0
+    except (ET.ParseError, OSError, ValueError, RuntimeError):
+        return False
+
+
 def ios_build_start(workspace, project_dir, arguments):
     argv = arguments.get("argv", [])
-    if (not argv or argv[0] != "xcodebuild" or arguments.get("cwd") != project_dir
-            or not any(action in argv for action in ("build", "build-for-testing", "test"))):
+    check = command_check(argv)
+    if not check or not check[1] or arguments.get("cwd") != project_dir:
         return None
     derived = _value(argv, "-derivedDataPath")
-    project = _value(argv, "-project")
-    if (not re.fullmatch(r"\.proto-build(?:-[A-Za-z0-9_-]{1,40})?", derived)
-            or not project.endswith(".xcodeproj") or Path(project).name != project):
+    options = [flag for flag in XCODE_INPUTS if flag in argv]
+    if len(options) != 1 or not re.fullmatch(r"\.proto-build(?:-[A-Za-z0-9_-]{1,40})?", derived):
         return None
     folder = project_path(workspace.root.resolve(), project_dir)
-    if (folder is None or (folder / derived).exists() or (folder / derived).is_symlink()
-            or not (folder / project / "project.pbxproj").is_file()
-            or (folder / project / "project.pbxproj").resolve() != folder / project / "project.pbxproj"):
+    if folder is None or (folder / derived).exists() or (folder / derived).is_symlink():
+        return None
+    flag = options[0]
+    manifest = xcode_manifest(folder, flag, _value(argv, flag))
+    if manifest is None or (flag == "-workspace" and not _local_xcode_workspace(folder, manifest)):
         return None
     digest = snapshot(workspace, project_dir, sources=True)
-    action = "TEST" if "test" in argv else "TEST BUILD" if "build-for-testing" in argv else "BUILD"
-    return {"sources": digest, "derived": derived, "action": action} if digest else None
+    return {"sources": digest, "derived": derived, "action": check[1]} if digest else None
 
 
 def ios_build_result(workspace, project_dir, start, result):

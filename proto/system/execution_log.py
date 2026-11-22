@@ -22,9 +22,9 @@ _MAX_BYTES = 2 * 1024 * 1024
 _BACKUP_COUNT = 3
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,80}")
 _IDENTIFIERS = frozenset({"agent_id", "run_id", "call_id", "profile_id", "role", "pool",
-                          "kind", "status", "tool", "stage", "exception_type"})
+                          "kind", "status", "tool", "stage", "exception_type", "backend"})
 _NUMBERS = frozenset({"attempt", "duration_ms", "http_status", "retry_at", "generation",
-                     "estimated_input_tokens", "tokens", "model_retries", "restart_attempts"})
+                     "estimated_input_tokens", "tokens", "model_retries", "restart_attempts", "exit_code"})
 _FLAGS = frozenset({"foreground", "grouped", "failover_eligible", "resumed"})
 _REASONS = frozenset({
     "model_timeout", "model_unreachable", "model_rate_limited", "model_server_error", "model_unauthorized",
@@ -36,6 +36,8 @@ _REASONS = frozenset({
     "fleet_paused", "muted", "manual_only", "not_enabled", "suggestions_only", "needs_reconciliation",
     "delivery_no_progress", "delivery_not_verified", "delivery_predecessor_pending", "verification",
     "context_budget_exceeded", "project_directory_unavailable", "ios_delivery_evidence_missing",
+    "local_verification_evidence_missing", "execution_disabled", "executable_not_found", "nonzero_exit", "timeout",
+    "launch_failed", "command_not_allowed", "xcrun_tool_not_allowed", "cwd_unavailable", "cwd_outside_workspace",
 })
 
 

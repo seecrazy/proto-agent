@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Dict, Iterable, List
 
 from proto.exec.contracts import builtin_parameters
+from proto.exec.engineering import ISOLATED, inspect_build
+from proto.skills import catalog as skill_catalog, read_skill
 
 MAX_READ = 50000
 MAX_EDIT = 1_000_000
@@ -277,6 +279,7 @@ class CodeTools:
             "(version 1)\n"
             "(allow default)\n"
             "(deny file-write*)\n"
+            '(allow file-write-data (literal "/dev/null"))\n'
             f"{write_rules}\n"
             f"{protected_denials}\n"
             "(deny network*)\n"
@@ -329,53 +332,53 @@ class CodeTools:
     def run_command(self, argv: List[str], cwd: str = "",
                     timeout_s: int = 120) -> Dict:
         """在项目工作区运行白名单验证命令（无 shell）。"""
+        def rejected(reason, detail=None, backend=""):
+            return {"exit": -1, "stdout": "", "stderr": detail or reason,
+                    "timeout": False, "backend": backend, "reason": reason}
+
         if not isinstance(argv, list) or not (1 <= len(argv) <= 32):
-            return {"exit": -1, "stdout": "", "stderr": "invalid_argv",
-                    "timeout": False}
+            return rejected("invalid_argv")
         if any(not isinstance(a, str) or "\x00" in a for a in argv):
-            return {"exit": -1, "stdout": "", "stderr": "invalid_argv",
-                    "timeout": False}
+            return rejected("invalid_argv")
         if sum(len(a) for a in argv) > 8000:
-            return {"exit": -1, "stdout": "", "stderr": "argv_too_long",
-                    "timeout": False}
+            return rejected("argv_too_long")
         name = Path(argv[0]).name
         if name not in self.COMMAND_ALLOWLIST:
-            return {"exit": -1, "stdout": "", "stderr":
-                    f"command_not_allowed:{name}", "timeout": False}
+            return rejected("command_not_allowed", f"command_not_allowed:{name}")
         if name == "xcrun" and (len(argv) < 2
                                 or Path(argv[1]).name not in self.XCRUN_TOOLS):
-            return {"exit": -1, "stdout": "", "stderr": "xcrun_tool_not_allowed",
-                    "timeout": False}
+            return rejected("xcrun_tool_not_allowed")
         try:
             timeout_s = max(1, min(300, int(timeout_s)))
         except (TypeError, ValueError):
-            return {"exit": -1, "stdout": "", "stderr": "invalid_timeout",
-                    "timeout": False}
-        backend = self.execution_backend()
-        if backend == "none":
-            return {"exit": -1, "stdout": "", "stderr":
-                    ("execution_disabled: 无隔离执行后端；设置 "
-                     "PROTO_EXEC_BACKEND=runsc|sandbox-exec"),
-                    "timeout": False}
+            return rejected("invalid_timeout")
+        try:
+            directory = self._abs(cwd)
+            if not directory.is_dir():
+                return rejected("cwd_unavailable")
+        except (OSError, ValueError, RuntimeError):
+            return rejected("cwd_outside_workspace")
+        backend, launcher = self._command_runner()
+        if backend == "none" or (backend in ISOLATED and not launcher):
+            return rejected("execution_disabled", "execution_disabled: 没有可用的命令执行后端", backend)
         executable = shutil.which(argv[0])
         if executable is None:
-            return {"exit": -1, "stdout": "", "stderr":
-                    f"executable_not_found:{argv[0]}", "timeout": False}
+            return rejected("executable_not_found", f"executable_not_found:{argv[0]}", backend)
+        args = {"backend": backend, "command": [name] + argv[1:]}
         with tempfile.TemporaryDirectory(prefix="proto-cmd-") as tmp:
             env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                    "HOME": tmp, "TMPDIR": tmp,
                    "PROTO_PROJECT_ROOT": str(self.root.resolve())}
             inner = [executable] + argv[1:]
             if backend == "runsc":
-                cmd = [shutil.which("runsc") or "runsc", "do"] + inner
+                cmd = [launcher, "do"] + inner
             elif backend == "sandbox-exec":
-                cmd = [shutil.which("sandbox-exec") or "sandbox-exec",
-                       "-p", self._sandbox_exec_profile(tmp)] + inner
+                cmd = [launcher, "-p", self._sandbox_exec_profile(tmp)] + inner
             else:
                 cmd = inner
             try:
                 proc = subprocess.run(
-                    cmd, cwd=self._abs(cwd), timeout=timeout_s,
+                    cmd, cwd=directory, timeout=timeout_s,
                     capture_output=True, env=env, preexec_fn=_limit_resources)
                 return {"exit": proc.returncode,
                         "stdout": self._clip_output(
@@ -383,11 +386,24 @@ class CodeTools:
                         "stderr": self._clip_output(
                             proc.stderr.decode("utf-8", "replace"),
                             head=800, tail=1500),
-                        "timeout": False, "backend": backend,
-                        "command": [name] + argv[1:]}
-            except subprocess.TimeoutExpired:
-                return {"exit": -1, "stdout": "", "stderr": "timeout",
-                        "timeout": True, "backend": backend}
+                        "timeout": False, "reason": "nonzero_exit" if proc.returncode else "", **args}
+            except subprocess.TimeoutExpired as exc:
+                return {"exit": -1, "stdout": self._clip_output((exc.stdout or b"").decode("utf-8", "replace")),
+                        "stderr": self._clip_output((exc.stderr or b"timeout").decode("utf-8", "replace")),
+                        "timeout": True, "reason": "timeout", **args}
+            except (OSError, subprocess.SubprocessError) as exc:
+                return rejected("launch_failed", str(exc)[:300], backend)
+
+    def _command_runner(self):
+        backend = self.execution_backend()
+        return backend, shutil.which(backend) if backend in ISOLATED else None
+
+    def command_environment(self, programs):
+        backend, launcher = self._command_runner()
+        runner = ("owner_approval" if backend == "subprocess" else
+                  "isolated" if launcher else "unavailable")
+        return {"backend": backend, "runner": runner,
+                "programs": {name: bool(shutil.which(name)) for name in programs if name in self.COMMAND_ALLOWLIST}}
 
 
     # ---- 注册到 Router ----
@@ -418,6 +434,10 @@ class CodeTools:
         register("grep", lambda pattern, glob="*": self.grep(pattern, glob),
                           category=ActionCategory.READ_DRAFT,
                           description="搜索工作区文本")
+        register("read_skill", read_skill, category=ActionCategory.READ_DRAFT,
+                 description="按需加载一份内置工作法（不授予权限）：" + skill_catalog())
+        register("inspect_build", lambda cwd="": inspect_build(self, cwd), category=ActionCategory.READ_DRAFT,
+                 description="只读核对工位、沙盒、构建入口和本机工具；next 可传给 run_command，不表示已编译")
         # 沙盒后端（写遏制+禁网）下代码只能写 tmp/工作区 → 能力等同 WORKSPACE_WRITE；
         # 未隔离 subprocess 后端必须人工审批；none 后端执行时直接拒绝。
         backend = self.execution_backend()

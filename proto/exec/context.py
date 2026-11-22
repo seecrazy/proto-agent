@@ -85,7 +85,7 @@ def instructions_for_call(context, tool, arguments):
         targets.append((arguments["path"], tool == "list_dir"))
     if tool == "read_files":
         targets.extend((relative, False) for relative in arguments.get("paths", []))
-    if tool == "run_command":
+    if tool in ("run_command", "inspect_build"):
         targets.append((arguments.get("cwd", ""), True))
     changed = False
     for relative, directory in targets:

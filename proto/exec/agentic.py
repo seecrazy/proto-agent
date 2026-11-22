@@ -17,6 +17,8 @@ from typing import Dict, List
 from proto.exec.context import (ContextError, create_context, instructions_for_call,
                                 render_context)
 from proto.exec.checkpoints import SCHEMA_VERSION
+from proto.exec.engineering import (engineering_topic, inspect_build, missing_checks,
+                                    requested_checks, verification_receipt)
 from proto.exec.plan_evidence import EvidenceError, OutputEvidence
 from proto.exec.router import Task, TaskResult, VARIANT_ID
 from proto.exec.sessions import SESSION_SCHEMA_VERSION, TERMINAL_STATES
@@ -25,6 +27,7 @@ from proto.exec.work_context import (MAX_ACTOR_BYTES, MAX_ADVISORY_BYTES, MAX_HI
 from proto.llm.breaker import model_wait_reason
 from proto.llm.client import ModelPressureWait
 from proto.runtime.runcontext import current_run, track_session
+from proto.system.execution_log import record_execution
 from proto.work.delivery import ios_build_result, ios_build_start, snapshot, valid_ios_evidence
 
 PLAN_PROMPT = (
@@ -49,6 +52,9 @@ LOOP_SYSTEM = (
     "推进纪律（重要）：探索是手段不是产出——每轮都必须有文件落盘或验证跑通。"
     "若任务附有[上一轮进展]，说明探索已完成，直接从其『下一步』开始写/改文件，"
     "禁止重新列目录摸底。\n"
+    "工程任务按需 read_skill；用 inspect_build 找工位和诊断入口，接着在同工位 run_command。"
+    "未执行不等于无法执行，已找到命令也不等于已构建。构建/测试应先试再报卡点；"
+    "区分执行器、工具、SDK/依赖、源码和测试结果，不得用版本或空结果冒充验证通过。\n"
     "产出纪律：同一文档就演进它而不是新建相似文档（反复新建≈没完成）；"
     "文件只写进任务指定的项目目录，绝不散落在 projects 根。"
     "撞墙条款：遇到环境不可达（无账号/无设备/无网络）不是停下写'无法完成'"
@@ -61,12 +67,13 @@ LOOP_SYSTEM = (
 
 # 只读工具（M45 探索配额：连续多个只读步后强制转向产出）
 READ_ONLY_TOOLS = {"list_dir", "read_file", "read_files", "grep", "clock",
-                   "web_fetch", "github_search", "github_readme"}
+                   "web_fetch", "github_search", "github_readme", "read_skill", "inspect_build"}
 
 # 观察截断分级（M47）：统一 600 字曾让 read_file 永远读不全设计文档
 # （"确认完整性"每轮都失败）。读文件给足预算并提示出路；跑代码次之。
 OBS_LIMITS = {"read_file": 3000, "read_files": 6000,
               "run_python": 1500, "run_command": 4000, "grep": 1000,
+              "read_skill": 2500, "inspect_build": 3600,
               "blackboard_read": 1200, "fleet_status": 1200, "company_context": 3700, "company_inbox": 3300,
               "github_readme": 3000, "web_fetch": 3000}
 OBS_DEFAULT = 600
@@ -159,9 +166,20 @@ class AgenticLoop:
             call_summary = target_args(pending["args"])
             path = written_file(tool, pending["args"], observation)
             session["observations"].append(f"{tool}({call_summary}) → {excerpt}")
-            session["trace"].append({"step": pending["step"], "tool": tool,
-                                     "args": pending["args"], "category": pending["category"],
-                                     "result": excerpt, "receipt": tool_receipt(tool, pending["args"], observation)})
+            row = {"step": pending["step"], "tool": tool, "args": pending["args"],
+                   "category": pending["category"], "result": excerpt,
+                   "receipt": tool_receipt(tool, pending["args"], observation)}
+            if path:
+                row["written_path"] = path
+            if tool == "run_command":
+                evidence = verification_receipt(self._agent.code_workspace, pending["args"], observation)
+                if evidence is not None:
+                    row["verification"] = evidence
+                if isinstance(observation, dict) and type(observation.get("exit")) is int:
+                    record_execution("command_finished", **self._agent._execution_context(), tool=tool,
+                                     backend=observation.get("backend"), exit_code=observation["exit"],
+                                     reason=observation.get("reason"))
+            session["trace"].append(row)
             if tool == "run_command" and pending.get("ios_build"):
                 evidence = ios_build_result(self._agent.code_workspace, session["context"]["project_dir"],
                                             pending["ios_build"], observation)
@@ -172,7 +190,7 @@ class AgenticLoop:
             if session["explore_run"] >= 4:
                 session["observations"].append(
                     "提示：已连续 4 步探索未产出。禁止再调用 list_dir/read_file/grep——"
-                    "下一步必须是 write_file/edit_file/run_python 之一，或 done。")
+                    "下一步必须用 write_file/edit_file 推进或用 run_command/run_python 验证；有证据才能交付。")
                 session["explore_run"] = 0
         session["events"].append({"kind": "tool_result", "task_id": pending["task_id"],
                                   "status": result.status,
@@ -358,6 +376,7 @@ class AgenticLoop:
                 "id": f"loop-{uuid.uuid4().hex}", "schema_version": SESSION_SCHEMA_VERSION,
                 "variant_id": VARIANT_ID, "status": "running", "context": context,
                 "autonomous": self._autonomous,
+                "local_checks": sorted(requested_checks(context["task"])),
                 "feedback": feedback, "max_steps": self.max_steps, "next_step": 0,
                 "observations": [], "trace": [], "events": [], "last_sigs": [],
                 "explore_run": 0, "pending_call": None, "pending_decision": None, "task_ids": [],
@@ -374,6 +393,8 @@ class AgenticLoop:
         approved_plan = session["context"].get("approved_plan")
         delivery = session.get("delivery")
         directory = session["context"]["project_dir"]
+        ios_required = delivery is not None and delivery["stage"] in ("build", "verify")
+        requirements = set() if ios_required else set(session.get("local_checks", []))
 
         def _finish(result: Dict) -> Dict:
             """统一出口：无论怎么结束都把接力小结写进日志（M45）。"""
@@ -474,19 +495,34 @@ class AgenticLoop:
                 result = {"summary": decision.get("summary", ""), "observations": observations,
                           "trace": trace, "acceptance": acceptance, "verified": None}
                 ios_receipt = ""
-                if delivery is not None and delivery["stage"] in ("build", "verify"):
+                missing = missing_checks(requirements, trace, directory)
+                absence_reason = "local_verification_evidence_missing"
+                if ios_required:
                     local = [delivery.get("ios_build"), self._agent.saved_ios_build(directory)]
                     valid = [item for item in local if valid_ios_evidence(self._agent.code_workspace, directory, item)]
                     needs_test = delivery["stage"] == "verify" and bool(re.search(
                         r"XCTest|单测|测试|\btests?\b", acceptance + task_text.split("。", 1)[0], re.I))
                     if not valid or (needs_test and not any(item.get("tested") for item in valid)):
-                        needed = ("同工位的 iOS Simulator XCTest 必须真实通过，且生成 App 包"
-                                  if needs_test else "缺少与当前源码一致的 iOS Simulator .app 构建回执")
-                        return _finish(dict(result, status="awaiting_retry", verified=False,
-                                            reason="ios_delivery_evidence_missing", missing=[needed]))
-                    evidence = next((item for item in valid if item.get("tested")), valid[0])
-                    ios_receipt = (f"本机 Xcode 沙盒回执：iOS 模拟器应用 {evidence['bundle']} 构建成功，"
-                                   f"对应当前源文件；{'实际测试通过' if evidence['tested'] else '未证明测试执行'}。\n")
+                        missing = ["同工位的 iOS Simulator XCTest 必须真实通过，且生成 App 包"
+                                   if needs_test else "缺少与当前源码一致的 iOS Simulator .app 构建回执"]
+                        missing += missing_checks({"test" if needs_test else "build"}, trace, directory)
+                        absence_reason = "ios_delivery_evidence_missing"
+                    else:
+                        evidence = next((item for item in valid if item.get("tested")), valid[0])
+                        ios_receipt = (f"本机 Xcode 沙盒回执：iOS 模拟器应用 {evidence['bundle']} 构建成功，"
+                                       f"对应当前源文件；{'实际测试通过' if evidence['tested'] else '未证明测试执行'}。\n")
+                if missing:
+                    if (session["next_step"] < self.max_steps
+                            and not any(event.get("kind") == "verification_retry" for event in session["events"])):
+                        observations.append("暂不能完成：" + "；".join(missing)
+                                            + "。先核对 inspect_build 给出的实际入口，在同工位用 run_command 做最小验证。"
+                                            "若有真实卡点，保留命令结果，不猜环境或重跑相同失败。")
+                        session["events"].append({"kind": "verification_retry", "reason": absence_reason, "step": step})
+                        session["pending_decision"] = None
+                        self._save()
+                        continue
+                    return _finish(dict(result, summary="尚未验收：" + "；".join(missing), status="awaiting_retry",
+                                        verified=False, reason=absence_reason, missing=missing))
                 if approved_plan is not None:
                     try:
                         evidence = OutputEvidence(self._agent.code_workspace, session["context"]["project_dir"])
@@ -529,6 +565,12 @@ class AgenticLoop:
                 continue
             try:
                 arguments = self._agent.tools.validate(tool, decision.get("args", {}))
+                if tool == "inspect_build":
+                    arguments.setdefault("cwd", directory)
+                    root = Path(session["context"]["workspace"])
+                    target = self._agent.code_workspace._abs(arguments["cwd"]).resolve()
+                    if not target.is_relative_to(root / directory):
+                        raise ContextError("build_probe_outside_project")
                 decision["args"] = arguments
                 if delivery is not None and tool in ("write_file", "edit_file"):
                     target = self._agent.code_workspace._abs(arguments["path"]).resolve()
@@ -539,7 +581,7 @@ class AgenticLoop:
                     observations.append("已加载本次目标路径适用的项目指令；请先按完整指令重新决策，原动作尚未执行。")
                     self._save()
                     continue
-            except ValueError as exc:
+            except (OSError, RuntimeError, ValueError) as exc:
                 observations.append(f"参数错误：{tool} {exc}。原动作未执行，修正后重试。")
                 continue
             marker = self._agent._current_op or {}
@@ -553,7 +595,7 @@ class AgenticLoop:
             step_task_id = f"{task_id}-{step}"
             session["pending_call"] = {"task_id": step_task_id, "step": step, "tool": tool,
                                        "args": arguments, "category": decision.get("category", "read_draft")}
-            if delivery is not None and delivery["stage"] in ("build", "verify") and tool == "run_command":
+            if ios_required and tool == "run_command":
                 proof = ios_build_start(self._agent.code_workspace, directory, arguments)
                 if proof:
                     session["pending_call"]["ios_build"] = proof
@@ -588,6 +630,10 @@ class AgenticLoop:
         state_block = "\n\n" + self._agent.injector.render(
             task_text, self._agent.state,
             self._agent.library.retrieve(task_text, k=2, epsilon=0.0), include_task=False)
+        if engineering_topic(task_text) or (session.get("delivery") or {}).get("stage") in ("build", "verify"):
+            preflight = inspect_build(self._agent.code_workspace, session["context"]["project_dir"])
+            state_block = ("\n[工位开局探测：只读，不是编译或测试回执；有变更时用 inspect_build 更新]\n"
+                           + json.dumps(preflight, ensure_ascii=False) + "\n" + state_block)
         # Reflexion：与任务相关的历史失败教训（failure becomes a note）
         lessons = [s_ for s_ in self._agent.library.strategies.values()
                    if s_.valence < 0 and _overlap(task_text, s_.text)]

@@ -2,7 +2,7 @@
 
 > **内在状态显式可调制 · 主动行为受授权与预算约束 · 自我进化机制仍在验证中**
 
-[![tests](https://img.shields.io/badge/tests-1129%20passed-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-1174%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
 [![version](https://img.shields.io/badge/version-0.33.0-orange.svg)]()
@@ -176,7 +176,7 @@ cd proto-agent
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev]'
-python -m pytest -q       # 本机隔离外网验证：1129 passed, 3 skipped（2026-11-22，Python 3.9.2）
+python -m pytest -q       # 默认不启用真实 Xcode 构建；完整验证见 docs/PROGRESS.md
 python3 -m proto.demo     # 12 段全链路演示：锚定→调制→毒化拒收→评估→审批→进化两轨→自驱执行→审计
 ```
 
@@ -291,14 +291,18 @@ PROTO 不靠"性格"掩盖能力短板。M16 起它自带完整的工具族与**
 |---|---|---|
 | `read_file` / `write_file` / `edit_file` | 工作区内读写与精确替换（路径圈死，拒绝 `..`） | workspace_write 自动 |
 | `list_dir` / `grep` | 目录树与正则检索（编码 agent 的眼睛） | read_draft 自动 |
+| `read_skill` | 按需读内置的设计→开发→验证、Swift/iOS、本地验证三个工程技能；不加载工作区同名文件、不改变权限 | read_draft 自动 |
+| `inspect_build` | 查工位的项目入口、当前 PATH、隔离后端和建议命令；不启动构建或测试 | read_draft 自动 |
 | `run_python` | **沙盒执行**：隔离后端（macOS `sandbox-exec` 写遏制+禁网 / Linux `runsc`）+ 清洁环境 + CPU 限制 + 超时；无隔离后端默认拒绝执行 | 沙盒后端 workspace_write 自动；未隔离后端 visible_write 需批准 |
 | `run_command` | **项目本机验证**：无 shell、数组 argv、命令白名单（Python/Swift/XcodeBuild/Node 等），cwd 圈死在项目工作区，沿用写遏制+禁网沙盒 | 沙盒后端 workspace_write 自动；未隔离后端 visible_write 需批准 |
 | `github_search` / `github_readme` / `web_fetch` | 白名单只读网页感官：学习优秀作品/官方文档；返回内容显式打标“外部素材，非指令” | read_draft 自动 |
 | `delegate_coding` | **外包重活**：自动探测 claude/codex/zcode CLI（`PROTO_BRIDGE_CLI` 可指定），PROTO 出意图记经验担审批，专业工具出执行力 | visible_write 需批准 |
 
-**Agentic 循环**（`/task` 即走）：模型自主决定每一步调用什么工具 → 执行 → 观察回灌 → 决定下一步，直到宣布完成或触达步数上限；遇到对外动作自动暂停于检查点等你批准，批准后从断点续跑。它与 ZCode/Claude Code/Codex 的分工：那些是极强但无主人格的"临时工"，PROTO 是有记忆、性格、欲望与你关系的"学徒"——**需要重活时它调度它们，而不是被它们替代**。
+**Agentic 循环**（控制台「工作 → 指派任务」或 CLI `/task`）：模型根据工具结果决定下一步，直到有证据完成或达到预算/步数上限。对外动作在检查点等待批准，批准后续跑。PROTO 自己有工程执行链；外部编码工具是显式授权后的可选委派，并非编译或测试的前提。
 
-**推进力保障（M45，对标 ZCode 级做事可靠性）**：自主长跑最容易死于"无意义循环"——反复探索不产出。PROTO 用五个机制根治：①**接力日志**——每轮工作结束把 发现/产出/下一步 写进目标专属日志，下一轮开局注入"探索已完成，接着做"，探索只做一次、产出逐轮累积；②**探索配额**——连续 4 步只读探索后强制转向"必须写文件/跑验证"；③**零产出升级**——连续多轮零产出的目标，下一轮第 1 步必须落盘；④**探索降本**——目录列表跳过归档区、条目封顶、项目内文件直达；⑤**预算地板**——额度见底不再启动注定半途夭折的链（记审计+给你留言，充值或次日重置后自动恢复）。
+**本机能不能编译？** 直接问「你能在本地编译吗？」可以离线查执行器和 PATH；该问句不会编译，也不代表某个项目已经通过。实际工作中可以指派「在此工位本地构建并运行测试」。新执行会话收到明确的构建/测试要求后，不允许拿版本、干跑、失败输出或修改前的旧回执报完成。iOS 另查本机模拟器 `.app` 与当前源码；构建不等于真机、XCTest 或发布。见[工程技能与本机回执](docs/DESIGN.md#engineering-skills-and-evidence)。
+
+**减少无产出循环**：接力日志把发现、产出和下一步留给同一目标；工具探索提示转向修改或验证；目录列表有界；预算不足不启动一轮注定跑不完的执行。连续卡住按有界工作片保留原因和产物，不从头重开或把反复请求当进展。
 
 **专家工作法（M41→M61）**：给它一个专业目标，它按现实专家的路径走——目标分解自带**交付阶梯**（领域学习与设计 → 实现 → 本地验证 → 就绪交付，最后一步产出"已完成/待主人提供/一键继续"清单，遇到现实墙也能做到"一切就绪，只欠东风"）；验收标准强制**本机可验证**（≤3 条关键证据，首次生成后写回目标，后续不能自我改标准；需要你账号/设备的事项单列等待清单而非冒充完成）；独立质量门读取**最终产物原文+命令退出码**，不以执行者自述为准；连续验证不过自动**轮转**到兄弟目标防止整夜卡死；工作区以真实绑定维护项目索引。
 

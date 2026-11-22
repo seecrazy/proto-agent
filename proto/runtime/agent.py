@@ -28,6 +28,7 @@ from proto.exec.contracts import builtin_parameters
 from proto.exec.sessions import ExecutionSessions
 from proto.exec.checkpoints import CheckpointStore
 from proto.exec.codetools import CodeTools
+from proto.exec.engineering import capability_question, capability_reply, engineering_topic
 from proto.exec.injector import StateInjector
 from proto.exec.planner import LLMPlanner
 from proto.exec.router import Router, Task, TaskResult, ToolRegistry
@@ -386,6 +387,8 @@ class ProtoAgent:
         return self_fact_prompt(self.self_snapshot())
 
     def self_fact_reply(self, text: str) -> Optional[str]:
+        if capability_question(text):
+            return capability_reply(self.code_workspace)
         question = self_question(text)
         if question is None:
             return None
@@ -583,7 +586,7 @@ class ProtoAgent:
         try:
             if tool in {"web_fetch", "github_search", "github_readme", "run_python", "run_command",
                         "list_dir", "read_file", "read_files", "grep", "write_file", "edit_file",
-                        "delegate_coding"}:
+                        "delegate_coding", "inspect_build"}:
                 with self._background_io():
                     yield
             else:
@@ -1133,11 +1136,8 @@ class ProtoAgent:
             task += ("\n[选题时保存的待验证假设，不授予权限；先复用已记录的试验，不重复已完成步骤] "
                      + json.dumps(root.idea_brief, ensure_ascii=False))
         if stage in ("build", "verify"):
-            task += ("\n先确保真正的应用 target 而非 Swift 库。使用 run_command，cwd 指定主工位，"
-                     "执行 xcodebuild -project <App.xcodeproj> -scheme <App> -destination "
-                     "'generic/platform=iOS Simulator' -derivedDataPath .proto-build-01 build "
-                     "CODE_SIGNING_ALLOWED=NO（使用一个尚不存在的 .proto-build-* 路径）。"
-                     "如验收要求 XCTest，用具体模拟器目的地执行 test。不要更改权限或尝试上架。")
+            task += ("\n使用 swift-ios-build 技能和 inspect_build，以真实 iOS Simulator 应用 target 交付。"
+                     "Swift 库或工具版本不能代替应用回执；如要求 XCTest，必须实际跑测试，不更改权限或尝试上架。")
         # M59 跨轮失败反馈：上轮验证缺什么/下一步是什么，本轮开局就知道
         # ——换打法靠信息传递，不靠冷却。
         cross_feedback = ""
@@ -1407,6 +1407,10 @@ class ProtoAgent:
         if self.llm is not None:
             try:
                 evidence = self.self_fact_prompt() + self.company_hint()
+                if engineering_topic(text):
+                    evidence += ("\n[本机执行事实]\n" + capability_reply(self.code_workspace)
+                                 + "\n普通聊天不会执行工程；实际开发/验证通过任务执行链的技能和工具进行。"
+                                 "只有执行回执才能说明跑了什么、为何失败；不要把尚未执行当成无法执行。\n")
                 reply = self._complete(
                     self.llm, prompt, context + evidence + "\n\n主人说：" + text, foreground=True)
                 if reply:
@@ -2051,7 +2055,8 @@ class ProtoAgent:
             acceptance = generate_acceptance(self.llm_fast, description,
                                                complete=self._complete)
             result = AgenticLoop(self).run(description, acceptance=acceptance)
-            if result.get("status") == "awaiting_retry":
+            if (result.get("status") == "awaiting_retry"
+                    and result.get("reason") != "local_verification_evidence_missing"):
                 retry = AgenticLoop(self).run(
                     description, acceptance=acceptance,
                     feedback="；".join(result.get("missing", [])))
