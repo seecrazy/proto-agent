@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 from proto.runtime.activity import activity_reply
 from proto.runtime.agent import ProtoAgent
 from proto.runtime.coordination import CoordinationError
+from proto.runtime.self_facts import lifetime_reply, session_reply
 from proto.system.execution_log import record_execution
 
 INDEX_PATH = Path(__file__).with_name("index.html")
@@ -220,6 +221,9 @@ class _Handler(BaseHTTPRequestHandler):
             except UnicodeError:
                 raise _HTTPError(400, "invalid_chat_text") from None
             question = chat_text.strip()
+            self_reply = agent.self_fact_reply(question)
+            if self_reply is not None:
+                return self._json(200, {"reply": self_reply, "read_only": True})
             past_activity = _PAST_ACTIVITY_QUESTION.fullmatch(question) is not None
             if past_activity or _ACTIVITY_QUESTION.fullmatch(question):
                 reply = activity_reply(server.manager.runs.activity.snapshot(agent), detailed=past_activity)
@@ -684,7 +688,10 @@ class _Handler(BaseHTTPRequestHandler):
             events = agent.audit_tail(500)
             return self._json(200, {"buckets": bucket_events(events)})
         if path == "/api/identity" and method == "GET":
+            facts = agent.self_snapshot()
+            facts["lifecycle_summary"] = lifetime_reply(facts["lifecycle"]) + " " + session_reply(facts["lifecycle"])
             return self._json(200, {
+                "self": facts,
                 "ocean": agent.identity.ocean,
                 "seed": agent.identity.seed,
                 "values": agent.identity.values,

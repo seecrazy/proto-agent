@@ -544,8 +544,14 @@ function get(id) {
 const document = {getElementById: get};
 const fleetMembers = [{id: 'selected', name: '当前成员'}, {id: 'other-agent', name: '其他成员'}];
 const calls = [];
+const lifecycle = [];
 let respond;
-function api(method, path, body) {
+function api(method, path, body, requestKey, agentId, signal) {
+  if (method === 'GET') {
+    assert.equal(path, '/api/identity');
+    assert.equal(signal.aborted, false);
+    return new Promise((resolve, reject) => lifecycle.push({agentId, resolve, reject}));
+  }
   calls.push([method, path, body]);
   return new Promise((resolve, reject) => { respond = {resolve, reject}; });
 }
@@ -557,8 +563,11 @@ async function refreshFleet() { refreshed++; }
   get('agent-select').value = 'selected';
   openAgentIdentity('other-agent');
   const id = get('agent-identity-id'), name = get('agent-identity-name');
+  const lifetime = get('agent-identity-lifecycle');
   const submit = () => saveAgentName({preventDefault() {}});
   assert.equal(id.value, 'other-agent');
+  assert.equal(lifecycle[0].agentId, 'other-agent');
+  assert.match(lifetime.textContent, /正在读取/);
   name.value = '   ';
   const invalid = submit();
   respond.reject(new Error('invalid_agent_name'));
@@ -574,6 +583,8 @@ async function refreshFleet() { refreshed++; }
   assert.deepEqual(calls[1], ['POST', '/api/agents/other-agent/name', {name: '新名称'}]);
   get('agent-identity-panel').open = false;
   openAgentIdentity();
+  assert.equal(lifecycle[1].agentId, 'selected');
+  lifecycle[0].resolve({self: {lifecycle_summary: '其他成员的旧时长'}});
   respond.resolve({id: 'other-agent', name: '新名称'});
   await pending;
   assert.equal(id.value, 'selected');
@@ -581,6 +592,15 @@ async function refreshFleet() { refreshed++; }
   assert.equal(fleetMembers[1].name, '新名称');
   assert.equal(get('agent-select').value, 'selected');
   assert.equal(refreshed, 1);
+  assert.match(lifetime.textContent, /正在读取/);
+  lifecycle[1].reject(new Error('timeout'));
+  await Promise.resolve();
+  assert.match(lifetime.textContent, /仍可改名/);
+  assert.equal(name.disabled, false);
+  openAgentIdentity();
+  lifecycle[2].resolve({self: {lifecycle_summary: '当前成员的真实时长'}});
+  await Promise.resolve();
+  assert.equal(lifetime.textContent, '当前成员的真实时长');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 '''
     result = subprocess.run([node, "-e", harness + script + checks], capture_output=True, text=True, timeout=5)

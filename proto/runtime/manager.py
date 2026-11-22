@@ -181,11 +181,12 @@ class AgentManager:
     def _build(self, info: dict, persona: str = "", initial_autonomy=None) -> ProtoAgent:
         agent = ProtoAgent(data_dir=self._dir_for(info), llm=self._llm,
                            fast_llm=self._fast, webtools=copy(self._webtools),
-                           persona=persona or None, initial_autonomy=initial_autonomy)
+                           persona=persona or None, initial_autonomy=initial_autonomy, fleet_record=info)
         return self._connect(agent, info)
 
     def _connect(self, agent: ProtoAgent, info: dict) -> ProtoAgent:
-        agent.bind_fleet(self.blackboard, self._fleet_status_for(info["id"]), info["id"], self.runs)
+        agent.bind_fleet(self.blackboard, self._fleet_status_for(info["id"]), info["id"], self.runs,
+                         name=info["name"])
         if self.models is not None:
             agent.bind_model_catalog(self.models)
         agent.set_fleet_paused(bool(info.get("paused")))
@@ -213,6 +214,9 @@ class AgentManager:
             if info["name"] != name:
                 info["name"] = name
                 self._save_registry(reg)
+            agent = self._cache.get(agent_id)
+            if agent is not None:
+                agent.set_fleet_name(name)
             return {"id": info["id"], "name": info["name"]}
 
     def get(self, agent_id: str) -> Optional[ProtoAgent]:

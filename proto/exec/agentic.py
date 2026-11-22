@@ -331,7 +331,7 @@ class AgenticLoop:
             scope += (f"\n[主人批准的执行计划]\n{steps}\n"
                       f"必须新增或实质改变的相对输出：{json.dumps(outputs, ensure_ascii=False)}。"
                       "输出相对项目范围解析，工具 path 参数仍相对工作区，权限按原规则检查。")
-        return f"{scope}\n\n可用工具：\n{catalog}"
+        return f"{scope}\n\n可用工具：\n{catalog}\n{self._agent.self_fact_prompt()}"
 
     def _run(self, task_text: str, acceptance: str,
              feedback: str, journal, goal_id: str = "", project_dir: str = "", frozen_context=None,

@@ -315,7 +315,7 @@
   <span class="topbadge agent-only" id="pending-badge" title="待审批的主动提议" role="button"
         aria-label="待审批提议" onclick="showCat('work')" style="display:none">待批 0</span>
   <select id="agent-select" onchange="switchAgent(this.value)" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px"></select>
-  <button id="agent-identity-btn" class="agent-only" onclick="openAgentIdentity()" title="修改当前 Agent 的显示名称，查看固定 ID" disabled>名称 / ID</button>
+  <button id="agent-identity-btn" class="agent-only" onclick="openAgentIdentity()" title="查看固定 ID 和存在时长，或修改显示名称" disabled>名称 / ID</button>
   <button onclick="showCreateAgent()" style="font-size:12px">＋Agent</button>
   <button id="autonomy-btn" class="agent-only" onclick="openAutonomy()" title="当前 Agent 的自治设置">自治</button>
   <div class="spacer"></div>
@@ -393,6 +393,7 @@
 <dialog id="agent-identity-panel" class="agent-panel" aria-labelledby="agent-identity-heading">
   <h2 id="agent-identity-heading">名称与 ID</h2>
   <p class="empty">Agent ID 不可修改。改名不影响人设、任务或数据。</p>
+  <p id="agent-identity-lifecycle" class="empty" aria-live="polite"></p>
   <form onsubmit="saveAgentName(event)">
     <label><span>Agent ID</span><input id="agent-identity-id" dir="ltr" readonly></label>
     <label><span>显示名称</span><input id="agent-identity-name" required aria-describedby="agent-identity-hint"></label>
@@ -1676,6 +1677,23 @@ function openAgentIdentity(id = document.getElementById("agent-select").value) {
   name.value = member.name;
   name.disabled = false;
   if (!panel.open) panel.showModal();
+  loadAgentLifecycle(agentIdentityEditor, panel);
+}
+
+async function loadAgentLifecycle(editor, panel) {
+  const output = document.getElementById("agent-identity-lifecycle");
+  const current = () => agentIdentityEditor === editor && panel.open;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  output.textContent = "正在读取生命周期…";
+  try {
+    const data = await api("GET", "/api/identity", undefined, undefined, editor.id, controller.signal);
+    if (current()) output.textContent = data.self?.lifecycle_summary || "暂无生命周期记录。";
+  } catch (error) {
+    if (current()) output.textContent = "暂时无法读取生命周期；仍可改名。";
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function saveAgentName(event) {

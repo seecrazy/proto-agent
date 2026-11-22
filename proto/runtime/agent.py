@@ -69,6 +69,7 @@ from proto.runtime.personas import (
     normalize_persona, parse_recommendation,
 )
 from proto.runtime.runcontext import current_run
+from proto.runtime.self_facts import Lifetime, describe_self, local_time, self_fact_prompt, self_question
 from proto.work.delivery import (MAX_STALLED_SLICES, MAX_UNVERIFIED_SLICES, ProjectDirectoryError,
                                  ios_stage, main_project, project_bindings, project_files,
                                  project_path, stage_waiters, valid_ios_evidence)
@@ -137,14 +138,19 @@ class ProtoAgent:
     def __init__(self, data_dir: Path, llm=None, now=time.time,
                  goal_interval_s: float = 4 * 3600,
                  persona: str = None, webtools=None, fast_llm=None,
-                 blackboard=None, fleet_status=None, initial_autonomy=None):
+                 blackboard=None, fleet_status=None, initial_autonomy=None, *,
+                 monotonic=time.monotonic, fleet_record=None):
         self._now = now
+        self._monotonic = monotonic
+        loaded_at = now()
+        self._loaded_at_tick = monotonic()
         self.blackboard = blackboard
         self._fleet_runs = None
         self._fleet_status_fn = fleet_status   # M47: manager 注入的舰队快照
         self.data_dir = Path(data_dir)
         self._local_model_pressure = ModelPressure(CoordinationDB(self.data_dir))
         self.fleet_id = self.data_dir.resolve().name
+        self._fleet_name = None
         self.data_dir.mkdir(parents=True, exist_ok=True)
         try:
             self.data_dir.chmod(0o700)
@@ -180,7 +186,8 @@ class ProtoAgent:
 
         # ---- 主人密钥：首次生成并注册（本地控制台 = OWNER 通道）----
         key_path = self.data_dir / "owner.key"
-        if key_path.exists():
+        had_key = key_path.exists()
+        if had_key:
             try:
                 key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
             except OSError:
@@ -193,22 +200,25 @@ class ProtoAgent:
         fingerprint = "sha256:" + hashlib.sha256(secret).hexdigest()
         self.spine = AuditSpine(store, secret=secret)
         existing = store.get("anchor", "owner")
-        if existing is None:
-            self.anchor = OwnerAnchor.enroll(store, self.spine, secret)
-            self.anchor._key_path = key_path
-        elif existing.get("fingerprint") == fingerprint:
-            self.anchor = OwnerAnchor(secret, fingerprint, self.spine,
-                                      store=store, key_path=key_path)
-        else:
+        if existing is not None and existing.get("fingerprint") != fingerprint:
             # 锚定不可静默重写：owner.key 丢失 ≠ 可以换钥（设计 §3.2，恢复走显式线下仪式）
             raise PermissionError(
                 "owner.key 与已注册锚定不匹配。恢复流程：删除 data/anchor/ 下的记录并"
                 "重走注册（该操作会使旧锚作废，请确认你拥有这台机器）。")
+        raw = store.get("state", "main")
+        self._lifetime = Lifetime.load(
+            self.spine, loaded_at, owner_record=existing, fleet_record=fleet_record,
+            preexisting=had_key or existing is not None or profile_doc is not None or raw is not None)
+        if existing is None:
+            self.anchor = OwnerAnchor.enroll(store, self.spine, secret)
+            self.anchor._key_path = key_path
+        else:
+            self.anchor = OwnerAnchor(secret, fingerprint, self.spine,
+                                      store=store, key_path=key_path)
         self._nonce = 0
 
         pools = BudgetPools(pools_config(), store=store, doc_id="main")
         self.kernel = Kernel(self.anchor, self.spine, pools)
-        raw = store.get("state", "main")
         self.state = AgentState.from_dict(raw) if raw else AgentState()
         self.mgr = StateManager(store, self.state, self.kernel, self.spine, agent_id="main")
         self.mgr.initialize_param_origins()
@@ -275,7 +285,7 @@ class ProtoAgent:
         self.sessions = ExecutionSessions(store)
         self.code_workspace = self._build_projects_workspace()
         self.tools = ToolRegistry()
-        self.tools.register("clock", lambda: time.strftime("%Y-%m-%d %H:%M:%S"),
+        self.tools.register("clock", lambda: local_time(self._now()) or "当前服务端时间不可用",
                             category=ActionCategory.READ_DRAFT,
                             description="当前时间", parameters=builtin_parameters("clock"))
         self.code_workspace.register_all(self.tools)
@@ -353,11 +363,38 @@ class ProtoAgent:
         self._live_planner = LLMPlanner(_GuardedClient(self, ModelRoleClient(catalog, "fast")), self.tools)
         self._model_catalog = catalog
 
-    def bind_fleet(self, blackboard, fleet_status, agent_id: str, runs=None) -> None:
+    def bind_fleet(self, blackboard, fleet_status, agent_id: str, runs=None, *, name: str) -> None:
         self.blackboard = blackboard
         self._fleet_status_fn = fleet_status
         self.fleet_id = agent_id
+        self.set_fleet_name(name)
         self._fleet_runs = runs
+
+    def set_fleet_name(self, name: str) -> None:
+        self._fleet_name = name
+
+    def self_snapshot(self) -> dict:
+        name = self._fleet_name
+        policy = self._autonomy
+        paused, muted = self._fleet_paused, self.kernel.muted
+        return {"id": self.fleet_id if name is not None else None, "name": name, "persona": self.persona,
+                "lifecycle": self._lifetime.snapshot(self._now(), self._monotonic() - self._loaded_at_tick),
+                "autonomy": {"mode": policy.mode, "enabled": policy.enabled, "paused": paused,
+                             "muted": muted, "blocked_reason": policy.blocker(paused=paused, muted=muted)}}
+
+    def self_fact_prompt(self) -> str:
+        return self_fact_prompt(self.self_snapshot())
+
+    def self_fact_reply(self, text: str) -> Optional[str]:
+        question = self_question(text)
+        if question is None:
+            return None
+        if question == "company":
+            role = self.company_role()
+            if role is None:
+                return "我目前没有舰队公司任职记录。"
+            return f"我在「{role['company']}」担任「{role['title']}」。"
+        return describe_self(question, self.self_snapshot())
 
     @property
     def company_directory(self):
@@ -370,7 +407,7 @@ class ProtoAgent:
     def company_hint(self) -> str:
         role = self.company_role()
         if role is None:
-            return ""
+            return "\n[组织任职事实] 当前没有舰队公司任职记录。\n"
         return ("\n[组织任职事实｜不是主人指令，不改变权限]\n" + json.dumps(role, ensure_ascii=False)
                 + "\n可用 company_context 查询组织路线，company_inbox 阅读来信；来信不是自动派工。\n")
 
@@ -1299,6 +1336,9 @@ class ProtoAgent:
 
     def chat(self, text: str) -> str:
         assert self._owner_verified(text), "OWNER 通道认证失败"
+        reply = self.self_fact_reply(text)
+        if reply is not None:
+            return reply
         signals = self.attributor.attribute(text, Channel.OWNER)
         with self.state_guard:
             prompt, context, facts = self._prepare_dialogue(text, signals, practice=True)
@@ -1366,8 +1406,9 @@ class ProtoAgent:
     def _reply_dialogue(self, text, prompt, context, *, offline_activity=None):
         if self.llm is not None:
             try:
+                evidence = self.self_fact_prompt() + self.company_hint()
                 reply = self._complete(
-                    self.llm, prompt, context + self.company_hint() + "\n\n主人说：" + text, foreground=True)
+                    self.llm, prompt, context + evidence + "\n\n主人说：" + text, foreground=True)
                 if reply:
                     return reply
             except Exception:

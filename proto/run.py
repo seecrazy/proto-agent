@@ -26,6 +26,7 @@ from pathlib import Path
 from proto.config import load_default_env
 from proto.llm.client import create_llm_stack
 from proto.runtime.agent import ProtoAgent
+from proto.runtime.self_facts import self_question
 from proto.system.execution_log import execution_logging, record_execution
 
 BANNER = """
@@ -143,6 +144,8 @@ def _repl(args):
 
         reply = agent.chat(line)
         print(f"PROTO> {reply}\n")
+        if self_question(line) is not None:
+            continue
         agent.remember_turn(line, reply)   # 回复先出，固化后置（与 Web 一致）
 
         # 每轮检查是否到了主动提议的时机

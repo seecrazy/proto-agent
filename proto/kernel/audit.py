@@ -102,6 +102,18 @@ class AuditSpine:
         """底层存储（运行时组合持久化用）。"""
         return self._store
 
+    def first_verified_event(self) -> Optional[dict]:
+        """Read and check the original event without scanning or asserting chain continuity."""
+        try:
+            row = self._store.get(self._collection, "1")
+            if not row or row["seq"] != 1 or row["prev_hash"] != GENESIS_HASH:
+                return None
+            expected = _record_hash(1, row["ts"], row["event_type"], row["payload"], GENESIS_HASH,
+                                    secret=self._secret, algorithm=row.get("algorithm", "sha256"))
+            return row if hmac.compare_digest(row["hash"], expected) else None
+        except (KeyError, TypeError, ValueError):
+            return None
+
     def _reload_head_if_stale(self) -> None:
         """存储被外部进程写入后重载真实链头（防陈旧覆写）。"""
         rev = self._store.revision(self._collection)
