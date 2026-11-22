@@ -7,6 +7,7 @@ from proto.exec.agentic import LOOP_SYSTEM, AgenticLoop
 from proto.exec.code_index import CodeIndex
 from proto.exec.codetools import CodeTools
 from proto.exec.exploration import SYSTEM as EXPLORER_SYSTEM, explore_code, investigate
+from proto.exec.contracts import builtin_parameters, checked_arguments
 from proto.exec.work_context import decision_input, size
 from proto.llm.errors import ModelResponseError
 from proto.runtime.agent import ProtoAgent
@@ -40,6 +41,19 @@ class ContextLimitModel(ScriptModel):
             self.actor_inputs.append((system, user))
             self.limit_errors += 1
             raise ModelResponseError("model_context_limit", "stream", 400)
+        return super().complete(system, user)
+
+
+class OutputLimitModel(ScriptModel):
+    def __init__(self):
+        super().__init__([{"done": True, "summary": "已改为小步决策"}])
+        self.limit_errors = 0
+
+    def complete(self, system, user):
+        if system == LOOP_SYSTEM and self.limit_errors == 0:
+            self.actor_inputs.append((system, user))
+            self.limit_errors += 1
+            raise ModelResponseError("model_output_truncated", "decision")
         return super().complete(system, user)
 
 
@@ -268,3 +282,41 @@ def test_provider_context_limit_retries_once_with_tighter_projection(tmp_path):
     session = agent.sessions.lookup(result["session_id"])
     assert session["tight_context"] is True
     assert session["trace"] == []
+
+
+def test_truncated_decision_retries_small_step_without_replaying_tools(tmp_path):
+    agent = make_agent(tmp_path, OutputLimitModel())
+    make_project(agent.code_workspace.root)
+    result = AgenticLoop(agent, max_steps=3).run("继续设计规格", project_dir="projects/app")
+    assert result["status"] == "completed"
+    assert len(agent.llm.actor_inputs) == 2
+    assert "未执行任何工具" in agent.llm.actor_inputs[1][1]
+    assert "禁止 write_file 重发长文件" in agent.llm.actor_inputs[1][1]
+    session = agent.sessions.lookup(result["session_id"])
+    assert session["compact_decisions"] is True
+    assert session["trace"] == [] and session["pending_call"] is None
+
+
+def test_waiting_truncated_session_resumes_in_small_decision_mode(tmp_path):
+    agent = make_agent(tmp_path, ScriptModel([{"done": True, "summary": "完成"}]))
+    make_project(agent.code_workspace.root)
+    first = AgenticLoop(agent, max_steps=2).run("读规格", project_dir="projects/app")
+    session = agent.sessions.lookup(first["session_id"])
+    session.update(status="waiting_model", pending_decision=None, pending_call=None,
+                   result={"status": "waiting_model", "reason": "llm_error:model_output_truncated"})
+    agent.sessions.save(session)
+    agent.llm.decisions = [{"done": True, "summary": "完成"}]
+    result = AgenticLoop(agent).resume(session["id"], True)
+    assert result["status"] == "completed"
+    resumed = agent.sessions.lookup(session["id"])
+    assert resumed["compact_decisions"] is True
+    assert "上一决策因模型输出上限被丢弃" in agent.llm.actor_inputs[-1][1]
+
+
+def test_write_and_edit_decision_arguments_have_output_bounds():
+    with pytest.raises(ValueError):
+        checked_arguments("write_file", {"path": "a.md", "content": "x" * 6001},
+                          builtin_parameters("write_file"))
+    with pytest.raises(ValueError):
+        checked_arguments("edit_file", {"path": "a.md", "old": "x" * 4001, "new": "y"},
+                          builtin_parameters("edit_file"))

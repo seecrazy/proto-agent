@@ -430,11 +430,11 @@ class CodeTools:
         register("write_file",
                           lambda path, content: self.write_file(path, content),
                           category=ActionCategory.WORKSPACE_WRITE,
-                          description="写工作区文件")
+                          description="写工作区文件；content ≤6000 字符，长文件先骨架再分次 edit")
         register("edit_file", lambda path, old, new, replace_all=False:
                           self.edit_file(path, old, new, replace_all),
                           category=ActionCategory.WORKSPACE_WRITE,
-                          description="精确替换工作区文件片段")
+                          description="精确替换工作区文件片段；old/new 各 ≤4000 字符，优先小补丁")
         register("list_dir", lambda path="": self.list_dir(path),
                           category=ActionCategory.READ_DRAFT,
                           description="列工作区目录")

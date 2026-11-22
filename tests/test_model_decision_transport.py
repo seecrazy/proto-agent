@@ -122,6 +122,9 @@ def test_native_stream_assembles_one_decision_and_reports_usage(wire, client_typ
     assert outbound_path == path and request["stream"] and 0 < request["max_tokens"] <= 8192
     tool = request["tools"][0].get("function", request["tools"][0])
     assert tool["name"] == DECISION_NAME and len(request["tools"]) == 1
+    expected_choice = ({"type": "function", "function": {"name": DECISION_NAME}}
+                       if client_type is OpenAICompatClient else {"type": "tool", "name": DECISION_NAME})
+    assert request["tool_choice"] == expected_choice and "thinking" not in request
     assert "private-reasoning" not in raw and "准备执行" not in raw
 
 
@@ -181,7 +184,9 @@ def test_bigmodel_uses_its_own_tool_stream_option_and_last_usage(wire, monkeypat
     assert parse_decision(client.complete_decision(
         LOOP_SYSTEM, "task", first_event=lambda _: None, cancelled=lambda: "")) == DONE
     assert client.last_usage == {"input_tokens": 20, "output_tokens": 11}
-    assert wire.requests[0][1]["tool_stream"] is True and "stream_options" not in wire.requests[0][1]
+    request = wire.requests[0][1]
+    assert request["tool_stream"] is True and "stream_options" not in request
+    assert request["thinking"] == {"type": "disabled"}
 
 
 @pytest.mark.parametrize("received", [False, True])

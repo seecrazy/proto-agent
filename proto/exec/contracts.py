@@ -31,9 +31,11 @@ _BUILTINS = {
         "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 200}}, ["path"]),
     "read_files": object_schema({"paths": {
         "type": "array", "items": _PATH, "minItems": 1, "maxItems": 5}}, ["paths"]),
-    "write_file": object_schema({"path": _PATH, "content": _TEXT}, ["path", "content"]),
+    "write_file": object_schema({"path": _PATH,
+                                 "content": {"type": "string", "maxLength": 6000}}, ["path", "content"]),
     "edit_file": object_schema({
-        "path": _PATH, "old": {"type": "string", "minLength": 1}, "new": _TEXT,
+        "path": _PATH, "old": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "new": {"type": "string", "maxLength": 4000},
         "replace_all": {"type": "boolean", "default": False}}, ["path", "old", "new"]),
     "list_dir": object_schema({"path": {"type": "string", "default": ""}}),
     "grep": object_schema({"pattern": _TEXT, "glob": {"type": "string", "default": "*"}, "cwd": _CWD}, ["pattern"]),

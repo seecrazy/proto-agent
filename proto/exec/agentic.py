@@ -43,6 +43,8 @@ LOOP_SYSTEM = (
     '每次只提交一个决策 JSON：{"tool": ..., "args": {...}, '
     '"category": "read_draft|workspace_write|visible_write"} '
     '或 {"done": true, "summary": "成果摘要"}。\n'
+    "决策输出必须精简：write_file content 至多 6000 字符；已有文件优先 edit_file，"
+    "old/new 各至多 4000 字符；新大文件先写有界骨架，再分次小补丁，禁止重发整份长文件。\n"
     "规则：工作区内的探索/读写/跑代码用 workspace_write 或 read_draft；"
     "会影响工作区外可见世界时才用 visible_write（会暂停等主人批准）。"
     "观察足够得出结论时立即 done，不要为了用工具而用工具。\n"
@@ -389,6 +391,14 @@ class AgenticLoop:
         session = self._session
         observations = session["observations"]
         trace = session["trace"]
+        if (session["status"] == "waiting_model" and session.get("pending_decision") is None
+                and session.get("pending_call") is None
+                and session.get("result", {}).get("reason") == "llm_error:model_output_truncated"
+                and not session.get("compact_decisions")):
+            session["compact_decisions"] = True
+            observations.append("上一决策因模型输出上限被丢弃，未执行任何工具。"
+                                "本轮改为极简小步决策：优先定位/小补丁/验证，不输出整文件。")
+            self._save()
         task_id = session["id"]
         approved_plan = session["context"].get("approved_plan")
         delivery = session.get("delivery")
@@ -456,7 +466,11 @@ class AgenticLoop:
             if saved is None:
                 feedback_block = (f"\n上一轮独立验证未通过，缺少：{feedback}\n"
                                   "本轮必须补齐这些证据。" if feedback else "")
-                advisory = feedback_block + self._agent.company_hint() + "".join(session["prompt_blocks"])
+                compact_output = ("\n上一决策因输出上限未执行。只回一个小决策：search/read 定位、"
+                                  "edit_file 小补丁、run_command 验证或 done；禁止 write_file 重发长文件。"
+                                  if session.get("compact_decisions") else "")
+                advisory = (feedback_block + compact_output + self._agent.company_hint()
+                            + "".join(session["prompt_blocks"]))
                 inputs = (LOOP_SYSTEM, fixed, advisory, observations, trace, budget)
                 prompt = decision_input(*inputs, tight=session.get("tight_context", False))
                 session["status"] = "running"
@@ -471,6 +485,13 @@ class AgenticLoop:
                     if (failure == "model_context_limit" and not session.get("tight_context")
                             and size(decision_input(*inputs, tight=True)) < size(prompt)):
                         session["tight_context"] = True
+                        self._save()
+                        continue
+                    if (failure == "model_output_truncated" and not session.get("compact_decisions")
+                            and session.get("pending_decision") is None and session.get("pending_call") is None):
+                        session["compact_decisions"] = True
+                        observations.append("上一决策因模型输出上限被丢弃，未执行任何工具。"
+                                            "本轮改为极简小步决策：优先定位/小补丁/验证，不输出整文件。")
                         self._save()
                         continue
                     retry_at = exc.retry_at if isinstance(exc, ModelPressureWait) else None

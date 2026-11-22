@@ -92,12 +92,19 @@ class _HttpClient(LLMClient):
         system += f"\n调用 {DECISION_NAME} 一次提交决策；不要在正文中再输出一份决策。"
         payload = self._payload(system, user)
         payload.update(stream=True, tools=[decision_tool(self._style)])
+        zhipu_native = native_decisions(self._style, self._base, self._model, "auto")
         if self._style == "openai":
-            payload.update(max_tokens=8192, tool_choice="auto")
-            if self._model.lower() == "glm-5.3" and native_decisions(self._style, self._base, self._model, "auto"):
+            payload.update(max_tokens=8192,
+                           tool_choice={"type": "function", "function": {"name": DECISION_NAME}})
+            if zhipu_native:
                 payload["tool_stream"] = True
         else:
-            payload["tool_choice"] = {"type": "auto"}
+            payload["tool_choice"] = {"type": "tool", "name": DECISION_NAME}
+        if zhipu_native:
+            # GLM decision calls do not benefit from hidden reasoning in the
+            # streamed tool envelope, and thinking can consume max_tokens before
+            # the small JSON decision is complete.
+            payload["thinking"] = {"type": "disabled"}
         started = time.monotonic()
         try:
             with self._post(payload, stream=True) as response:

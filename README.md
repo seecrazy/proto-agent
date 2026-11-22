@@ -2,7 +2,7 @@
 
 > **内在状态显式可调制 · 主动行为受授权与预算约束 · 自我进化机制仍在验证中**
 
-[![tests](https://img.shields.io/badge/tests-1269%20passed-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-1272%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
 [![version](https://img.shields.io/badge/version-0.33.0-orange.svg)]()
@@ -250,8 +250,8 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 
 ## 验证
 
-- **1269 passed, 4 skipped**（2026-11-22，本机 Python 3.9.2，`python3 -m pytest -q`）；未重跑 CI 矩阵、可选依赖组合、真实模型或 Linux runsc，不宣称覆盖全部安全边界。
-- M77 新增 **13 个用例**：非首文件符号定位、续页、缓存失效、跳过/降级、兄弟项目拒绝、父/子上下文隔离、工具白名单、源码回显拒绝、压力压缩、固定区超限和供应商上下文超限重试。
+- **1272 passed, 4 skipped**（2026-11-22，本机 Python 3.9.2，`python3 -m pytest -q`）；未重跑 CI 矩阵、可选依赖组合、真实模型或 Linux runsc，不宣称覆盖全部安全边界。
+- M77 新增 **16 个用例**：非首文件符号定位、续页、缓存失效、跳过/降级、兄弟项目拒绝、父/子上下文隔离、工具白名单、源码回显拒绝、压力压缩、固定区超限、供应商上下文超限重试、输出截断小步重试、等待会话恢复进入小决策模式与 write/edit 参数上限。
 - M72 验证 429 共享退避、重启后的无重复续接、同谱系前置阶段、空转停止和本机证据。独立 SwiftUI 样例在沙盒中真实编译，未启动模拟器 App 或介入真实项目；XCTest 回执识别用替身验证。
 - M71 新增 **15 个用例**：长输入、持久决策、真实进程中断、确认回执、未知效果、退避和安全续接。离线控制台验证恢复验收，不重复写入。
 - M70 新增 **7 个用例**：等待模型或工具时可继续对话、双层额度、回执恢复、冷却与半开探测、工具证据与同谱系产物交接。Chrome 用测试模型验证边工作边回复、落盘和验收分开显示、窄屏抽屉与折叠记忆；未调用真实模型。
@@ -298,7 +298,7 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 | 结构化模型决策 | OpenAI/Anthropic 流式接收、兼容文本、同 Run 续作和分阶段诊断 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#model-decision-transport) |
 | Electron 桌面控制台 | 与 Web 共用页面、API 和数据目录 | ✅ [设计与验收](docs/DESIGN.md#electron-console) |
 | 模型可靠性与诊断 | Python 3.9 网络超时回退、可关联的本地滚动执行日志 | ✅ [设计与验收](docs/DESIGN.md#execution-diagnostics) |
-| M77 大仓库上下文 | 符号分页索引、只读子上下文、本地预算压缩与范围化检索 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#large-code-context) |
+| M77 大仓库上下文 | 符号分页索引、只读子上下文、本地预算压缩、范围化检索与决策输出预算 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#large-code-context) |
 | 后续模型交互 | 原生工具协议、请求级用量、供应商精确 token 分词/压缩与进程级取消 | 待专项，不纳入 M63/M64 |
 
 ## 许可
