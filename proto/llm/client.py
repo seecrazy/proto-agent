@@ -14,27 +14,19 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
+from http.client import HTTPException
 from typing import Optional
 from urllib.parse import urlsplit
 
-
-NETWORK_TIMEOUTS = (TimeoutError, socket.timeout)
-
-
-class LLMError(Exception):
-    """LLM 调用失败（网络/HTTP/协议）。调用方应回退到离线路径。"""
-
-
-class ModelPressureWait(LLMError):
-    def __init__(self, reason, retry_at=None):
-        super().__init__(reason)
-        self.reason = reason
-        self.retry_at = retry_at
+from proto.llm.decision import DECISION_NAME, decision_tool, native_decisions
+from proto.llm.decision_stream import read_decision
+from proto.llm.errors import (NETWORK_TIMEOUTS, LLMError, ModelPressureWait, ModelRequestStopped,
+                              ModelResponseError)
 
 
 def _http_failure(error):
@@ -75,14 +67,67 @@ class LLMClient(ABC):
         """单轮补全。失败抛 LLMError。"""
 
 
-class OpenAICompatClient(LLMClient):
+class _HttpClient(LLMClient):
+    @property
+    def native_decisions(self):
+        return native_decisions(self._style, self._base, self._model, self._execution_mode)
+
+    def _post(self, payload, *, stream=False):
+        headers = {"Content-Type": "application/json", **self._credentials()}
+        if stream:
+            headers["Accept"] = "text/event-stream"
+        req = urllib.request.Request(
+            self._base + self._path,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        return urllib.request.urlopen(req, timeout=self._timeout)
+
+    def complete_decision(self, system, user, *, first_event, cancelled):
+        self.last_usage = None
+        reason = cancelled()
+        if reason:
+            raise ModelRequestStopped(reason)
+        system += f"\n调用 {DECISION_NAME} 一次提交决策；不要在正文中再输出一份决策。"
+        payload = self._payload(system, user)
+        payload.update(stream=True, tools=[decision_tool(self._style)])
+        if self._style == "openai":
+            payload.update(max_tokens=8192, tool_choice="auto")
+            if self._model.lower() == "glm-5.3" and native_decisions(self._style, self._base, self._model, "auto"):
+                payload["tool_stream"] = True
+        else:
+            payload["tool_choice"] = {"type": "auto"}
+        started = time.monotonic()
+        try:
+            with self._post(payload, stream=True) as response:
+                decision, usage = read_decision(response, self._style, started=started, timeout=self._timeout,
+                                                first_event=first_event, cancelled=cancelled)
+        except urllib.error.HTTPError as exc:
+            raise _http_failure(exc) from exc
+        except urllib.error.URLError as exc:
+            code = "model_timeout" if isinstance(exc.reason, NETWORK_TIMEOUTS) else "model_unreachable"
+            raise ModelResponseError(code, "headers") from exc
+        except NETWORK_TIMEOUTS as exc:
+            raise ModelResponseError("model_timeout", "headers") from exc
+        except (HTTPException, OSError) as exc:
+            raise ModelResponseError("model_unreachable", "headers") from exc
+        self.last_usage = usage
+        return decision
+
+
+class OpenAICompatClient(_HttpClient):
+    _style = "openai"
+    _path = "/chat/completions"
+
     def __init__(self, base_url: str, api_key: str = "", model: str = "gpt-4o-mini",
-                 timeout_s: int = 60, temperature: float = 0.3):
+                 timeout_s: int = 60, temperature: float = 0.3, *, execution_mode="auto"):
         self._base = base_url.rstrip("/")
         self._key = api_key
         self._model = model
         self._timeout = timeout_s
         self._temperature = temperature
+        self._execution_mode = execution_mode
 
     @classmethod
     def from_env(cls) -> Optional["OpenAICompatClient"]:
@@ -99,9 +144,8 @@ class OpenAICompatClient(LLMClient):
     def pressure_key(self):
         return pressure_key(self._base, self._key)
 
-    def complete(self, system: str, user: str) -> str:
-        self.last_usage = None
-        payload = {
+    def _payload(self, system, user):
+        return {
             "model": self._model,
             "temperature": self._temperature,
             "messages": [
@@ -109,17 +153,14 @@ class OpenAICompatClient(LLMClient):
                 {"role": "user", "content": user},
             ],
         }
-        headers = {"Content-Type": "application/json"}
-        if self._key:
-            headers["Authorization"] = f"Bearer {self._key}"
-        req = urllib.request.Request(
-            self._base + "/chat/completions",
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
+
+    def _credentials(self):
+        return {"Authorization": f"Bearer {self._key}"} if self._key else {}
+
+    def complete(self, system: str, user: str) -> str:
+        self.last_usage = None
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            with self._post(self._payload(system, user)) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             raise _http_failure(exc) from exc
@@ -136,20 +177,24 @@ class OpenAICompatClient(LLMClient):
             raise LLMError(f"LLM 响应格式异常: {exc}") from exc
 
 
-class AnthropicCompatClient(LLMClient):
+class AnthropicCompatClient(_HttpClient):
     """Anthropic Messages 协议客户端——智谱 Coding Plan 等订阅制端点。
 
     智谱 Coding Plan：https://open.bigmodel.cn/api/anthropic（GLM-5.3 系列），
     请求走 POST {base}/v1/messages，x-api-key + anthropive-version 头。
     """
 
+    _style = "anthropic"
+    _path = "/v1/messages"
+
     def __init__(self, base_url: str, api_key: str, model: str = "glm-5.3",
-                 timeout_s: int = 120, max_tokens: int = 4096):
+                 timeout_s: int = 120, max_tokens: int = 4096, *, execution_mode="auto"):
         self._base = base_url.rstrip("/")
         self._key = api_key
         self._model = model
         self._timeout = timeout_s
         self._max_tokens = max_tokens
+        self._execution_mode = execution_mode
 
     def describe(self) -> str:
         return f"{self._model} @ {self._base} (anthropic)"
@@ -158,27 +203,22 @@ class AnthropicCompatClient(LLMClient):
     def pressure_key(self):
         return pressure_key(self._base, self._key)
 
-    def complete(self, system: str, user: str) -> str:
-        self.last_usage = None
-        payload = {
+    def _payload(self, system, user):
+        return {
             "model": self._model,
             "max_tokens": self._max_tokens,
             "system": system,
             "messages": [{"role": "user", "content": user}],
         }
-        req = urllib.request.Request(
-            self._base + "/v1/messages",
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": self._key,
-                "authorization": f"Bearer {self._key}",
-                "anthropic-version": "2023-06-01",
-            },
-            method="POST",
-        )
+
+    def _credentials(self):
+        return {"x-api-key": self._key, "authorization": f"Bearer {self._key}",
+                "anthropic-version": "2023-06-01"}
+
+    def complete(self, system: str, user: str) -> str:
+        self.last_usage = None
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            with self._post(self._payload(system, user)) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             raise _http_failure(exc) from exc

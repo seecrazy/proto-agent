@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Optional
 from urllib.error import HTTPError, URLError
 
-from proto.llm.client import ModelPressureWait, NETWORK_TIMEOUTS
+from proto.llm.errors import ModelPressureWait, ModelRequestStopped, ModelResponseError, NETWORK_TIMEOUTS
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,7 @@ class ModelFailure:
     reason: str
     exception_type: str
     http_status: Optional[int] = None
+    stage: Optional[str] = None
 
 
 def describe_model_failure(error):
@@ -35,12 +36,16 @@ def describe_model_failure(error):
         exception_type = type(error).__name__
         if isinstance(error, ModelPressureWait):
             return ModelFailure(error.reason, exception_type)
+        if isinstance(error, ModelRequestStopped):
+            return ModelFailure(str(error), exception_type)
+        if isinstance(error, ModelResponseError):
+            return ModelFailure(error.reason, exception_type, error.http_status, error.stage)
         if isinstance(error, HTTPError):
             reason = {401: "model_unauthorized", 403: "model_forbidden", 404: "model_not_found",
                       429: "model_rate_limited"}.get(error.code, "model_http_error")
             if 500 <= error.code < 600:
                 reason = "model_server_error"
-            return ModelFailure(reason, exception_type, error.code)
+            return ModelFailure(reason, exception_type, error.code, "headers")
         if isinstance(error, NETWORK_TIMEOUTS):
             return ModelFailure("model_timeout", exception_type)
         if isinstance(error, ConnectionError):
@@ -60,11 +65,11 @@ def model_failure(error):
 
 TRANSIENT_MODEL_REASONS = frozenset({
     "circuit_breaker_open", "model_timeout", "model_unreachable", "model_rate_limited", "model_server_error",
-    "model_group_unavailable",
+    "model_group_unavailable", "model_stream_interrupted", "model_invalid_response",
 })
 GROUP_FAILOVER_REASONS = frozenset({
     "model_timeout", "model_unreachable", "model_rate_limited", "model_server_error",
-    "model_unauthorized", "model_not_found",
+    "model_unauthorized", "model_not_found", "model_stream_interrupted", "model_invalid_response",
 })
 
 
@@ -119,6 +124,11 @@ class CircuitBreaker:
             self._fails = 0
             self._state = "closed"
             self._reason = ""
+
+    def release(self, permit):
+        with self._lock:
+            if self._generation == permit and self._state == "half_open":
+                self._state = "open"
 
     def record_failure(self, reason="model_request_failed", *, permit=None, immediate=False) -> None:
         with self._lock:

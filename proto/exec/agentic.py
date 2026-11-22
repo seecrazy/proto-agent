@@ -24,8 +24,9 @@ from proto.exec.router import Task, TaskResult, VARIANT_ID
 from proto.exec.sessions import SESSION_SCHEMA_VERSION, TERMINAL_STATES
 from proto.exec.work_context import (MAX_ACTOR_BYTES, MAX_ADVISORY_BYTES, MAX_HISTORY_BYTES,
                                     clipped, render_history, size, target_args, tool_receipt, written_file)
-from proto.llm.breaker import model_wait_reason
+from proto.llm.breaker import TRANSIENT_MODEL_REASONS, model_wait_reason
 from proto.llm.client import ModelPressureWait
+from proto.llm.decision import parse_decision as _parse_decision
 from proto.runtime.runcontext import current_run, track_session
 from proto.system.execution_log import record_execution
 from proto.work.delivery import ios_build_result, ios_build_start, snapshot, valid_ios_evidence
@@ -38,7 +39,7 @@ PLAN_PROMPT = (
 LOOP_SYSTEM = (
     "你是 PROTO 的任务执行循环。根据任务与已有观察，决定下一个工具调用，"
     "或宣布完成。\n"
-    '每次只输出一个 JSON：{"tool": ..., "args": {...}, '
+    '每次只提交一个决策 JSON：{"tool": ..., "args": {...}, '
     '"category": "read_draft|workspace_write|visible_write"} '
     '或 {"done": true, "summary": "成果摘要"}。\n'
     "规则：工作区内的探索/读写/跑代码用 workspace_write 或 read_draft；"
@@ -99,26 +100,6 @@ def _overlap(a: str, b: str) -> bool:
     return bool(_tokens(a) & _tokens(b))
 
 
-def _parse_decision(raw: str) -> dict:
-    cleaned = re.sub(r"```(?:json)?", "", raw).strip()
-    decision = json.loads(cleaned)
-    if not isinstance(decision, dict):
-        raise ValueError("决策必须是 JSON 对象")
-    if "done" in decision and not isinstance(decision["done"], bool):
-        raise ValueError("done 必须是布尔值")
-    if decision.get("done") is True:
-        if "tool" in decision or "args" in decision:
-            raise ValueError("完成决策不能同时调用工具")
-        if not isinstance(decision.get("summary", ""), str):
-            raise ValueError("summary 必须是字符串")
-    else:
-        if not isinstance(decision.get("tool"), str) or not decision["tool"].strip():
-            raise ValueError("工具决策需要非空 tool")
-        if not isinstance(decision.get("args", {}), dict):
-            raise ValueError("args 必须是 JSON 对象")
-    return decision
-
-
 class AgenticLoop:
     def __init__(self, agent, max_steps: int = 12, pool: str = "owner_tasks"):
         self._agent = agent
@@ -130,12 +111,12 @@ class AgenticLoop:
     def _autonomy_reason(self):
         return self._agent._blocked_dispatch(self._autonomous)
 
-    def _complete(self, client, system: str, user: str):
+    def _complete(self, client, system: str, user: str, *, decision=False):
         reason = self._autonomy_reason()
         if reason:
             from proto.llm.client import LLMError
             raise LLMError(reason)
-        return self._agent._complete(client, system, user, pool=self._pool)
+        return self._agent._complete(client, system, user, pool=self._pool, decision=decision)
 
     def _tool_catalog(self) -> str:
         return json.dumps(self._agent.tools.definitions(), ensure_ascii=False)
@@ -334,7 +315,8 @@ class AgenticLoop:
         held = (lease is not None and lease.agent is self._agent
                 and self._session["schema_version"] == SESSION_SCHEMA_VERSION
                 and (verifying or self._session["trace"] or code in ("model_route_busy", "model_group_unavailable")
-                     or (self._session.get("delivery") is not None and self._agent._scoped_model())))
+                     or ((self._session.get("delivery") is not None or code in TRANSIENT_MODEL_REASONS)
+                         and self._agent._scoped_model())))
         result = dict(status="waiting_model" if held else "failed", reason=f"llm_error:{code}",
                       observations=self._session["observations"], trace=self._session["trace"])
         if retry_at is not None:
@@ -464,7 +446,7 @@ class AgenticLoop:
                 session["status"] = "running"
                 self._save()
                 try:
-                    raw = self._complete(self._agent.llm, LOOP_SYSTEM, fixed + advisory + history)
+                    raw = self._complete(self._agent.llm, LOOP_SYSTEM, fixed + advisory + history, decision=True)
                 except Exception as exc:
                     reason = self._autonomy_reason()
                     if reason:
@@ -485,6 +467,8 @@ class AgenticLoop:
             except (TypeError, ValueError) as exc:
                 session["pending_decision"] = None
                 observations.append(f"决策格式错误：{exc}；请返回合法工具对象或 done=true。")
+                record_execution("model_decision_rejected", **self._agent._execution_context(),
+                                 reason="model_invalid_decision", stage="decision")
                 continue
             stopped = self._goal_stopped()
             if stopped:

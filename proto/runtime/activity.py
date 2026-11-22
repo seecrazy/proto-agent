@@ -22,6 +22,10 @@ REASONS = {
     "model_unauthorized": "模型身份校验失败（401）", "model_rate_limited": "模型端限流（429）",
     "model_not_configured": "未配置可用模型", "model_unreachable": "无法连接模型端",
     "model_http_error": "模型端返回 HTTP 错误", "model_request_failed": "模型请求失败",
+    "model_stream_interrupted": "模型回复未传完", "model_invalid_response": "模型响应协议不完整或无效",
+    "model_output_truncated": "模型输出到达上限，决策未执行", "model_response_refused": "模型拒绝生成该回复",
+    "model_response_too_large": "模型响应超过接收上限", "model_context_limit": "超过模型上下文上限",
+    "model_provider_error": "接入返回未识别的业务错误",
     "model_server_error": "模型端暂时不可用",
     "model_not_found": "模型接入找不到（404）", "model_group_unavailable": "模型组暂不可用",
     "model_route_busy": "同一模型接入正在服务另一条请求",
@@ -106,6 +110,7 @@ class RunActivity:
     def snapshot(self, agent):
         with self.database.connect() as connection:
             fields = """id, kind, status, reason, updated_at, cancel_requested,
+                    json_extract(result, '$.model_reason') AS model_reason,
                     coalesce(json_extract(result, '$.verified'), json_extract(result, '$.proposal.verified')) AS verified"""
             active = connection.execute(f"""
                 SELECT {fields} FROM runs WHERE agent_id = ? AND status IN
@@ -123,6 +128,7 @@ class RunActivity:
         for row in (run, previous):
             if row:
                 row["reason"] = _reason(row["reason"])
+                row["model_reason"] = _reason(row["model_reason"])
         marker = getattr(agent, "_current_op", None) or {}
         with self._lock:
             events = list(self._events.get(agent.fleet_id, ()))
@@ -146,6 +152,8 @@ def activity_reply(snapshot, *, detailed=False):
         if current.get("phase") == "model_wait":
             name = current.get("model")
             text += f"正在等模型「{name}」返回。" if name else "正在等模型返回。"
+        if current.get("phase") == "model_streaming":
+            text += "模型已开始返回，等完整决策后再执行工具。"
         if current.get("phase") == "tool_start":
             text += f"正在执行工具 {current['tool']}。"
         if run and run["cancel_requested"]:
@@ -154,6 +162,10 @@ def activity_reply(snapshot, *, detailed=False):
         if run.get("reason") in ("model_retry_wait", "interrupted_requeued", "safe_resume_ready",
                                   "model_retry_exhausted", "safe_resume_model", "safe_resume_limit"):
             text += REASONS[run["reason"]] + "。"
+            cause = (REASONS.get(run.get("model_reason")) if run["reason"] in (
+                "model_retry_wait", "model_retry_exhausted", "safe_resume_model") else None)
+            if cause:
+                text += f"这轮卡在：{cause}。"
         else:
             text += {"awaiting_approval": "有任务等待主人批准。", "queued": "有任务正在排队。",
                      "needs_reconciliation": "有在途结果未知，需人工核对。"}.get(run["status"], "")
@@ -164,9 +176,9 @@ def activity_reply(snapshot, *, detailed=False):
             text += "供应商限流，此接入按冷却截止等待，不会重复发送。"
         else:
             text += "模型处于熔断冷却或正在做恢复试探。"
-    reason = REASONS.get(model["reason"]) or REASONS.get((snapshot["last_run"] or {}).get("reason"))
-    if reason:
-        text += f"最近的卡点：{reason}。"
+            cause = REASONS.get(model["reason"])
+            if cause and model["reason"] != "circuit_breaker_open":
+                text += f"接入目前受阻：{cause}。"
     if snapshot["autonomy"]:
         text += REASONS[snapshot["autonomy"]] + "。"
     paths = list(dict.fromkeys(event["path"] for event in reversed(snapshot["events"]) if event["path"]))[:3]
@@ -178,6 +190,10 @@ def activity_reply(snapshot, *, detailed=False):
             label = RUN_LABELS.get(last["kind"], "处理后台任务")
             text += (f"最近后台轮次：{label}，{TERMINAL_LABELS.get(last['status'], '状态未知')}"
                      + ("，已通过验收。" if last["verified"] else "，无通过验收记录。"))
+            cause = REASONS.get(last.get("reason"))
+            if cause:
+                ended = time.strftime("%m月%d日 %H:%M", time.localtime(last["updated_at"]))
+                text += f"此前轮次的原因（{ended}）：{cause}。"
         elif not paths:
             text += "暂无已结束的后台工作记录。"
     return text

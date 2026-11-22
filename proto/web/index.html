@@ -368,6 +368,9 @@
     </div>
     <label><span>Base URL（不含密钥、查询参数或片段）</span><input id="model-base" type="url" placeholder="http://localhost:11434/v1"></label>
     <label><span>模型名 / Endpoint ID</span><input id="model-id" autocomplete="off" placeholder="供应商支持的模型标识"></label>
+    <label><span>执行决策（不影响聊天）</span><select id="model-execution-mode">
+      <option value="auto">自动（识别已验证的兼容地址）</option><option value="native">结构化流式</option><option value="legacy">兼容文本</option>
+    </select></label>
     <label><span id="model-key-label">API Key（本地模型可留空）</span><input id="model-key" type="password" autocomplete="new-password"></label>
     <label><input id="model-clear-key" type="checkbox"> 显式清除已有密钥（否则编辑留空保留原密钥）</label>
     <div class="btns"><button class="primary" onclick="saveModelProfile()">保存接入</button>
@@ -958,6 +961,7 @@ function fillModelProfile() {
   document.getElementById("model-style").value = profile?.api_style || "openai";
   document.getElementById("model-base").value = profile?.base_url || "";
   document.getElementById("model-id").value = profile?.model || "";
+  document.getElementById("model-execution-mode").value = profile?.execution_mode || "auto";
   document.getElementById("model-key-label").textContent = profile?.has_api_key
     ? "API Key（已有密钥；留空保留，不会回显）" : "API Key（本地模型可留空）";
   clearModelSecret();
@@ -1061,6 +1065,7 @@ async function saveModelProfile() {
     api_style: document.getElementById("model-style").value,
     base_url: document.getElementById("model-base").value,
     model: document.getElementById("model-id").value,
+    execution_mode: document.getElementById("model-execution-mode").value,
     api_key: document.getElementById("model-key").value,
     clear_api_key: document.getElementById("model-clear-key").checked,
     ...(identity ? {id: identity} : {}),
@@ -1255,6 +1260,7 @@ function renderBudgetPanel(b) {
 let lastBudgets = {};
 const LIVE_PHASES = {
   started: "领取任务", goal_selected: "选择当前目标", model_wait: "等待模型",
+  model_streaming: "模型已开始返回 · 等完整决策",
   model_returned: "模型已返回", model_failed: "模型调用失败", tool_start: "调用工具",
   tool_returned: "工具已返回", file_written: "写入文件（未必通过验收）", verification: "检查交付证据",
   awaiting_approval: "待主人批准", needs_reconciliation: "结果未知，待核对",
@@ -1267,6 +1273,10 @@ const LIVE_REASONS = {
   model_unreachable: "无法连接模型端", model_http_error: "模型端 HTTP 错误", model_server_error: "模型端暂时不可用",
   model_not_found: "模型接入找不到（404）", model_group_unavailable: "模型组暂不可用",
   model_not_configured: "未配置可用模型", model_request_failed: "模型请求失败",
+  model_stream_interrupted: "模型回复未传完", model_invalid_response: "模型响应协议不完整或无效",
+  model_output_truncated: "模型输出到达上限，决策未执行", model_response_refused: "模型拒绝生成该回复",
+  model_response_too_large: "模型响应超过接收上限", model_context_limit: "超过模型上下文上限",
+  model_provider_error: "接入返回未识别的业务错误",
   circuit_breaker_open: "模型冷却中", run_cancelled: "已请求取消",
   needs_reconciliation: "在途结果未知", fleet_paused: "Agent 已暂停",
   muted: "Agent 已静音", manual_only: "当前为手动模式", not_enabled: "自主行动已关闭", suggestions_only: "当前仅提案",
@@ -1318,11 +1328,16 @@ function renderLiveWork(data, selected) {
   const detail = document.getElementById("live-detail");
   const list = document.getElementById("live-events");
   const summary = liveSummary(data), last = data.last_run;
-  const issue = LIVE_REASONS[data.model.reason] || LIVE_REASONS[last?.reason];
+  const runReason = ["model_retry_wait", "model_retry_exhausted", "safe_resume_model"].includes(data.run?.reason)
+    && LIVE_REASONS[data.run?.model_reason];
+  const routeReason = data.model.waiting && LIVE_REASONS[data.model.reason];
+  const pastReason = LIVE_REASONS[last?.reason];
   const description = [data.goal || (data.run && (RUN_KINDS[data.run.kind] || "后台任务")),
     data.step && data.max_steps && `第 ${data.step}/${data.max_steps} 步`,
-    issue && `最近卡点：${issue}`,
+    runReason && `本轮卡点：${runReason}`,
+    routeReason && routeReason !== runReason && `接入目前受阻：${routeReason}`,
     last && (last.verified ? "最近一轮已验收" : `最近一轮：${LIVE_PHASES[last.status] || last.status} · 无通过验收记录`),
+    pastReason && `此前轮次（${new Date(last.updated_at * 1000).toLocaleString("zh-CN")}）：${pastReason}`,
   ].filter(Boolean).join(" ｜ ");
   view.dataset.state = data.model.waiting || data.run?.cancel_requested || data.run?.status === "awaiting_approval"
     || data.run?.status === "needs_reconciliation" ? "waiting" : data.run?.status || "idle";

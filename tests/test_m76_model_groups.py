@@ -167,6 +167,24 @@ def test_web_create_edit_and_select_groups(tmp_path):
         assert state["groups"] == [{"id": identity, "name": "新编程组", "profile_ids": ["beta", "alpha"]}]
 
 
+def test_web_execution_mode_is_validated_hot_applied_and_persisted(tmp_path):
+    fleet = AgentManager(tmp_path)
+    catalog = fleet.enable_model_updates()
+    save(catalog, profile())
+    catalog.select("alpha", None, 1)
+    payload = {"expected_revision": 2, "profile": {"id": "alpha", "execution_mode": "unknown"}}
+    with console(fleet) as server:
+        assert request(server, "/api/models", payload)[0] == 400
+        payload["profile"]["execution_mode"] = "native"
+        status, state = request(server, "/api/models", payload)
+        assert status == 200 and state["profiles"][0]["execution_mode"] == "native"
+        assert catalog.pin("main").native_decisions and ModelCatalog(tmp_path).pin("main").native_decisions
+        payload["expected_revision"] = state["revision"]
+        payload["profile"]["execution_mode"] = "auto"
+        assert request(server, "/api/models", payload)[0] == 200
+        assert not catalog.pin("main").native_decisions
+
+
 @pytest.mark.parametrize("failure", [401, 404, 429, 503, TimeoutError("private"),
                                      URLError("offline"), ConnectionResetError("closed")])
 def test_recoverable_failure_fails_over_and_settles_each_sent_call(tmp_path, provider, failure):

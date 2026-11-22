@@ -164,9 +164,10 @@ def test_model_outage_pauses_automatic_runs_then_resumes_real_work(live, monkeyp
         "tool_start", "tool_returned", "file_written"]
     assert any(event["path"] == path for event in recovery_events if event["phase"] == "file_written")
     assert not agent.model_status()["waiting"]
-    status, prior = call(server, "POST", "/api/chat", {"text": "你刚才做了什么？"}, token=server.token)
-    assert status == 200 and prior["read_only"] and path in prior["reply"]
-    assert "最近后台轮次" in prior["reply"] and not model.foreground and not agent._load_history()
+    for question in ("你刚才做了什么？", "你做了什么？", "有哪些验收过的产出？"):
+        status, prior = call(server, "POST", "/api/chat", {"text": question}, token=server.token)
+        assert status == 200 and prior["read_only"] and path in prior["reply"]
+        assert "最近后台轮次" in prior["reply"] and not model.foreground and not agent._load_history()
 
 
 def test_reopened_dialogue_keeps_receipt_and_remembers_valid_facts(tmp_path):

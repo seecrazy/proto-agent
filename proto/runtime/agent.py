@@ -49,6 +49,7 @@ from proto.state.agent_state import AgentState, StateManager
 from proto.state.desires import DesireDynamics
 from proto.llm.breaker import CircuitBreaker, GROUP_FAILOVER_REASONS, describe_model_failure
 from proto.llm.client import LLMError, ModelPressureWait
+from proto.llm.errors import ModelRequestStopped
 from proto.memory.extract import extract_facts, reflect as llm_reflect
 from proto.memory.extract import score_importance
 from proto.goals.system import GoalTree
@@ -677,11 +678,12 @@ class ProtoAgent:
             return False
 
     def _complete(self, client, system: str, user: str,
-                  pool: str = "owner_tasks", *, foreground=False) -> str:
+                  pool: str = "owner_tasks", *, foreground=False, decision=False) -> str:
         """熔断 + 预算守卫的 LLM 调用。"""
         default_role = "fast" if client is self._llm_fast and client is not self._llm else "main"
         model_event = partial(record_execution, **self._execution_context(), call_id=pysecrets.token_hex(12),
-                              role=getattr(client, "role", default_role), pool=pool, foreground=foreground)
+                              role=getattr(client, "role", default_role), pool=pool, foreground=foreground,
+                              decision=decision)
         started = time.monotonic()
         group, profile_id = "", None
         try:
@@ -691,7 +693,8 @@ class ProtoAgent:
             group, bindings = self._model_bindings(client)
             pressure = self._pressure()
             if group:
-                return self._complete_group(group, bindings, pressure, system, user, pool, model_event)
+                return self._complete_group(group, bindings, pressure, system, user, pool, model_event,
+                                            decision=decision, foreground=foreground)
             client, breaker = bindings[0]
             profile_id = getattr(client, "profile_id", None)
             if breaker.snapshot()["waiting"]:
@@ -699,16 +702,18 @@ class ProtoAgent:
             route = getattr(client, "pressure_key", None)
             with pressure.admit(route, foreground=foreground):
                 attempt_event = partial(model_event, profile_id=profile_id, attempt=1)
-                return self._model_request(client, breaker, pressure, route, system, user, pool, attempt_event)
+                return self._model_request(client, breaker, pressure, route, system, user, pool, attempt_event,
+                                           decision=decision)
         except Exception as exc:
             failure = describe_model_failure(exc)
             code = execution_reason(exc.args[0]) if isinstance(exc, LLMError) and exc.args else None
             model_event("model_call_failed", reason=code if code not in (None, "other") else failure.reason,
-                        grouped=bool(group), profile_id=profile_id, retry_at=getattr(exc, "retry_at", None),
-                        duration_ms=round((time.monotonic() - started) * 1000))
+                        grouped=bool(group), profile_id=profile_id,
+                        retry_at=exc.retry_at if isinstance(exc, ModelPressureWait) else None,
+                        stage=failure.stage, duration_ms=round((time.monotonic() - started) * 1000))
             raise
 
-    def _complete_group(self, name, bindings, pressure, system, user, pool, model_event):
+    def _complete_group(self, name, bindings, pressure, system, user, pool, model_event, *, decision, foreground):
         sent_failures = 0
         for client, breaker in bindings:
             if sent_failures == 2:
@@ -723,10 +728,10 @@ class ProtoAgent:
                 continue
             route = client.pressure_key
             try:
-                with pressure.admit(route, origin=client.pressure_origin):
+                with pressure.admit(route, origin=client.pressure_origin, foreground=foreground):
                     attempt_event = partial(candidate_event, attempt=sent_failures + 1)
                     return self._model_request(client, breaker, pressure, route, system, user, pool, attempt_event,
-                                               grouped=True)
+                                               grouped=True, decision=decision)
             except _GroupMemberFailed:
                 sent_failures += 1
             except ModelPressureWait as exc:
@@ -746,7 +751,8 @@ class ProtoAgent:
         reason = local["reason"] if self._group_stops_at(local) else "circuit_breaker_open"
         return ModelPressureWait(reason, local["retry_at"])
 
-    def _model_request(self, client, breaker, pressure, route, system, user, pool, attempt_event, *, grouped=False):
+    def _model_request(self, client, breaker, pressure, route, system, user, pool, attempt_event, *, grouped=False,
+                       decision=False):
         blocked = self._blocked_dispatch(False)
         if blocked:
             raise LLMError(blocked)
@@ -781,11 +787,21 @@ class ProtoAgent:
         started = time.monotonic()
         origin = getattr(client, "pressure_origin", None)
         activity = {"model": client.profile_name} if grouped else {}
+        streamed = decision and getattr(client, "native_decisions", False)
+
+        def first_event(elapsed_ms):
+            self.activity_event("model_streaming", **activity)
+            attempt_event("model_first_event", duration_ms=elapsed_ms, streamed=True)
+
         try:
             self.activity_event("model_wait", **activity)
             with self._background_io():
-                attempt_event("model_started", estimated_input_tokens=estimated_in)
-                reply = client.complete(system, user)
+                attempt_event("model_started", estimated_input_tokens=estimated_in, streamed=streamed)
+                if streamed:
+                    reply = client.complete_decision(system, user, first_event=first_event,
+                                                     cancelled=lambda: self._blocked_dispatch(False))
+                else:
+                    reply = client.complete(system, user)
             usage = getattr(client, "last_usage", None)
             amounts = [usage.get(unit, 0) for unit in ("input_tokens", "output_tokens")] if isinstance(usage, dict) else []
             total = (sum(amounts) if amounts and all(type(amount) is int and 0 <= amount <= 10**11 for amount in amounts)
@@ -797,7 +813,9 @@ class ProtoAgent:
             incident = failure.reason
             can_failover = grouped and incident in GROUP_FAILOVER_REASONS
             limited = None
-            if route and incident == "model_rate_limited":
+            if isinstance(exc, ModelRequestStopped):
+                breaker.release(permit)
+            elif route and incident == "model_rate_limited":
                 limited = pressure.limited(route, exc, origin=origin)
                 breaker.record_success(permit=permit)
             else:
@@ -807,7 +825,7 @@ class ProtoAgent:
             self.activity_event("model_failed", reason=incident, **activity)
             attempt_event("model_failed", reason=incident, http_status=failure.http_status,
                           exception_type=failure.exception_type, failover_eligible=can_failover,
-                          duration_ms=round((time.monotonic() - started) * 1000),
+                          duration_ms=round((time.monotonic() - started) * 1000), stage=failure.stage, streamed=streamed,
                           retry_at=limited.retry_at if limited else None)
             if ticket is not None:
                 fleet_budget.settle(ticket.id)
@@ -825,7 +843,8 @@ class ProtoAgent:
             raise
         breaker.record_success(permit=permit)
         self.activity_event("model_returned", **activity)
-        attempt_event("model_returned", tokens=total, duration_ms=round((time.monotonic() - started) * 1000))
+        attempt_event("model_returned", tokens=total, duration_ms=round((time.monotonic() - started) * 1000),
+                      streamed=streamed)
         if ticket is not None:
             fleet_budget.settle(ticket.id, tokens=total)
         self.kernel.pools.finish_model(request_id, tokens=total, elapsed=time.monotonic() - started)

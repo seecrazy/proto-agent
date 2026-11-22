@@ -612,7 +612,7 @@ def test_model_panel_scripts_submit_revision_and_never_cache_keys():
 const assert = require("assert");
 const elements = {};
 for (const identity of ["model-key", "model-clear-key", "model-main", "model-fast", "model-profile",
-                       "model-name", "model-style", "model-base", "model-id", "model-key-label", "model-message",
+                       "model-name", "model-style", "model-base", "model-id", "model-key-label", "model-message", "model-execution-mode",
                        "model-group", "model-group-name", "model-group-add", "model-group-members"])
   elements[identity] = {value: "", textContent: "", innerHTML: "", checked: false};
 elements["model-panel"] = {querySelectorAll: () => [], showModal() {}, close() {}};
@@ -640,9 +640,12 @@ async function refreshState() {}
   fillModelProfile();
   assert.equal(elements["model-key"].value, "");
   assert(elements["model-key-label"].textContent.includes("留空保留"));
+  assert.equal(elements["model-execution-mode"].value, "auto");
+  elements["model-execution-mode"].value = "native";
   elements["model-key"].value = "fresh-secret";
   await saveModelProfile();
   assert.equal(calls.at(-1).body.profile.api_key, "fresh-secret");
+  assert.equal(calls.at(-1).body.profile.execution_mode, "native");
   assert.equal(calls.at(-1).body.expected_revision, 7);
   assert.equal(elements["model-key"].value, "");
   assert(!JSON.stringify(modelCatalog).includes("fresh-secret"));

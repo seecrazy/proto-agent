@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from proto.llm.client import (AnthropicCompatClient, LLMClient, LLMError,
                               OpenAICompatClient, pressure_key)
+from proto.llm.decision import EXECUTION_MODES
 
 
 GROUP_PREFIX = "group:"
@@ -46,7 +47,7 @@ def _text(value, maximum=512, empty=False):
 
 def _profile(value):
     fields = {"id", "name", "api_style", "base_url", "model", "api_key"}
-    if not isinstance(value, dict) or set(value) != fields:
+    if not isinstance(value, dict) or set(value) - {"execution_mode"} != fields:
         raise ModelConfigError("invalid_model_profile")
     result = {key: _text(value[key], 4096 if key == "api_key" else 512,
                          empty=key == "api_key") for key in fields}
@@ -54,6 +55,11 @@ def _profile(value):
         raise ModelConfigError("invalid_model_id")
     if result["api_style"] not in ("openai", "anthropic"):
         raise ModelConfigError("unsupported_model_protocol")
+    mode = value.get("execution_mode", "auto")
+    if not isinstance(mode, str) or mode not in EXECUTION_MODES:
+        raise ModelConfigError("invalid_execution_mode")
+    if mode != "auto":
+        result["execution_mode"] = mode
     try:
         parsed = urlsplit(result["base_url"])
         if (parsed.scheme not in ("http", "https") or not parsed.hostname
@@ -123,6 +129,7 @@ def _from_client(client, identity, name):
         return None
     return _profile({"id": identity, "name": name, "base_url": client._base,
                      "api_key": client._key, "model": client._model,
+                     "execution_mode": client._execution_mode,
                      "api_style": ("anthropic" if isinstance(client, AnthropicCompatClient)
                                    else "openai")})
 
@@ -143,6 +150,16 @@ class _PinnedClient(LLMClient):
         self.last_usage = None
         result = self._client.complete(system, user)
         self.last_usage = copy.deepcopy(getattr(self._client, "last_usage", None))
+        return result
+
+    @property
+    def native_decisions(self):
+        return getattr(self._client, "native_decisions", False)
+
+    def complete_decision(self, system, user, **options):
+        self.last_usage = None
+        result = self._client.complete_decision(system, user, **options)
+        self.last_usage = copy.deepcopy(self._client.last_usage)
         return result
 
 
@@ -272,7 +289,7 @@ class ModelCatalog:
     def save_profile(self, profile, expected_revision):
         with self._lock:
             self._check_revision(expected_revision)
-            fields = {"id", "name", "api_style", "base_url", "model", "api_key", "clear_api_key"}
+            fields = {"id", "name", "api_style", "base_url", "model", "api_key", "clear_api_key", "execution_mode"}
             if not isinstance(profile, dict) or set(profile) - fields:
                 raise ModelConfigError("invalid_model_profile")
             identity = profile["id"] if "id" in profile else uuid.uuid4().hex[:12]
@@ -355,9 +372,10 @@ class ModelCatalog:
     @staticmethod
     def _bind(profile):
         cls = AnthropicCompatClient if profile["api_style"] == "anthropic" else OpenAICompatClient
-        client = cls(base_url=profile["base_url"], api_key=profile["api_key"], model=profile["model"])
+        client = cls(base_url=profile["base_url"], api_key=profile["api_key"], model=profile["model"],
+                     execution_mode=profile.get("execution_mode", "auto"))
         fingerprint = hashlib.sha256(json.dumps(
-            {key: profile[key] for key in ("api_style", "base_url", "model", "api_key")},
+            {key: profile.get(key) for key in ("api_style", "base_url", "model", "api_key", "execution_mode")},
             sort_keys=True).encode("utf-8")).hexdigest()
         origin = "origin:" + pressure_key(profile["base_url"], "")
         return _PinnedClient(client, (profile["id"], fingerprint), name=profile["name"], origin=origin,

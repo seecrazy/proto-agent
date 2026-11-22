@@ -579,9 +579,10 @@ class RunCoordinator:
         if code == "model_route_busy":
             resumed["retry_at"] = time.time() + 2
             return "queued", "model_retry_wait", resumed
-        if code not in TRANSIENT_MODEL_REASONS:
+        limit = 1 if code == "model_request_failed" else len(_MODEL_RETRY_DELAYS)
+        if code not in TRANSIENT_MODEL_REASONS and code != "model_request_failed":
             return "needs_reconciliation", "safe_resume_model", resumed
-        if attempts == len(_MODEL_RETRY_DELAYS):
+        if attempts >= limit:
             return "needs_reconciliation", "model_retry_exhausted", resumed
         deadline = result.get("retry_at") or agent.model_status()["retry_at"] or 0
         resumed.update(model_retries=attempts + 1, retry_at=max(
