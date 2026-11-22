@@ -58,7 +58,7 @@ def agent(tmp_path):
 
 class TestProjectWorkspace:
     def test_goal_execution_writes_into_project_dir(self, agent):
-        """目标牵引执行 → 文件落在 projects/<目标slug>/ 而非工作区根。"""
+        """目标牵引执行 → 文件落在主工位而非工作区根，首次产出即更新索引。"""
         agent.set_priority("开发浏览器插件")
         node = agent.goal_tree.select_executable("开发浏览器插件")
         result = agent.work_on_goal(node)
@@ -66,6 +66,7 @@ class TestProjectWorkspace:
         files = [str(p.relative_to(agent.code_workspace.root))
                  for p in agent.code_workspace.root.rglob("*") if p.is_file()]
         assert files and all(f.startswith("projects/") for f in files), files
+        assert "开发浏览器插件" in (agent.code_workspace.root / "projects/README.md").read_text()
 
     def test_projects_root_configurable_env(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PROTO_PROJECTS_ROOT", str(tmp_path / "mydev"))
@@ -75,10 +76,9 @@ class TestProjectWorkspace:
         assert str(a.code_workspace.root).startswith(str(tmp_path / "mydev"))
 
     def test_project_dir_named_from_goal_slug(self, agent):
-        """M53 起目录名 ASCII only（中文可读性由 projects/README.md 索引承担）。"""
-        from proto.runtime.agent import ProtoAgent
-        assert ProtoAgent._goal_slug("开发浏览器插件: 广告过滤 MVP!") == "mvp"
-        assert ProtoAgent._goal_slug("以 SwiftUI 实现温故 app") == "swiftui-app"
+        from proto.work.delivery import project_slug
+        assert project_slug("开发浏览器插件: 广告过滤 MVP!") == "mvp"
+        assert project_slug("以 SwiftUI 实现温故 app") == "swiftui-app"
 
     def test_per_agent_isolation(self, tmp_path):
         from proto.runtime.agent import ProtoAgent

@@ -6,6 +6,7 @@ import os
 import plistlib
 import re
 import stat
+import unicodedata
 from pathlib import Path, PurePosixPath
 
 from proto.runtime.activity import artifact_path
@@ -18,6 +19,11 @@ _APP = re.compile(r"(?:iphone|ios|swiftui)", re.I)
 _DESIGN = re.compile(r"规格|设计|概念|spec(?:ification)?|design", re.I)
 _IMPLEMENT = re.compile(r"实现|编码|开发|implement|build", re.I)
 _CHECK = re.compile(r"本地验证|验证|测试|交付|xctest|test|deliver", re.I)
+_PROJECT_COLLECTIONS = ("delivery_projects", "project_dirs")
+
+
+class ProjectDirectoryError(RuntimeError):
+    """The recorded project directory cannot safely be used."""
 
 
 def ios_stage(root, node):
@@ -50,14 +56,26 @@ def stage_waiters(tree, active):
     return excluded
 
 
-def project_path(root, directory):
+def _directory_name(directory):
     directory = artifact_path(directory)
-    if not directory or len(PurePosixPath(directory).parts) != 2:
+    if not directory:
         return None
-    path = root / directory
+    item = PurePosixPath(directory)
+    if len(item.parts) != 2 or item.name.startswith((".", "_")) or item.as_posix() != directory:
+        return None
+    return item.name
+
+
+def project_path(root, directory):
+    if not _directory_name(directory):
+        return None
     try:
-        return path if path.resolve() == path else None
-    except (OSError, RuntimeError):
+        projects = root / "projects"
+        path = root / directory
+        if (projects.exists() and not projects.is_dir()) or path.resolve() != path:
+            return None
+        return path if not path.exists() or path.is_dir() else None
+    except (OSError, RuntimeError, ValueError):
         return None
 
 
@@ -72,38 +90,93 @@ def project_files(folder):
                 yield path
 
 
+def project_slug(text):
+    normalized = unicodedata.normalize("NFKD", text)
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    title = re.split(r"[:\r\n]", normalized, maxsplit=1)[0]
+    words = re.findall(r"[a-z0-9]+", title.lower()) or re.findall(r"[a-z0-9]+", normalized.lower())
+    parts = []
+    length = 0
+    for word in dict.fromkeys(words):
+        if length + len(word) + bool(parts) > 24:
+            if parts:
+                break
+            continue
+        length += len(word) + bool(parts)
+        parts.append(word)
+    return "-".join(parts) or "goal"
+
+
+def project_bindings(agent):
+    store = agent.spine.store
+    for goal in agent.goal_tree.snapshot()["nodes"]:
+        for collection in _PROJECT_COLLECTIONS:
+            directory = (store.get(collection, goal["id"]) or {}).get("dir")
+            if _directory_name(directory):
+                yield goal, directory, collection
+
+
+def _allocate_project(work_root, root, claimed):
+    slug = project_slug(root.text)
+    short = f"{slug}-{root.id[:8]}"
+    complete = f"{slug}-{root.id}"
+    projects = work_root / "projects"
+    if projects.is_symlink() or (projects.exists() and not projects.is_dir()):
+        raise ProjectDirectoryError("projects")
+    taken = {PurePosixPath(directory).name.casefold() for directory in claimed}
+    if projects.is_dir():
+        taken.update(path.name.casefold() for path in projects.iterdir())
+    name = complete if short.casefold() in taken else short
+    number = 2
+    while name.casefold() in taken:
+        name = f"{complete}-{number}"
+        number += 1
+    return f"projects/{name}"
+
+
 def main_project(agent, node):
     root = agent.goal_tree.root_for(node) or node
     store = agent.spine.store
     work_root = agent.code_workspace.root.resolve()
-    saved = store.get("delivery_projects", root.id) or {}
-    if project_path(work_root, saved.get("dir")):
-        return saved["dir"]
+    saved = store.get("delivery_projects", root.id)
+    if saved is not None:
+        directory = saved.get("dir")
+        if project_path(work_root, directory) is None:
+            raise ProjectDirectoryError(directory)
+        return directory
     lineage = (root, *agent.goal_tree.related_goals(root.id))
-    claimed = set()
-    for other in agent.goal_tree.all_active():
-        if other not in lineage:
-            claimed.update((store.get(collection, other.id) or {}).get("dir")
-                           for collection in ("project_dirs", "delivery_projects"))
+    lineage_ids = {related.id for related in lineage}
+    claimed = {directory.casefold() for goal, directory, _collection in project_bindings(agent)
+               if goal["id"] not in lineage_ids}
     candidates = []
+    original = None
+    unavailable = None
     for related in lineage:
         directory = (store.get("project_dirs", related.id) or {}).get("dir")
+        if not directory:
+            continue
         folder = project_path(work_root, directory)
-        if folder is None or directory in claimed or not folder.is_dir():
+        if folder is None or directory.casefold() in claimed:
+            unavailable = directory
+            continue
+        if related is root:
+            original = directory
+        if not folder.is_dir():
             continue
         rank = (any(folder.glob("*.xcodeproj/project.pbxproj")),
                 ios_stage(root, related) == "build", (folder / "Package.swift").is_file(),
                 related is root, -related.created_at)
         candidates.append((rank, directory))
-    legacy = agent._legacy_slug(root.text)
-    directory = f"projects/{legacy}" if legacy else ""
-    original = project_path(work_root, directory)
     if candidates:
         directory = max(candidates)[1]
-    elif original is None or not original.is_dir() or directory in claimed:
-        directory = agent._project_dir_for(root, migrate_legacy=False)
-    if directory in claimed or not project_path(work_root, directory):
-        directory = f"projects/{agent._goal_slug(root.text, root.id)}-{root.id[:8]}"
+    elif original:
+        directory = original
+    elif unavailable:
+        raise ProjectDirectoryError(unavailable)
+    else:
+        directory = _allocate_project(work_root, root, claimed)
+        if project_path(work_root, directory) is None:
+            raise ProjectDirectoryError(directory)
         store.put("project_dirs", root.id, {"dir": directory, "text": root.text[:80]})
     store.put("delivery_projects", root.id, {"dir": directory})
     return directory

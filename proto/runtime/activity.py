@@ -39,6 +39,7 @@ REASONS = {
     "delivery_no_progress": "连续两个工作片无实质文件变化，已暂停",
     "delivery_not_verified": "四个工作片仍未通过验收，已暂停",
     "delivery_predecessor_pending": "等待前一阶段验收",
+    "project_directory_unavailable": "项目目录不可用，修复后可恢复目标",
     "ios_delivery_evidence_missing": "缺少真实且未过期的模拟器构建或测试证据",
 }
 

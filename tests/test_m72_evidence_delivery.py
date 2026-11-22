@@ -166,7 +166,9 @@ def test_shared_workspace_and_prerequisites_leave_legacy_projects_intact(tmp_pat
     checks = agent.goal_tree.add("本地验证与交付", "mid", parent_id=root.id, acceptance="XCTest")
     build = agent.goal_tree.add("以 SwiftUI 完整实现", "mid", parent_id=root.id, acceptance="能构建")
     design = agent.goal_tree.add("明确设计规格", "mid", parent_id=root.id, acceptance="有规格")
-    prior, tests = agent._project_dir_for(build), agent._project_dir_for(checks)
+    prior, tests = "projects/swiftui", "projects/旧验证"
+    agent.spine.store.put("project_dirs", build.id, {"dir": prior})
+    agent.spine.store.put("project_dirs", checks.id, {"dir": tests})
     agent.code_workspace.write_file(f"{prior}/App.swift", "import SwiftUI")
     agent.code_workspace.write_file(f"{tests}/Package.swift", "// library only")
     assert main_project(agent, design) == main_project(agent, checks) == prior
@@ -185,13 +187,36 @@ def test_shared_workspace_and_prerequisites_leave_legacy_projects_intact(tmp_pat
     assert (agent.code_workspace.root / prior / "App.swift").is_file()
 
 
-def test_unmapped_legacy_project_is_adopted_without_renaming(tmp_path):
+def test_mapped_legacy_project_is_adopted_without_renaming(tmp_path):
     agent = ProtoAgent(tmp_path, llm=Scripted())
     goal = agent.goal_tree.add("一个现有工具", "mid")
-    legacy = f"projects/{agent._legacy_slug(goal.text)}"
+    legacy = f"projects/{goal.text}"
+    agent.spine.store.put("project_dirs", goal.id, {"dir": legacy})
     agent.code_workspace.write_file(f"{legacy}/start.py", "print('fixture')")
     assert main_project(agent, goal) == legacy
     assert (agent.code_workspace.root / legacy / "start.py").is_file()
+
+
+@pytest.mark.parametrize("obstruction", ["file", "symlink"])
+def test_unusable_saved_project_pauses_before_model_and_retries_same_path(tmp_path, obstruction):
+    model = Scripted()
+    agent = ProtoAgent(tmp_path, llm=model)
+    goal = agent.goal_tree.add("做个日记 App", "mid", acceptance="有产物")
+    directory = main_project(agent, goal)
+    path = agent.code_workspace.root / directory
+    path.parent.mkdir()
+    if obstruction == "file":
+        path.write_text("occupied")
+    else:
+        path.symlink_to(tmp_path / "foreign")
+    result = agent.work_on_goal(goal)
+    assert result["status"] == "blocked" and result["reason"] == "project_directory_unavailable"
+    assert model.actor == 0 and not model.other
+    assert _activity_view(agent)["goal_work"][0]["delivery"]["blocked"]
+    assert agent.spine.store.get("delivery_projects", goal.id)["dir"] == directory
+    path.unlink()
+    agent.retry_delivery(goal.id)
+    assert main_project(agent, goal) == directory
 
 
 def test_iphone_acceptance_requires_app_test_and_fresh_source_evidence(tmp_path, monkeypatch):

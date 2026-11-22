@@ -10,12 +10,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets as pysecrets
 import stat
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import replace
+from html import escape
 from pathlib import Path
 from typing import List, Optional
 
@@ -65,8 +67,9 @@ from proto.runtime.personas import (
     normalize_persona, parse_recommendation,
 )
 from proto.runtime.runcontext import current_run
-from proto.work.delivery import (MAX_STALLED_SLICES, MAX_UNVERIFIED_SLICES, ios_stage,
-                                 main_project, project_files, stage_waiters, valid_ios_evidence)
+from proto.work.delivery import (MAX_STALLED_SLICES, MAX_UNVERIFIED_SLICES, ProjectDirectoryError,
+                                 ios_stage, main_project, project_bindings, project_files,
+                                 project_path, stage_waiters, valid_ios_evidence)
 
 SYSTEM_PROMPT = (
     "你是 PROTO，一个能力完整、内在状态可被主人塑造的成长型 Agent。"
@@ -841,151 +844,79 @@ class ProtoAgent:
 
     # M59：SELF_ACT_COOLDOWN_S 冷却已废除——用意义门控（_may_start_chain）
 
-    @staticmethod
-    def _goal_slug(text: str, fallback_id: str = "") -> str:
-        """目标→目录名（M53：ASCII only）——中文目录名是文件系统负资产
-        （tab 补全/工具链/SSH 全是坑），可读性由 projects/README.md 索引承担。
-        取目标文本中的英文单词+数字，小写连字符；纯中文回退 goal-<id8>。
-        M41 曾保留中文字符（判断错误，用户两次点名后根治）。"""
-        import re as _re
-        words = _re.findall(r"[A-Za-z0-9]+", text)
-        slug = "-".join(w.lower() for w in words)[:24].strip("-")
-        if not slug:
-            slug = "goal-" + (fallback_id or "untitled")[:8]
-        return slug
-
-    @staticmethod
-    def _legacy_slug(text: str) -> str:
-        """M41 旧式目录名（保留中文、18 字符）——drop/索引用来兼容存量目录。"""
-        import re as _re
-        return _re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "-",
-                       text.strip()).strip("-")[:18]
-
-    def _project_dir_for(self, node, *, migrate_legacy=True) -> str:
-        """M53：goal→项目目录 持久映射——slug 算法再变，既有目标不换目录；
-        首次映射时若存在旧式中文目录则原地改名（保住已有进度）。"""
-        store = create_store(self.data_dir)
-        mapped = store.get("project_dirs", node.id)
-        if mapped and mapped.get("dir"):
-            return mapped["dir"]
-        new_dir = f"projects/{self._goal_slug(node.text, node.id)}"
-        new_path = self.code_workspace.root / new_dir
-        if migrate_legacy and not new_path.exists():
-            root = self.code_workspace.root / "projects"
-            if root.is_dir():
-                legacy = self._legacy_slug(node.text)
-                cand = root / legacy
-                if legacy and cand.is_dir() and cand != new_path:
-                    new_path.parent.mkdir(parents=True, exist_ok=True)
-                    cand.rename(new_path)
-                    self.spine.append("project_dir_migrated",
-                                      {"from": legacy, "to": new_dir})
-        store.put("project_dirs", node.id, {"dir": new_dir,
-                                            "text": node.text[:80]})
-        return new_dir
-
     def _refresh_projects_index(self) -> None:
-        """M41：projects/README.md 自动索引——每个目录对应的目标/状态/
-        最后写入。'这是工作目录么'应当一眼可答；无对应活跃目标的目录标
-        '待归档'。"""
-        import time as _time
+        """只用已保存的绑定展示目标，不按名称猜归属。"""
         root = self.code_workspace.root / "projects"
-        if not root.exists():
-            return
-        active = {n.id: n for n in self.goal_tree.all_active()}
-        lines = ["# 项目工作区索引（自动维护）", ""]
-        store = create_store(self.data_dir)
-        for d in sorted(root.iterdir()):
-            if not d.is_dir() or d.name.startswith("_"):
-                continue
-            files, last = 0, 0
-            for path in project_files(d):
-                try:
-                    last = max(last, path.stat().st_mtime)
-                    files += 1
-                except OSError:
-                    continue
-            def _claims(n):
-                for collection in ("project_dirs", "delivery_projects"):
-                    mapped = store.get(collection, n.id) or {}
-                    if mapped.get("dir") == f"projects/{d.name}":
-                        return True
-                legacy = self._legacy_slug(n.text)
-                return (legacy[:8] and (legacy.startswith(d.name[:8])
-                        or d.name.startswith(legacy[:8])))
-            owner = next((n for n in active.values() if _claims(n)), None)
-            status = (f"目标[{owner.text[:20]}…] 进行中" if owner
-                      else "无活跃目标（待归档或已交付）")
-            lines.append(f"- **{d.name}/** — {files} 文件，"
-                         f"最后写入 { _time.strftime('%m-%d %H:%M', _time.localtime(last)) if last else '无'}，{status}")
-        strays = [f for f in root.iterdir() if f.is_file()]
-        if strays:
-            lines.append("")
-            lines.append("⚠ 散落文件（应移入项目目录）：" +
-                         "、".join(f.name for f in strays))
         index = root / "README.md"
-        content = "\n".join(lines) + "\n"
+        if root.is_symlink() or not root.is_dir() or index.is_symlink():
+            return
+        labels = {"active": "进行中", "done": "已完成", "dropped": "已放弃"}
+        bindings = {}
+        for goal, directory, collection in project_bindings(self):
+            bindings.setdefault(directory, {}).setdefault(collection, []).append(goal)
+        lines = ["# 项目工作区索引（自动维护）", ""]
+
+        def label(value):
+            text = " ".join(escape(value, quote=False).split())
+            return re.sub(r"([\\`*_\[\]])", r"\\\1", text)
+
         try:
-            changed = index.read_text(encoding="utf-8") != content
+            entries = sorted(root.iterdir())
+            for folder in entries:
+                if folder.is_symlink() or not folder.is_dir() or folder.name.startswith((".", "_")):
+                    continue
+                files, last = 0, 0
+                for path in project_files(folder):
+                    try:
+                        last = max(last, path.stat().st_mtime)
+                        files += 1
+                    except OSError:
+                        continue
+                records = bindings.get(f"projects/{folder.name}", {})
+                goals = records.get("delivery_projects") or records.get("project_dirs", [])
+                title = " / ".join(f"{label(goal['text'])}（{labels.get(goal['status'], goal['status'])}）"
+                                   for goal in goals) or "未绑定"
+                stamp = time.strftime("%m-%d %H:%M", time.localtime(last)) if last else "无"
+                lines.append(f"- **{title}** — {label(folder.name)}/ · {files} 文件 · 最后写入 {stamp}")
+            strays = [label(path.name) for path in entries if path != index and path.is_file()]
+            if strays:
+                lines.extend(("", "⚠ 散落文件（应移入项目目录）：" + "、".join(strays)))
+            content = "\n".join(lines) + "\n"
+            if not index.is_file() or index.read_text(encoding="utf-8", errors="replace") != content:
+                index.write_text(content, encoding="utf-8")
         except OSError:
-            changed = True
-        if changed:
-            index.write_text(content, encoding="utf-8")
+            return
 
     def drop_goal(self, node_id: str) -> None:
-        """M41：drop 目标时级联归档其项目目录（谱系全灭才归档）。"""
-        node = self.goal_tree._nodes.get(node_id)
-        text = node.text if node else ""
-        lineage = self.goal_tree.root_for(node) if node else None
+        """丢弃目标；只可能归档有独立绑定的旧工位，共享主工位原地保留。"""
+        node = self.goal_tree.get(node_id)
+        if node is None:
+            return
+        lineage = self.goal_tree.root_for(node)
         self.goal_tree.drop(node_id)
-        if not text:
+        if not lineage or self.spine.store.get("delivery_projects", lineage.id) is None:
+            self._archive_legacy_project(node_id)
+        self._refresh_projects_index()
+
+    def _archive_legacy_project(self, node_id):
+        directory = (self.spine.store.get("project_dirs", node_id) or {}).get("dir")
+        folder = project_path(self.code_workspace.root.resolve(), directory)
+        if folder is None or not folder.is_dir():
             return
-        root = self.code_workspace.root / "projects"
-        if not root.is_dir():
-            return          # 全新 agent 尚无 projects 目录（快通道暴露的潜伏 500）
-        store = create_store(self.data_dir)
-        if lineage and store.get("delivery_projects", lineage.id):
+        if any(other.casefold() == directory.casefold()
+               and (goal["id"] != node_id or collection == "delivery_projects")
+               for goal, other, collection in project_bindings(self)):
             return
-        mapped = store.get("project_dirs", node_id)
-        if mapped and mapped.get("dir"):
-            target = self.code_workspace.root / mapped["dir"]
-            if target.is_dir() and target.parent == root:
-                still = any(self._project_dir_for(n) == mapped["dir"]
-                            for n in self.goal_tree.all_active())
-                if not still:
-                    dest = root / "_archived"
-                    dest.mkdir(exist_ok=True)
-                    import shutil as _sh
-                    _sh.move(str(target), str(dest / target.name))
-                    self.spine.append("goal_drop",
-                                      {"archived": target.name})
+        archive = folder.parent / "_archived"
+        target = archive / folder.name
+        try:
+            if archive.is_symlink() or target.exists() or target.is_symlink():
                 return
-        legacy = self._legacy_slug(text)
-        if legacy:
-            cand = root / legacy
-            still = any(self._legacy_slug(n.text)[:8]
-                        and self._legacy_slug(n.text).startswith(legacy[:8])
-                        for n in self.goal_tree.all_active())
-            if cand.is_dir() and not still:
-                dest = root / "_archived"
-                dest.mkdir(exist_ok=True)
-                import shutil as _sh
-                _sh.move(str(cand), str(dest / cand.name))
-                self.spine.append("goal_drop", {"archived": cand.name})
-                return
-        slug = self._goal_slug(text)
-        for d in root.iterdir():
-            if d.is_dir() and (slug.startswith(d.name[:8])
-                               or d.name.startswith(slug[:8])):
-                still = any(self._goal_slug(n.text).startswith(d.name[:8])
-                            or d.name.startswith(self._goal_slug(n.text)[:8])
-                            for n in self.goal_tree.all_active())
-                if not still:
-                    import shutil as _sh
-                    dest = root / "_archived"
-                    dest.mkdir(exist_ok=True)
-                    _sh.move(str(d), str(dest / d.name))
-                    self.spine.append("goal_drop", {"archived": d.name})
+            archive.mkdir(exist_ok=True)
+            folder.rename(target)
+        except OSError:
+            return
+        self.spine.append("goal_drop", {"archived": target.name})
 
     def _curate_methods(self, goal_text: str, pool: str = "owner_tasks") -> str:
         """M37 方法策展：发明新做法（限频）→ 返回注入任务的菜单。
@@ -1019,7 +950,7 @@ class ProtoAgent:
 
     @autonomous_entry
     def work_on_goal(self, node) -> dict:
-        """目标牵引执行：在 projects/<目标slug>/ 下自主开发，验收走质量门。"""
+        """目标牵引执行：在根目标绑定的主工位开发，验收走质量门。"""
         with self.sessions.lock:
             reason = self._blocked_dispatch(True)
             if reason:
@@ -1073,7 +1004,16 @@ class ProtoAgent:
             return {"status": "budget_floor_wait",
                     "reason": f"{pool} 低于 2000 tokens",
                     "goal": node.text}
-        project_dir = main_project(self, node)
+        try:
+            project_dir = main_project(self, node)
+        except (OSError, ProjectDirectoryError):
+            reason = "project_directory_unavailable"
+            hold = dict(self.delivery_state(node.id), blocked=True, reason=reason)
+            self.spine.store.put("goal_delivery", node.id, hold)
+            self.spine.append("goal_delivery_hold", {"goal_id": node.id, "reason": reason})
+            self._inbox.append(f"〔交付暂停〕{node.text[:60]}的项目目录不可用。"
+                               "检查工作区路径或同名占位，修复后可在活动中心恢复该目标。")
+            return {"status": "blocked", "reason": reason, "goal_id": node.id}
         stage = ios_stage(self.goal_tree.root_for(node) or node, node)
         acceptance = node.acceptance
         if not acceptance:
@@ -1096,8 +1036,6 @@ class ProtoAgent:
                 )
             node.acceptance = acceptance[:300]
             self.goal_tree._store.put("goaltree", node.id, node.to_dict())
-        # M41：工作区治理——项目索引（每个目录对应哪个目标/什么状态）
-        self._refresh_projects_index()
         # M45 接力日志：跨尝试传递 发现/产出/下一步（防每轮从零探索）。
         # 放 agent 数据目录而非工作区——内部机制不占交付区。
         journal = GoalJournal(
@@ -1174,6 +1112,7 @@ class ProtoAgent:
     def _finish_goal_result(self, node, result, project_dir):
         result["project_dir"] = project_dir
         if result.get("status") in ("paused", "blocked", "needs_reconciliation", "waiting_model", "cancelled", "denied"):
+            self._refresh_projects_index()
             return result
         if node.status != "active":
             return dict(result, status="cancelled", verified=False)
@@ -1202,6 +1141,7 @@ class ProtoAgent:
         self._record_delivery(node, result, project_dir)
         if result.get("verified") is True:
             self.goal_tree.complete(node.id)     # 里程碑回调自动触发
+        self._refresh_projects_index()
         self.scheduler.on_task_completed(
             type("R", (), {"status": result.get("status", "completed"),
                            "retries": 0, "reason": ""})())

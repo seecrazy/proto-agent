@@ -12,6 +12,7 @@ from proto.runtime.agent import ProtoAgent
 from proto.runtime.coordination import CoordinationDB
 from proto.runtime.dialogue import Dialogue
 from proto.web.server import ProtoWebServer
+from proto.work.delivery import main_project
 from proto.work.handoff import lineage_handoff
 from proto.work.journal import GoalJournal
 from tests.test_web import call
@@ -152,7 +153,7 @@ def test_model_outage_pauses_automatic_runs_then_resumes_real_work(live, monkeyp
     _, breaker = agent._model_binding(agent.llm)
     breaker._opened_at -= 601
     model.failed = False
-    path = agent._project_dir_for(goal) + "/Product.swift"
+    path = main_project(agent, goal) + "/Product.swift"
     model.decision = {"tool": "write_file", "args": {"path": path, "content": "struct Wengu {}"}}
     server.manager.enqueue_ticks()
     resumed = runs.list(agent.fleet_id)[0]
@@ -224,7 +225,10 @@ def test_handoff_uses_existing_sibling_outputs_not_other_projects(tmp_path):
     app = agent.goal_tree.add("SwiftUI 实现", "mid", parent_id=parent.id)
     tests = agent.goal_tree.add("XCTest 验证", "mid", parent_id=parent.id)
     other = agent.goal_tree.add("另一个项目", "mid")
-    design_dir, app_dir, tests_dir, other_dir = map(agent._project_dir_for, (design, app, tests, other))
+    design_dir, app_dir, tests_dir, other_dir = (
+        "projects/old-design", "projects/old-app", "projects/old-tests", "projects/other")
+    for goal, directory in zip((design, app, tests, other), (design_dir, app_dir, tests_dir, other_dir)):
+        agent.spine.store.put("project_dirs", goal.id, {"dir": directory})
     agent.code_workspace.write_file(design_dir + "/SPEC.md", "真实设计")
     agent.code_workspace.write_file(app_dir + "/WenguApp.swift", "import SwiftUI")
     agent.code_workspace.write_file(other_dir + "/unrelated.swift", "另一个项目")

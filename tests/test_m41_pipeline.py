@@ -7,6 +7,7 @@ import pytest
 from proto.exec.webtools import WebToolkit
 from proto.llm.client import LLMClient
 from proto.runtime.agent import ProtoAgent
+from proto.work.delivery import main_project, project_slug
 
 
 class Null(LLMClient):
@@ -61,7 +62,7 @@ class TestDeliveryPipeline:
         assert any("swiftc" in m.description for m in agent.methods_lib.methods)
 
     def test_slug_capped_short(self):
-        long_name = ProtoAgent._goal_slug(
+        long_name = project_slug(
             "确定-app-概念与设计规格-选定名称与定位-解决什么问题-目标用户-确认-3-5")
         assert len(long_name) <= 18
 
@@ -72,11 +73,15 @@ class TestWorkspaceGovernance:
         (root / "我的项目").mkdir(parents=True)
         (root / "我的项目" / "a.swift").write_text("let x = 1")
         (root / "loose.py").write_text("print(1)")
-        agent.goal_tree.add("我的项目目标完成某功能", level="mid", acceptance="有码")
+        goal = agent.goal_tree.add("我的项目目标完成某功能", level="mid", acceptance="有码")
+        directory = main_project(agent, goal)
+        agent.code_workspace.write_file(f"{directory}/App.swift", "let y = 2")
         agent._refresh_projects_index()
         text = (root / "README.md").read_text(encoding="utf-8")
-        assert "我的项目" in text and "进行中" in text
+        assert "我的项目目标完成某功能（进行中）" in text
+        assert "未绑定** — 我的项目/" in text
         assert "散落文件" in text and "loose.py" in text
+        assert "README.md" not in text
 
     def test_drop_archives_dead_lineage_keeps_live(self, agent):
         root = agent.code_workspace.root / "projects"
@@ -84,6 +89,8 @@ class TestWorkspaceGovernance:
         live = agent.goal_tree.add("活跃目标另一事项", level="mid", acceptance="y")
         (root / "废弃目标某事项").mkdir(parents=True)
         (root / "活跃目标另一事项").mkdir(parents=True)
+        for goal in (dead, live):
+            agent.spine.store.put("project_dirs", goal.id, {"dir": f"projects/{goal.text}"})
         agent.drop_goal(dead.id)
         assert not (root / "废弃目标某事项").exists()
         assert (root / "_archived" / "废弃目标某事项").exists()
