@@ -78,6 +78,8 @@
   #live-work[data-state="waiting"] #live-status { color: var(--warn); }
   #live-detail { border-top: 1px solid var(--border); padding: 7px 12px; color: var(--dim);
     font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+  #activity-now, #activity-detail { line-height: 1.55; overflow-wrap: anywhere; }
+  #activity-sync { font-size: 11px; }
   #live-events { max-height: min(17vh, 126px); overflow-y: auto; font-size: 11px;
     padding: 0 12px 8px; list-style: none; overscroll-behavior: contain; }
   #live-events li { display: flex; gap: 8px; padding: 4px 0; border-top: 1px solid var(--border); }
@@ -518,8 +520,11 @@
   <!-- 卡片池：所有卡片定义处，boot 时按类别分发到左右栏 -->
   <aside id="side" style="display:none">
     <div data-cat="ov" class="card" id="activity-card">
-      <h3>它现在在干嘛 <span class="badge" id="act-state">…</span></h3>
-      <div id="activity-now" class="empty">（加载中…）</div>
+      <h3>它现在在干嘛 <span class="badge" id="act-state">待同步</span></h3>
+      <div id="activity-now" class="human-line">等待活动快照…</div>
+      <div id="activity-detail" class="human-line"></div>
+      <div id="activity-sync" class="human-line"></div>
+      <div id="activity-inventory-status" class="human-line"></div>
       <div id="activity-goals" style="margin-top:8px"></div>
       <div id="activity-files" style="margin-top:8px"></div>
     </div>
@@ -1295,59 +1300,71 @@ const LIVE_REASONS = {
   local_verification_evidence_missing: "缺少本机编译或测试回执，尚未验收",
 };
 const SAFE_CONTINUATION_REASONS = ["model_retry_exhausted", "safe_resume_model", "safe_resume_limit"];
+const LIVE_POLL_MS = 1500, LIVE_TIMEOUT_MS = 5000;
 let liveVersion = 0;
-let liveReading = false;
+let liveRead = null;
+let liveLastSync = 0;
 let liveRowsKey = "";
 function liveTime(seconds) {
   return new Date(seconds * 1000).toLocaleTimeString("zh-CN", {hour12: false});
 }
-function liveSummary(data) {
-  const run = data.run, current = data.current, model = data.model;
+function livePresentation({run, current, model, autonomy}) {
+  const waiting = (badge, summary) => ({state: "waiting", badge, summary});
   if (run?.status === "running") {
-    return run.cancel_requested ? "正在取消 · 等在途步骤到达安全边界"
-      : [LIVE_PHASES[current?.phase] || "执行中", current?.model, current?.tool].filter(Boolean).join(" · ");
+    if (run.cancel_requested) return waiting("正在取消", "等在途步骤到达安全边界");
+    return {state: "running", badge: "执行中", summary:
+      [LIVE_PHASES[current?.phase] || "执行中", current?.model, current?.tool].filter(Boolean).join(" · ")};
   }
-  if (run && (SAFE_CONTINUATION_REASONS.includes(run.reason)
-    || ["model_retry_wait", "interrupted_requeued", "safe_resume_ready"].includes(run.reason))) {
-    return LIVE_REASONS[run.reason];
+  if (run?.status === "needs_reconciliation") {
+    return !run.cancel_requested && SAFE_CONTINUATION_REASONS.includes(run.reason)
+      ? waiting("待继续", LIVE_REASONS[run.reason]) : waiting("待核对", LIVE_PHASES.needs_reconciliation);
   }
-  if (run?.status === "awaiting_approval" || run?.status === "needs_reconciliation") return LIVE_PHASES[run.status];
+  if (run?.status === "awaiting_approval") return waiting("待批准", LIVE_PHASES.awaiting_approval);
+  if (run?.status === "queued" && run.reason === "model_retry_wait") {
+    return waiting("待重试", LIVE_REASONS.model_retry_wait);
+  }
+  if (autonomy) return waiting("自主受限", LIVE_REASONS[autonomy] || "自主行动受限");
   if (model.waiting) {
-    if (model.reason === "model_route_busy") return "模型接入在用 · 不重复发请求";
+    if (model.reason === "model_route_busy") return waiting("等模型", "模型接入在用 · 不重复发请求");
     const prefix = model.reason === "model_rate_limited" ? "供应商限流 (429)" : "模型冷却";
-    return model.retry_at ? `${prefix} · ${liveTime(model.retry_at)} 后可试探` : "模型恢复试探中";
+    return waiting("等模型", model.retry_at ? `${prefix} · ${liveTime(model.retry_at)} 后可试探` : "模型恢复试探中");
   }
-  if (data.autonomy) return LIVE_REASONS[data.autonomy] || "自主行动受限";
-  if (run?.status === "queued") return "排队中";
-  if (model.state === "open") return "模型冷却已到期 · 待下次试探";
-  return "暂无执行中的后台任务";
+  if (run?.status === "queued") {
+    return waiting("排队中", LIVE_REASONS[run.reason] || "已排队 · 等待调度");
+  }
+  if (model.state === "open") return waiting("等模型", "模型冷却已到期 · 待下次试探");
+  if (model.state === "offline") return waiting("无模型", LIVE_REASONS.model_not_configured);
+  return {state: "idle", badge: "空闲", summary: "暂无执行、排队或挂起的后台任务"};
+}
+function renderLiveStatus({state, badge, summary}, description = "") {
+  document.getElementById("live-work").dataset.state = state;
+  document.getElementById("act-state").className = state === "running" ? "badge"
+    : state === "idle" ? "badge zzz" : "badge lock";
+  for (const [id, text] of [["act-state", badge], ["activity-now", summary], ["live-status", summary],
+    ["activity-detail", description], ["live-detail", description]]) {
+    const node = document.getElementById(id);
+    if (node.textContent !== text) node.textContent = text;
+  }
 }
 function renderLiveWork(data, selected) {
-  const view = document.getElementById("live-work");
-  const status = document.getElementById("live-status");
-  const detail = document.getElementById("live-detail");
-  const list = document.getElementById("live-events");
-  const summary = liveSummary(data), last = data.last_run;
-  const runReason = ["model_retry_wait", "model_retry_exhausted", "safe_resume_model"].includes(data.run?.reason)
-    && LIVE_REASONS[data.run?.model_reason];
+  const run = data.run, last = data.last_run;
+  const runReason = LIVE_REASONS[run?.model_reason];
   const routeReason = data.model.waiting && LIVE_REASONS[data.model.reason];
   const pastReason = LIVE_REASONS[last?.reason];
-  const description = [data.goal || (data.run && (RUN_KINDS[data.run.kind] || "后台任务")),
+  const description = [data.goal || (run && (RUN_KINDS[run.kind] || "后台任务")),
     data.step && data.max_steps && `第 ${data.step}/${data.max_steps} 步`,
     runReason && `本轮卡点：${runReason}`,
+    run && run.status !== "running" && run.updated_at && `本轮状态记录：${new Date(run.updated_at * 1000).toLocaleString("zh-CN")}`,
     routeReason && routeReason !== runReason && `接入目前受阻：${routeReason}`,
     last && (last.verified ? "最近一轮已验收" : `最近一轮：${LIVE_PHASES[last.status] || last.status} · 无通过验收记录`),
     pastReason && `此前轮次（${new Date(last.updated_at * 1000).toLocaleString("zh-CN")}）：${pastReason}`,
   ].filter(Boolean).join(" ｜ ");
-  view.dataset.state = data.model.waiting || data.run?.cancel_requested || data.run?.status === "awaiting_approval"
-    || data.run?.status === "needs_reconciliation" ? "waiting" : data.run?.status || "idle";
-  if (status.textContent !== summary) status.textContent = summary;
-  detail.textContent = description || "等待下一次真实活动；不会把没有记录的工作标为完成。";
+  renderLiveStatus(livePresentation(data), description);
   const events = data.events.slice(-12).reverse();
   const key = `${selected}:${events.map(e => `${e.seq}@${e.at}`).join(",")}`;
   if (key === liveRowsKey) return;
   liveRowsKey = key;
-  list.replaceChildren(...events.map(event => {
+  document.getElementById("live-events").replaceChildren(...events.map(event => {
     const row = document.createElement("li"), when = document.createElement("time"), label = document.createElement("span");
     when.textContent = liveTime(event.at);
     const phase = event.phase === "needs_reconciliation" && SAFE_CONTINUATION_REASONS.includes(event.reason)
@@ -1358,44 +1375,69 @@ function renderLiveWork(data, selected) {
     return row;
   }));
 }
+function updateLiveSync(success) {
+  const sync = document.getElementById("activity-sync");
+  const stamp = liveLastSync ? `${success ? "最近同步" : "上次成功同步"} ${liveTime(liveLastSync / 1000)}` : "";
+  if (sync.textContent !== stamp) sync.textContent = stamp;
+}
+function showLiveSyncFailure() {
+  renderLiveStatus({state: "unknown", badge: "未同步", summary: "活动暂时无法同步，当前工作状态未知。"});
+  updateLiveSync(false);
+}
+function resetLiveWork(selected, message = selected ? "同步中…" : "舰队暂无 Agent，点「＋Agent」创建。") {
+  liveVersion++;
+  liveRead?.abort();
+  liveRead = null;
+  liveLastSync = 0;
+  liveRowsKey = "";
+  renderLiveStatus({state: "unknown", badge: selected ? "待同步" : "暂无 Agent", summary: message});
+  updateLiveSync(false);
+  for (const id of ["live-events", "activity-goals", "activity-files", "activity-inventory-status"]) {
+    document.getElementById(id).replaceChildren();
+  }
+}
 async function refreshLiveWork() {
-  if (document.hidden || liveReading) return;
-  const selected = document.getElementById("agent-select").value;
+  if (document.hidden) return;
+  const selector = document.getElementById("agent-select"), selected = selector.value;
   if (!selected) return;
+  if (liveLastSync && Date.now() - liveLastSync > LIVE_POLL_MS + LIVE_TIMEOUT_MS) showLiveSyncFailure();
+  if (liveRead) return;
   const version = liveVersion;
-  liveReading = true;
+  const isCurrent = () => version === liveVersion && selected === selector.value;
+  const controller = new AbortController();
+  liveRead = controller;
+  const timeout = setTimeout(() => controller.abort(), LIVE_TIMEOUT_MS);
   try {
-    const data = await api("GET", "/api/activity/live", undefined, undefined, selected);
-    if (version === liveVersion && selected === document.getElementById("agent-select").value) renderLiveWork(data, selected);
+    const data = await api("GET", "/api/activity/live", undefined, undefined, selected, controller.signal);
+    if (isCurrent()) {
+      renderLiveWork(data, selected);
+      liveLastSync = Date.now();
+      updateLiveSync(true);
+    }
   } catch (error) {
-    if (version === liveVersion) document.getElementById("live-status").textContent = "活动暂时无法同步";
-  } finally { liveReading = false; }
+    if (isCurrent()) showLiveSyncFailure();
+  } finally {
+    clearTimeout(timeout);
+    if (liveRead === controller) liveRead = null;
+  }
 }
 async function refreshActivity() {
-  const a = await api("GET", "/api/activity");
-  const now = document.getElementById("activity-now");
-  const cur = a.current;
-  const state = document.getElementById("act-state");
-  if (cur) {
-    state.textContent = "执行中"; state.className = "badge";
-    const elapsed = Math.max(0, Math.floor(cur.elapsed_s || 0));
-    const detail = [cur.tool, (cur.detail || "").split("/").pop().slice(0, 30)].filter(Boolean).join(" ");
-    const parts = [`第 ${cur.step}/${cur.max_steps} 步`, detail,
-      elapsed < 60 ? `已 ${elapsed} 秒` : `已 ${Math.floor(elapsed / 60)} 分钟`].filter(Boolean);
-    now.innerHTML = `<div style="font-size:12px;line-height:1.6">🟢 <b>${esc((cur.goal || "").slice(0, 44))}</b><br>` +
-      `${esc(parts.join(" · "))}</div>`;
-  } else {
-    state.textContent = "空闲"; state.className = "badge zzz";
-    let idleText = "💤 当前没有执行中的链";
-    if (a.has_goals) {
-      idleText = "有待推进的目标；模型、审批和其他卡点见聊天区实时活动。";
-    } else {
-      idleText = "💤 无活跃目标——设定主人优先级会播种目标";
-    }
-    now.innerHTML = `<div class="empty">${esc(idleText)}</div>`;
+  const selector = document.getElementById("agent-select"), selected = selector.value;
+  if (!selected) return;
+  const version = liveVersion;
+  const isCurrent = () => version === liveVersion && selected === selector.value;
+  const status = document.getElementById("activity-inventory-status");
+  let data;
+  try {
+    data = await api("GET", "/api/activity", undefined, undefined, selected);
+  } catch (error) {
+    if (isCurrent()) status.textContent = "目标与项目文件暂时无法刷新。";
+    return;
   }
+  if (!isCurrent()) return;
+  status.textContent = "";
   const gbox = document.getElementById("activity-goals");
-  const goals = a.goal_work || [];
+  const goals = data.goal_work || [];
   gbox.innerHTML = goals.length
     ? goals.map(g => `<div style="font-size:11px;line-height:1.6;margin-bottom:6px">` +
         `<span class="badge">${g.rounds} 条尝试记录</span> <b>${esc(g.text.slice(0, 32))}</b>` +
@@ -1408,10 +1450,11 @@ async function refreshActivity() {
     : "";
   for (const button of gbox.querySelectorAll("[data-retry-delivery]")) {
     button.addEventListener("click", async () => {
+      if (!isCurrent()) return;
       button.disabled = true;
       try {
-        await api("POST", `/api/goals/${encodeURIComponent(button.dataset.retryDelivery)}/retry`, {});
-        await refreshActivity();
+        await api("POST", `/api/goals/${encodeURIComponent(button.dataset.retryDelivery)}/retry`, {}, undefined, selected);
+        if (isCurrent()) await refreshActivity();
       } catch (error) {
         button.textContent = `未恢复：${error.message}`;
         button.disabled = false;
@@ -1419,8 +1462,8 @@ async function refreshActivity() {
     });
   }
   const fbox = document.getElementById("activity-files");
-  const files = a.recent_files || [];
-  const projects = a.project_outputs || [];
+  const files = data.recent_files || [];
+  const projects = data.project_outputs || [];
   const inventory = projects.length
     ? `<div style="color:var(--dim);font-size:10px;margin-bottom:3px">现有项目文件 · 不代表通过验收</div>` +
       projects.map(p => `<div style="font-size:11px;overflow-wrap:anywhere">${esc(p.dir)} · ${p.files} 个文件</div>`).join("") : "";
@@ -1631,11 +1674,7 @@ async function refreshFleet() {
   if (!sel.value) document.getElementById("model").textContent = "模型接入";
   if (!sel.value || sel.value !== previous) {
     resetTaste(sel.value);
-    liveVersion++;
-    document.getElementById("live-status").textContent = sel.value ? "同步中…" : "舰队暂无 Agent，点「＋Agent」创建。";
-    document.getElementById("live-detail").textContent = "";
-    document.getElementById("live-events").replaceChildren();
-    delete document.getElementById("live-work").dataset.state;
+    resetLiveWork(sel.value);
     if (sel.value) refreshLiveWork();
   }
   syncFleetBulk();
@@ -1783,10 +1822,7 @@ async function forceAct(id, btn) {
 }
 async function switchAgent(id) {
   resetTaste(id);
-  liveVersion++;
-  document.getElementById("live-status").textContent = "正在切换 Agent…";
-  document.getElementById("live-detail").textContent = "";
-  document.getElementById("live-events").replaceChildren();
+  resetLiveWork(id, "正在切换 Agent…");
   await api("POST", `/api/agents/${id}/select`, {});
   location.reload();
 }
@@ -3082,7 +3118,7 @@ const liveWorkPanel = document.getElementById("live-work");
 liveWorkPanel.open = localStorage.getItem("proto_live_work_open") !== "0";
 liveWorkPanel.addEventListener("toggle", () => localStorage.setItem("proto_live_work_open", liveWorkPanel.open ? "1" : "0"));
 refreshLiveWork();
-setInterval(refreshLiveWork, 1500);
+setInterval(refreshLiveWork, LIVE_POLL_MS);
 document.addEventListener("visibilitychange", refreshLiveWork);
 addMsg("PROTO 控制台已就绪。直接说话即可；你的反馈会经归因累积、有界地塑造它的倾向。", "system");
 // 任何未被局部处理的失败都浮出水面——不再有"点击无反应"
