@@ -2,7 +2,7 @@
 
 > **内在状态显式可调制 · 主动行为受授权与预算约束 · 自我进化机制仍在验证中**
 
-[![tests](https://img.shields.io/badge/tests-1227%20passed-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-1269%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
 [![version](https://img.shields.io/badge/version-0.33.0-orange.svg)]()
@@ -250,7 +250,8 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 
 ## 验证
 
-- **1008 passed, 2 skipped**（2026-11-22，本机 Python 3.9.2，`PROTO_TEST_XCODE=1 python3 -m pytest -q`）；未重跑 CI 矩阵、可选依赖组合或 Linux runsc，不宣称覆盖全部安全边界。
+- **1269 passed, 4 skipped**（2026-11-22，本机 Python 3.9.2，`python3 -m pytest -q`）；未重跑 CI 矩阵、可选依赖组合、真实模型或 Linux runsc，不宣称覆盖全部安全边界。
+- M77 新增 **13 个用例**：非首文件符号定位、续页、缓存失效、跳过/降级、兄弟项目拒绝、父/子上下文隔离、工具白名单、源码回显拒绝、压力压缩、固定区超限和供应商上下文超限重试。
 - M72 验证 429 共享退避、重启后的无重复续接、同谱系前置阶段、空转停止和本机证据。独立 SwiftUI 样例在沙盒中真实编译，未启动模拟器 App 或介入真实项目；XCTest 回执识别用替身验证。
 - M71 新增 **15 个用例**：长输入、持久决策、真实进程中断、确认回执、未知效果、退避和安全续接。离线控制台验证恢复验收，不重复写入。
 - M70 新增 **7 个用例**：等待模型或工具时可继续对话、双层额度、回执恢复、冷却与半开探测、工具证据与同谱系产物交接。Chrome 用测试模型验证边工作边回复、落盘和验收分开显示、窄屏抽屉与折叠记忆；未调用真实模型。
@@ -297,7 +298,8 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 | 结构化模型决策 | OpenAI/Anthropic 流式接收、兼容文本、同 Run 续作和分阶段诊断 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#model-decision-transport) |
 | Electron 桌面控制台 | 与 Web 共用页面、API 和数据目录 | ✅ [设计与验收](docs/DESIGN.md#electron-console) |
 | 模型可靠性与诊断 | Python 3.9 网络超时回退、可关联的本地滚动执行日志 | ✅ [设计与验收](docs/DESIGN.md#execution-diagnostics) |
-| 后续模型交互 | 原生工具协议、请求级用量、token 压缩与进程级取消 | 待专项，不纳入 M63/M64 |
+| M77 大仓库上下文 | 符号分页索引、只读子上下文、本地预算压缩与范围化检索 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#large-code-context) |
+| 后续模型交互 | 原生工具协议、请求级用量、供应商精确 token 分词/压缩与进程级取消 | 待专项，不纳入 M63/M64 |
 
 ## 许可
 
@@ -315,6 +317,8 @@ PROTO 不靠"性格"掩盖能力短板。M16 起它自带完整的工具族与**
 |---|---|---|
 | `read_file` / `write_file` / `edit_file` | 工作区内读写与精确替换（路径圈死，拒绝 `..`） | workspace_write 自动 |
 | `list_dir` / `grep` | 目录树与正则检索（编码 agent 的眼睛） | read_draft 自动 |
+| `search_symbols` | 按标识符/文档词检索有界符号页：Python 用 AST，Swift/JS/TS 提取常见声明，其他源码按文件名降级；返回路径、行号和续页游标，不缓存正文 | read_draft 自动 |
+| `explore_code` | 把广泛代码调查交给独立只读子上下文：子上下文自行 `search_symbols`/分窗 `read_file`，只向主会话返回短结论和已读位置 | read_draft 自动 |
 | `read_skill` | 按需读内置的设计→开发→验证、Swift/iOS、本地验证、中文对话技能；不加载工作区同名文件、不改变权限 | read_draft 自动 |
 | `scan_style` / `polish_style` | 离线标出中文模板腔，或按处方局部改写并复验；不写文件、不判定作者 | read_draft 自动 |
 | `inspect_build` | 查工位的项目入口、当前 PATH、隔离后端和建议命令；不启动构建或测试 | read_draft 自动 |
@@ -324,6 +328,8 @@ PROTO 不靠"性格"掩盖能力短板。M16 起它自带完整的工具族与**
 | `delegate_coding` | **外包重活**：自动探测 claude/codex/zcode CLI（`PROTO_BRIDGE_CLI` 可指定），PROTO 出意图记经验担审批，专业工具出执行力 | visible_write 需批准 |
 
 **Agentic 循环**（控制台「工作 → 指派任务」或 CLI `/task`）：模型根据工具结果决定下一步，直到有证据完成或达到预算/步数上限。对外动作在检查点等待批准，批准后续跑。PROTO 自己有工程执行链；外部编码工具是显式授权后的可选委派，并非编译或测试的前提。
+
+**大仓库不整仓塞入上下文**：执行循环先用 `search_symbols` 建有界符号页，再按命中行分窗读取；`grep` 检索正文，`explore_code` 用只读子上下文隔离广泛调查。主执行输入默认压在 32768 预算内（UTF-8 字节保守计数，128 KiB 硬顶）：历史过压力线时保留工具回执、路径/偏移和少量近期观察；供应商明确回报上下文超限时，未派发决策只缩小重试一次，不重放工具。指定项目时检索目录不能切到兄弟项目。见[大仓库上下文设计](docs/DESIGN.md#large-code-context)。
 
 **本机能不能编译？** 直接问「你能在本地编译吗？」可以离线查执行器和 PATH；该问句不会编译，也不代表某个项目已经通过。实际工作中可以指派「在此工位本地构建并运行测试」。新执行会话收到明确的构建/测试要求后，不允许拿版本、干跑、失败输出或修改前的旧回执报完成。iOS 另查本机模拟器 `.app` 与当前源码；构建不等于真机、XCTest 或发布。见[工程技能与本机回执](docs/DESIGN.md#engineering-skills-and-evidence)。
 

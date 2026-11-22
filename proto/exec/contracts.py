@@ -19,6 +19,8 @@ def object_schema(properties=None, required=(), additional=False):
 
 _PATH = {"type": "string", "minLength": 1, "description": "工作区相对路径"}
 _TEXT = {"type": "string"}
+_CWD = {"type": "string", "maxLength": 512}
+_QUERY = {"type": "string", "minLength": 1, "maxLength": 512}
 _STYLE = object_schema({
     "text": {"type": "string", "maxLength": MAX_STYLE_TEXT},
     "profile": {"type": "string", "enum": list(STYLE_PROFILES), "default": "dialogue"}}, ["text"])
@@ -34,7 +36,10 @@ _BUILTINS = {
         "path": _PATH, "old": {"type": "string", "minLength": 1}, "new": _TEXT,
         "replace_all": {"type": "boolean", "default": False}}, ["path", "old", "new"]),
     "list_dir": object_schema({"path": {"type": "string", "default": ""}}),
-    "grep": object_schema({"pattern": _TEXT, "glob": {"type": "string", "default": "*"}}, ["pattern"]),
+    "grep": object_schema({"pattern": _TEXT, "glob": {"type": "string", "default": "*"}, "cwd": _CWD}, ["pattern"]),
+    "search_symbols": object_schema({"query": _QUERY, "cwd": _CWD, "cursor": {"type": "string", "maxLength": 4096},
+                                     "limit": {"type": "integer", "minimum": 1, "maximum": 10}}, ["query"]),
+    "explore_code": object_schema({"question": _QUERY, "cwd": _CWD}, ["question"]),
     "run_python": object_schema({
         "code": {"type": "string", "minLength": 1},
         "timeout_s": {"type": "integer", "minimum": 1, "maximum": 120, "default": 60}}, ["code"]),

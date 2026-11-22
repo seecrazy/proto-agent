@@ -595,7 +595,7 @@ class ProtoAgent:
         try:
             if tool in {"web_fetch", "github_search", "github_readme", "run_python", "run_command",
                         "list_dir", "read_file", "read_files", "grep", "write_file", "edit_file",
-                        "delegate_coding", "inspect_build"}:
+                        "delegate_coding", "inspect_build", "search_symbols", "explore_code"}:
                 with self._background_io():
                     yield
             else:

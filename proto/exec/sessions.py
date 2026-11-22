@@ -80,6 +80,8 @@ class ExecutionSessions:
             return False
         if "autonomous" in session and type(session["autonomous"]) is not bool:
             return False
+        if "tight_context" in session and type(session["tight_context"]) is not bool:
+            return False
         instructions, active = context.get("instructions"), context.get("active_instructions")
         if not isinstance(instructions, dict) or not isinstance(active, list):
             return False

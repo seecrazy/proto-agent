@@ -2,11 +2,19 @@
 from __future__ import annotations
 
 import json
+import os
 
 
 MAX_ACTOR_BYTES = 128 * 1024
 MAX_HISTORY_BYTES = 12 * 1024
 MAX_ADVISORY_BYTES = 8 * 1024
+
+
+def actor_input_budget():
+    try:
+        return max(0, min(MAX_ACTOR_BYTES, int(os.environ.get("PROTO_ACTOR_INPUT_TOKENS", "32768"))))
+    except ValueError:
+        return 0
 
 
 def size(text):
@@ -23,7 +31,7 @@ def clipped(text, limit):
 
 
 def target_args(arguments):
-    names = ("path", "paths", "cwd", "offset", "limit", "pattern", "query", "name")
+    names = ("path", "paths", "cwd", "offset", "limit", "pattern", "query", "cursor", "question", "name")
     selected = {name: arguments[name] for name in names if name in arguments}
     argv = arguments.get("argv")
     if isinstance(argv, list) and argv:
@@ -57,6 +65,21 @@ def tool_receipt(tool, arguments, result):
             detail = clipped(json.dumps({"argv": arguments.get("argv"), "cwd": arguments.get("cwd", ".")},
                                         ensure_ascii=False), 220)
         return f"{tool} {detail}：退出码 {result['exit']}{'，' + reason if reason else ''}"
+    if tool == "search_symbols" and isinstance(result, dict) and isinstance(result.get("hits"), list):
+        hits = [f"{item.get('path')}:{item.get('line')}" for item in result["hits"][:3]
+                if isinstance(item, dict)]
+        coverage = result.get("coverage") if isinstance(result.get("coverage"), dict) else {}
+        return clipped(f"search_symbols {arguments.get('query', '')}："
+                       f"命中 {hits or '无'}；本页访问 {coverage.get('visited', 0)} 个文件"
+                       f"{'，可续页' if result.get('next_cursor') else '，本页后无游标'}", 300)
+    if tool == "grep" and isinstance(result, list):
+        hits = [f"{item.get('path')}:{item.get('line')}" for item in result[:3] if isinstance(item, dict)]
+        return clipped(f"grep {arguments.get('pattern', '')}：命中 {hits or '无'}", 300)
+    if tool == "explore_code" and isinstance(result, dict) and result.get("status") == "ok":
+        references = [f"{item.get('path')}:{item.get('line')}-{item.get('end_line')}"
+                      for item in result.get("references", [])[:4] if isinstance(item, dict)]
+        return clipped(f"explore_code {arguments.get('question', '')}：{result.get('summary', '')}"
+                       f"；已读 {references}", 500)
     return ""
 
 
@@ -89,3 +112,36 @@ def render_history(observations, trace, budget=MAX_HISTORY_BYTES):
     omitted = "较早观察已省略，可按需重新读取证据。\n"
     tail = omitted if len(observations) > len(picked) and size(omitted) <= budget else ""
     return header + facts + tail + "".join(reversed(picked))
+
+
+def _compact_observations(observations, trace, tight):
+    pointers = []
+    for item in reversed(trace):
+        if item.get("tool") in ("read_file", "read_files", "grep", "search_symbols", "explore_code"):
+            pointer = item["tool"] + " " + target_args(item.get("args") or {})
+            if pointer not in pointers:
+                pointers.append(pointer)
+                if len(pointers) == (2 if tight else 4):
+                    break
+    summary = f"历史摘要：共 {len(observations)} 条观察。较早正文不重发；按需回读：" + "；".join(reversed(pointers))
+    recent = []
+    for text in observations[-(1 if tight else 2):]:
+        if text.startswith(("read_file(", "read_files(")) and size(text) > 900:
+            text = text.partition(" → ")[0] + " → 大段正文已折叠，按路径/偏移回读。"
+        recent.append(clipped(text, 480 if tight else 1400))
+    return [summary, *recent]
+
+
+def decision_input(system, fixed, advisory, observations, trace, budget, *, tight=False):
+    mandatory = size(system) + size(fixed)
+    available = budget - mandatory
+    if available < 0:
+        raise ValueError("context_budget_exceeded")
+    raw_history = sum(size(text) + 8 for text in observations)
+    pressure = (raw_history > MAX_HISTORY_BYTES or
+                mandatory + raw_history + min(size(advisory), MAX_ADVISORY_BYTES) >= budget * 4 // 5)
+    compact = tight or pressure
+    history = render_history(_compact_observations(observations, trace, tight) if compact and observations else observations,
+                             trace, min(available, 1200 if tight else 4096 if compact else MAX_HISTORY_BYTES))
+    advice = clipped(advisory, min(available - size(history), 0 if tight else MAX_ADVISORY_BYTES))
+    return fixed + advice + history

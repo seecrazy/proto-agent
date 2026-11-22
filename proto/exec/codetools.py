@@ -17,8 +17,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterable, List
 
+from proto.exec.code_index import CodeIndex
 from proto.exec.contracts import builtin_parameters
 from proto.exec.engineering import ISOLATED, inspect_build
+from proto.exec.exploration import explore_code
 from proto.skills import catalog as skill_catalog, read_skill
 
 MAX_READ = 50000
@@ -87,6 +89,7 @@ class CodeTools:
             str(Path(p).expanduser().resolve(strict=False))
             for p in protected_paths if str(p).strip()
         })
+        self.code_index = CodeIndex(self.root, self.protected_paths)
 
     def _abs(self, rel_path: str) -> Path:
         target = self.root / _safe_rel(rel_path)
@@ -233,21 +236,25 @@ class CodeTools:
             listing += "\n…（条目过多已截断；用 grep 按文件名/内容精确收窄）"
         return listing
 
-    def grep(self, pattern: str, glob: str = "*") -> List[Dict]:
+    def grep(self, pattern: str, glob: str = "*", cwd: str = "") -> List[Dict]:
         rx = re.compile(pattern)
         hits = []
-        for file in sorted(self.root.rglob(glob)):
+        base = self.code_index.path(cwd)
+        for file in self.code_index.files(base, follow_symlinks=True):
+            relative = file.relative_to(base)
+            if not (relative.match(glob) or (glob.startswith("**/") and relative.match(glob[3:]))):
+                continue
             try:
-                file = self._abs(str(file.relative_to(self.root)))
-                if not file.is_file():
-                    continue
-                for lineno, line in enumerate(
-                        file.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-                    if rx.search(line):
-                        hits.append({"path": str(file.relative_to(self.root)),
-                                     "line": lineno, "text": line.strip()[:200]})
-                        if len(hits) >= MAX_GREP_HITS:
-                            return hits
+                with self.code_index.open_file(file, follow_final_symlink=True) as source:
+                    if b"\0" in source.peek(4096):
+                        continue
+                    for lineno, raw in enumerate(source, 1):
+                        line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                        if rx.search(line):
+                            hits.append({"path": file.relative_to(self.code_index.root).as_posix(),
+                                         "line": lineno, "text": line.strip()[:200]})
+                            if len(hits) >= MAX_GREP_HITS:
+                                return hits
             except (OSError, ValueError):
                 continue
         return hits
@@ -431,9 +438,13 @@ class CodeTools:
         register("list_dir", lambda path="": self.list_dir(path),
                           category=ActionCategory.READ_DRAFT,
                           description="列工作区目录")
-        register("grep", lambda pattern, glob="*": self.grep(pattern, glob),
+        register("grep", self.grep,
                           category=ActionCategory.READ_DRAFT,
-                          description="搜索工作区文本")
+                          description="在指定目录流式搜索文本，返回命中行和位置")
+        register("search_symbols", self.code_index.search, category=ActionCategory.READ_DRAFT,
+                 description="按标识符/文档词找代码声明；返回路径和行号。next_cursor 非空仅表示本页，原查询可续页")
+        register("explore_code", explore_code, category=ActionCategory.READ_DRAFT,
+                 description="执行会话内委派只读代码调查，子上下文自行检索、分段读取，仅返回短结论和已读位置")
         register("read_skill", read_skill, category=ActionCategory.READ_DRAFT,
                  description="按需加载一份内置工作法（不授予权限）：" + skill_catalog())
         register("inspect_build", lambda cwd="": inspect_build(self, cwd), category=ActionCategory.READ_DRAFT,

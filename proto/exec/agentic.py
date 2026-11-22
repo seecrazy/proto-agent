@@ -19,11 +19,12 @@ from proto.exec.context import (ContextError, create_context, instructions_for_c
 from proto.exec.checkpoints import SCHEMA_VERSION
 from proto.exec.engineering import (engineering_topic, inspect_build, missing_checks,
                                     requested_checks, verification_receipt)
+from proto.exec.exploration import bind_explorer, investigate
 from proto.exec.plan_evidence import EvidenceError, OutputEvidence
 from proto.exec.router import Task, TaskResult, VARIANT_ID
 from proto.exec.sessions import SESSION_SCHEMA_VERSION, TERMINAL_STATES
-from proto.exec.work_context import (MAX_ACTOR_BYTES, MAX_ADVISORY_BYTES, MAX_HISTORY_BYTES,
-                                    clipped, render_history, size, target_args, tool_receipt, written_file)
+from proto.exec.work_context import (actor_input_budget, decision_input, size, target_args,
+                                     tool_receipt, written_file)
 from proto.llm.breaker import TRANSIENT_MODEL_REASONS, model_wait_reason
 from proto.llm.client import ModelPressureWait
 from proto.llm.decision import parse_decision as _parse_decision
@@ -50,7 +51,8 @@ LOOP_SYSTEM = (
     "[主人限定]时在限定范围内执行（范围内仍要自己想办法做到最好）。\n"
     "禁止：连续调用同一工具两次以上；观察为空时换别的做法（写文件/读具体文件），"
     "而不是重复列目录。产出必须落到指定项目目录。\n"
-    "推进纪律（重要）：探索是手段不是产出——每轮都必须有文件落盘或验证跑通。"
+    "代码定位先 search_symbols，再按命中行 read_file；搜正文用 grep；广泛阅读交 explore_code。"
+    "只读分析以结论和可回查位置结束，不为凑产出写文件。交付任务每轮应有文件落盘或验证跑通。"
     "若任务附有[上一轮进展]，说明探索已完成，直接从其『下一步』开始写/改文件，"
     "禁止重新列目录摸底。\n"
     "工程任务按需 read_skill；用 inspect_build 找工位和诊断入口，接着在同工位 run_command。"
@@ -67,7 +69,7 @@ LOOP_SYSTEM = (
 )
 
 # 只读工具（M45 探索配额：连续多个只读步后强制转向产出）
-READ_ONLY_TOOLS = {"list_dir", "read_file", "read_files", "grep", "clock",
+READ_ONLY_TOOLS = {"list_dir", "read_file", "read_files", "grep", "search_symbols", "explore_code", "clock",
                    "web_fetch", "github_search", "github_readme", "read_skill", "inspect_build",
                    "scan_style", "polish_style"}
 
@@ -75,7 +77,7 @@ READ_ONLY_TOOLS = {"list_dir", "read_file", "read_files", "grep", "clock",
 # （"确认完整性"每轮都失败）。读文件给足预算并提示出路；跑代码次之。
 OBS_LIMITS = {"read_file": 3000, "read_files": 6000,
               "run_python": 1500, "run_command": 4000, "grep": 1000,
-              "read_skill": 2500, "inspect_build": 3600,
+              "read_skill": 2500, "inspect_build": 3600, "search_symbols": 3200, "explore_code": 2400,
               "scan_style": 4000, "polish_style": 5200,
               "blackboard_read": 1200, "fleet_status": 1200, "company_context": 3700, "company_inbox": 3300,
               "github_readme": 3000, "web_fetch": 3000}
@@ -121,10 +123,23 @@ class AgenticLoop:
     def _tool_catalog(self) -> str:
         return json.dumps(self._agent.tools.definitions(), ensure_ascii=False)
 
+    def _explore(self, question, cwd):
+        context = self._session["context"]
+        workspace = self._agent.code_workspace
+
+        def stopped():
+            if workspace is not self._agent.code_workspace or str(workspace.root.resolve()) != context["workspace"]:
+                return "workspace_changed"
+            return self._autonomy_reason() or self._goal_stopped()
+
+        return investigate(workspace.code_index, context, question, cwd,
+                           lambda system, user: self._complete(self._agent.llm_fast or self._agent.llm,
+                                                               system, user, decision=True), stopped)
+
     def run(self, task_text: str, acceptance: str = "",
             feedback: str = "", journal=None, goal_id: str = "",
             project_dir: str = "", *, frozen_context=None, delivery_stage=None) -> Dict:
-        with self._agent.sessions.lock:
+        with self._agent.sessions.lock, bind_explorer(self._explore):
             try:
                 self._session = None
                 self._autonomous = bool(goal_id) or self._pool == "self_initiated"
@@ -172,8 +187,9 @@ class AgenticLoop:
             session["explore_run"] = session["explore_run"] + 1 if tool in READ_ONLY_TOOLS else 0
             if session["explore_run"] >= 4:
                 session["observations"].append(
-                    "提示：已连续 4 步探索未产出。禁止再调用 list_dir/read_file/grep——"
-                    "下一步必须用 write_file/edit_file 推进或用 run_command/run_python 验证；有证据才能交付。")
+                    "提示：已连续 4 步探索。若这是只读分析，给出结论和可回查位置即可结束；"
+                    "交付任务禁止再调用 list_dir/read_file/grep/search_symbols/explore_code——"
+                    "下一步必须用 write_file/edit_file 或验证命令推进。")
                 session["explore_run"] = 0
         session["events"].append({"kind": "tool_result", "task_id": pending["task_id"],
                                   "status": result.status,
@@ -188,7 +204,7 @@ class AgenticLoop:
     def resume(self, identifier: str, approved: bool, *, safe_only: bool = False) -> Dict:
         if type(approved) is not bool:
             return {"status": "failed", "reason": "invalid_approval_decision"}
-        with self._agent.sessions.lock:
+        with self._agent.sessions.lock, bind_explorer(self._explore):
             try:
                 session = self._agent.sessions.lookup(identifier)
                 if session is None:
@@ -416,7 +432,8 @@ class AgenticLoop:
             return result
 
         catalog = self._tool_catalog()
-        if size(LOOP_SYSTEM) + size(self._fixed_prompt(catalog)) > MAX_ACTOR_BYTES:
+        budget = actor_input_budget()
+        if size(LOOP_SYSTEM) + size(self._fixed_prompt(catalog)) > budget:
             return _finish(self._stop("failed", "context_budget_exceeded"))
         if "prompt_blocks" not in session:
             self._prepare_prompt_blocks(task_text, journal)
@@ -434,25 +451,30 @@ class AgenticLoop:
             step = saved["step"] if saved is not None else session["next_step"]
             self._agent._current_op.update(step=step + 1, tool="", detail="")
             fixed = self._fixed_prompt(catalog)
-            available = MAX_ACTOR_BYTES - size(LOOP_SYSTEM) - size(fixed)
-            if available < 0:
+            if size(LOOP_SYSTEM) + size(fixed) > budget:
                 return _finish(self._stop("failed", "context_budget_exceeded"))
             if saved is None:
-                history = render_history(observations, trace, min(MAX_HISTORY_BYTES, available))
                 feedback_block = (f"\n上一轮独立验证未通过，缺少：{feedback}\n"
                                   "本轮必须补齐这些证据。" if feedback else "")
-                advisory = clipped(feedback_block + self._agent.company_hint() + "".join(session["prompt_blocks"]),
-                                   min(MAX_ADVISORY_BYTES, available - size(history)))
+                advisory = feedback_block + self._agent.company_hint() + "".join(session["prompt_blocks"])
+                inputs = (LOOP_SYSTEM, fixed, advisory, observations, trace, budget)
+                prompt = decision_input(*inputs, tight=session.get("tight_context", False))
                 session["status"] = "running"
                 self._save()
                 try:
-                    raw = self._complete(self._agent.llm, LOOP_SYSTEM, fixed + advisory + history, decision=True)
+                    raw = self._complete(self._agent.llm, LOOP_SYSTEM, prompt, decision=True)
                 except Exception as exc:
                     reason = self._autonomy_reason()
                     if reason:
                         return _finish(self._stop("cancelled", reason))
+                    failure = model_wait_reason(exc)
+                    if (failure == "model_context_limit" and not session.get("tight_context")
+                            and size(decision_input(*inputs, tight=True)) < size(prompt)):
+                        session["tight_context"] = True
+                        self._save()
+                        continue
                     retry_at = exc.retry_at if isinstance(exc, ModelPressureWait) else None
-                    return _finish(self._model_stalled(model_wait_reason(exc), retry_at=retry_at))
+                    return _finish(self._model_stalled(failure, retry_at=retry_at))
                 session["next_step"] = step + 1
                 session["pending_decision"] = {"step": step, "raw": raw if isinstance(raw, str) else ""}
                 session["events"].append({"kind": "decision", **session["pending_decision"]})
@@ -557,6 +579,10 @@ class AgenticLoop:
                     target = self._agent.code_workspace._abs(arguments["cwd"]).resolve()
                     if not target.is_relative_to(root / directory):
                         raise ContextError("build_probe_outside_project")
+                if tool in ("grep", "search_symbols", "explore_code"):
+                    index = self._agent.code_workspace.code_index
+                    arguments.setdefault("cwd", directory)
+                    index.path(arguments["cwd"], within=index.path(directory))
                 decision["args"] = arguments
                 if delivery is not None and tool in ("write_file", "edit_file"):
                     target = self._agent.code_workspace._abs(arguments["path"]).resolve()
@@ -648,7 +674,7 @@ class AgenticLoop:
             except Exception:
                 pass
         try:
-            listing = self._agent.code_workspace.list_dir(session["context"]["project_dir"] if session.get("delivery") is not None else "")
+            listing = self._agent.code_workspace.list_dir(session["context"]["project_dir"])
             if listing:
                 plan_block += f"\n工作区当前内容（直接用，别再重复列目录）：\n{listing[:400]}\n"
         except Exception:
