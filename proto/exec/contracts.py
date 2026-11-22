@@ -5,6 +5,8 @@ import copy
 import inspect
 import math
 
+from proto.textstyle import MAX_TEXT as MAX_STYLE_TEXT, PROFILES as STYLE_PROFILES
+
 
 class ParameterError(ValueError):
     pass
@@ -17,6 +19,9 @@ def object_schema(properties=None, required=(), additional=False):
 
 _PATH = {"type": "string", "minLength": 1, "description": "工作区相对路径"}
 _TEXT = {"type": "string"}
+_STYLE = object_schema({
+    "text": {"type": "string", "maxLength": MAX_STYLE_TEXT},
+    "profile": {"type": "string", "enum": list(STYLE_PROFILES), "default": "dialogue"}}, ["text"])
 _BUILTINS = {
     "clock": object_schema(),
     "read_file": object_schema({
@@ -39,6 +44,8 @@ _BUILTINS = {
         "timeout_s": {"type": "integer", "minimum": 1, "maximum": 300, "default": 120}}, ["argv"]),
     "inspect_build": object_schema({"cwd": {"type": "string", "maxLength": 512}}),
     "read_skill": object_schema({"name": {"type": "string", "minLength": 1, "maxLength": 64}}, ["name"]),
+    "scan_style": _STYLE,
+    "polish_style": _STYLE,
     "web_fetch": object_schema({"url": {"type": "string", "minLength": 1}}, ["url"]),
     "github_search": object_schema({
         "query": {"type": "string", "minLength": 1},

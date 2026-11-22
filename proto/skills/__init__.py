@@ -1,4 +1,4 @@
-"""Trusted, packaged engineering playbooks; they do not grant tool access."""
+"""Trusted, packaged playbooks; they do not grant tool access."""
 from __future__ import annotations
 
 import hashlib
@@ -6,7 +6,7 @@ from functools import lru_cache
 from importlib.resources import files
 
 
-_NAMES = ("design-development-verification", "swift-ios-build", "local-verification")
+_NAMES = ("design-development-verification", "swift-ios-build", "local-verification", "natural-chinese-dialogue")
 _MAX_BYTES = 2500
 
 

@@ -67,13 +67,15 @@ LOOP_SYSTEM = (
 
 # 只读工具（M45 探索配额：连续多个只读步后强制转向产出）
 READ_ONLY_TOOLS = {"list_dir", "read_file", "read_files", "grep", "clock",
-                   "web_fetch", "github_search", "github_readme", "read_skill", "inspect_build"}
+                   "web_fetch", "github_search", "github_readme", "read_skill", "inspect_build",
+                   "scan_style", "polish_style"}
 
 # 观察截断分级（M47）：统一 600 字曾让 read_file 永远读不全设计文档
 # （"确认完整性"每轮都失败）。读文件给足预算并提示出路；跑代码次之。
 OBS_LIMITS = {"read_file": 3000, "read_files": 6000,
               "run_python": 1500, "run_command": 4000, "grep": 1000,
               "read_skill": 2500, "inspect_build": 3600,
+              "scan_style": 4000, "polish_style": 5200,
               "blackboard_read": 1200, "fleet_status": 1200, "company_context": 3700, "company_inbox": 3300,
               "github_readme": 3000, "web_fetch": 3000}
 OBS_DEFAULT = 600

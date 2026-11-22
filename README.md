@@ -2,7 +2,7 @@
 
 > **内在状态显式可调制 · 主动行为受授权与预算约束 · 自我进化机制仍在验证中**
 
-[![tests](https://img.shields.io/badge/tests-1174%20passed-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-1227%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
 [![version](https://img.shields.io/badge/version-0.33.0-orange.svg)]()
@@ -100,6 +100,12 @@ python3 -m proto.run
 ```
 
 双模型栈说明：主模型负责对话、归因、执行决策与语义验收；快模型负责事实抽取、反思、学习摘要和快速规划。初始不设 `FAST_MODEL` 时跟随主模型；运行中也可分别选择不同接入，或让快模型继续跟随主模型。
+
+### 中文对话少一点套话
+
+Web 和 REPL 的普通中文回复默认经过本地规则检查；**检查不增加模型调用，没命中就一字不动**。只对能保真的命中片段去掉包装或调整标点；用原规则复验，不过就换备选处方，两次仍不过便退回原文。比如「值得注意的是，我查过日志。不是编译失败，而是还没运行编译。」会变成「我查过日志。不是编译失败，而是还没运行编译。」后一处事实区分保留。
+
+回复的人设、事实、代码和引用优先于降分。要对方照抄，可以直接说「原样输出」或「不要润色」；诗词、小说等不套聊天风格。任务里可用 `read_skill` 读 `natural-chinese-dialogue`，再用只读 `scan_style` / `polish_style` 查看命中、处方和复验，或本机从 `proto.textstyle` 导入同名函数。支持 `dialogue`、`technical`、`formal`、`creative` 四种规则配置，不判断文章是不是 AI 写的。[流程与边界](docs/DESIGN.md#natural-dialogue)
 
 ### 运行中新增、分组与切换模型（M64/M76）
 
@@ -291,7 +297,8 @@ PROTO 不靠"性格"掩盖能力短板。M16 起它自带完整的工具族与**
 |---|---|---|
 | `read_file` / `write_file` / `edit_file` | 工作区内读写与精确替换（路径圈死，拒绝 `..`） | workspace_write 自动 |
 | `list_dir` / `grep` | 目录树与正则检索（编码 agent 的眼睛） | read_draft 自动 |
-| `read_skill` | 按需读内置的设计→开发→验证、Swift/iOS、本地验证三个工程技能；不加载工作区同名文件、不改变权限 | read_draft 自动 |
+| `read_skill` | 按需读内置的设计→开发→验证、Swift/iOS、本地验证、中文对话技能；不加载工作区同名文件、不改变权限 | read_draft 自动 |
+| `scan_style` / `polish_style` | 离线标出中文模板腔，或按处方局部改写并复验；不写文件、不判定作者 | read_draft 自动 |
 | `inspect_build` | 查工位的项目入口、当前 PATH、隔离后端和建议命令；不启动构建或测试 | read_draft 自动 |
 | `run_python` | **沙盒执行**：隔离后端（macOS `sandbox-exec` 写遏制+禁网 / Linux `runsc`）+ 清洁环境 + CPU 限制 + 超时；无隔离后端默认拒绝执行 | 沙盒后端 workspace_write 自动；未隔离后端 visible_write 需批准 |
 | `run_command` | **项目本机验证**：无 shell、数组 argv、命令白名单（Python/Swift/XcodeBuild/Node 等），cwd 圈死在项目工作区，沿用写遏制+禁网沙盒 | 沙盒后端 workspace_write 自动；未隔离后端 visible_write 需批准 |

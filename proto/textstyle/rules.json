@@ -1,0 +1,137 @@
+{
+  "version": "zh-style-1",
+  "profiles": {
+    "dialogue": 80,
+    "technical": 75,
+    "formal": 75,
+    "creative": 70
+  },
+  "rules": [
+    {
+      "id": "P01",
+      "profiles": ["dialogue", "technical"],
+      "detector": "lead",
+      "pattern": "^(?:值得(?:注意|一提)的是|需要(?:指出|强调|说明)的是|综上所述|总的来说|从总体上来看)[，,:：][ \\t]*",
+      "severity": "high",
+      "deduction": 14,
+      "primary": ["trim_lead", "删去过渡语，直接说后面的事实"],
+      "alternative": ["trim_stack", "只在同一句删掉连续的空开场，再保留其余原话"],
+      "forbidden": "不要替换成另一句过渡语，不要删除限定词或事实"
+    },
+    {
+      "id": "P02",
+      "profiles": ["dialogue", "technical", "formal"],
+      "detector": "lead",
+      "pattern": "^(?:(?:在当今这个|在这个)(?:快速变化|飞速发展|日新月异|信息爆炸)的时代[里中]?|随着(?:时代|社会)的(?:不断|持续)(?:发展|进步))[，,:：][ \\t]*",
+      "edit_pattern": "^(?:在当今这个|在这个)(?:快速变化|飞速发展|日新月异|信息爆炸)的时代[里中]?[，,:：][ \\t]*",
+      "severity": "high",
+      "deduction": 18,
+      "primary": ["trim_lead", "去掉无依赖的时代包装；带因果的背景交人工核对"],
+      "alternative": ["trim_stack", "同时去掉本句其他连续空开场"],
+      "forbidden": "不删除具体因果、日期或来源，不用另一句时代背景替代"
+    },
+    {
+      "id": "P03",
+      "profiles": ["dialogue", "technical", "formal", "creative"],
+      "detector": "lead",
+      "pattern": "^(?:以下是为你(?:整理|准备)的(?:回复|回答|说明|分析)|(?:下面|接下来)(?:就)?让(?:我们|我)(?:一起)?(?:来)?(?:看看|看一下|详细说明))[，,:：][ \\t]*",
+      "severity": "high",
+      "deduction": 14,
+      "primary": ["trim_lead", "删去代替回答的开场包装"],
+      "alternative": ["trim_stack", "只在本句去掉层叠开场，保留后面的原话"],
+      "forbidden": "不删除真实同意、问候、共情或列举实际步骤的文字"
+    },
+    {
+      "id": "P04",
+      "profiles": ["dialogue", "technical", "formal"],
+      "detector": "tail",
+      "pattern": "^(?:希望(?:以上(?:内容)?|这些建议|这个回答)(?:能)?对你(?:有所|有)帮助|让我们携手(?:共创|迈向)(?:更加|更)?美好(?:的)?未来|展望未来[，,](?:一切皆有可能|未来值得期待|前景无限)|这(?:也)?为(?:未来|长远)的发展奠定了(?:更加)?坚实(?:的)?基础)[。！!…]*$",
+      "severity": "high",
+      "deduction": 18,
+      "primary": ["drop_tail", "删去无信息的尾句，停在原有内容后"],
+      "alternative": ["review", "若必须保留祝愿或承诺，请核对语境后人工处理"],
+      "forbidden": "不换成新的展望，也不补造具体成果"
+    },
+    {
+      "id": "P05",
+      "profiles": ["dialogue"],
+      "detector": "contrast",
+      "pattern": "^(?:(?:这)?(?:并)?不是[^，,。！？；!?;]{1,48}[，,][ \\t]*(?:而是|其实是)|(?:这)?(?:不仅|不只是)(?:是)?[^，,。！？；!?;]{1,48}[，,][ \\t]*(?:更是|还是)|与其说[^，,。！？；!?;]{1,48}[，,][ \\t]*不如说)[ \\t]*",
+      "edit_pattern": "^不是(?:什么大道理|什么场面话|空话|套话|客套话|泛泛而谈)[，,][ \\t]*而是[ \\t]*(?=我|你|现在|这次|今天|昨天|明天|先|目前|刚才)",
+      "severity": "low",
+      "deduction": 6,
+      "primary": ["trim_contrast", "只有前半是纯包装时才裁掉包装，直接说原肯定项"],
+      "alternative": ["review", "如果否定项限定事实，完整保留并请人工核对"],
+      "forbidden": "不把真实排除项删掉，也不改成‘不仅……更是……’"
+    },
+    {
+      "id": "P06",
+      "profiles": ["dialogue", "formal"],
+      "detector": "repeated",
+      "pattern": "—{1,2}",
+      "minimum": 2,
+      "severity": "low",
+      "deduction": 5,
+      "primary": ["dash_comma", "只有两边都是完整话语时才换成逗号"],
+      "alternative": ["dash_semicolon", "适合分开的两句可在同一位置换成分号"],
+      "forbidden": "不移动破折号，不改数字区间、名称或引号内的原话"
+    },
+    {
+      "id": "P07",
+      "profiles": ["dialogue", "formal"],
+      "detector": "phrase",
+      "pattern": "(?:既要[^，,。！？；!?;]{1,36}[，,][ \\t]*又要[^，,。！？；!?;]{1,36}[，,][ \\t]*还要[^，,。！？；!?;]{1,36}|以[^，,。！？；!?;]{1,24}为(?:抓手|支点)[，,]以[^，,。！？；!?;]{1,24}为(?:驱动|契机)[，,]以[^，,。！？；!?;]{1,24}为目标)",
+      "severity": "low",
+      "deduction": 6,
+      "primary": ["review", "只有确认都是独立事实时，人工改成散句"],
+      "alternative": ["review", "如果每项是实际要求，则保留它们"],
+      "forbidden": "不换成新的三项，不改变要求数量或优先级"
+    },
+    {
+      "id": "P08",
+      "profiles": ["dialogue", "technical", "formal"],
+      "detector": "repeated",
+      "pattern": "全链路|赋能|价值闭环|生态协同|沉淀方法论|全方位跃迁|底层逻辑|颗粒度对齐",
+      "minimum": 2,
+      "severity": "low",
+      "deduction": 4,
+      "primary": ["review", "有具体来源时，人工换成已经做过的动作和结果"],
+      "alternative": ["review", "没有来源时，只建议去包装或标记待补"],
+      "forbidden": "不让技术术语消失，不替用户编造动作或结果"
+    },
+    {
+      "id": "P09",
+      "profiles": ["dialogue"],
+      "detector": "chain",
+      "pattern": "的",
+      "minimum": 5,
+      "severity": "low",
+      "deduction": 4,
+      "primary": ["review", "人工确认是否能去掉重复修饰并保留逻辑关系"],
+      "alternative": ["review", "如果句子虽长但清楚，保留原句"],
+      "forbidden": "不能只因为句长拆句，不能丢掉限定条件"
+    },
+    {
+      "id": "P10",
+      "profiles": ["dialogue"],
+      "detector": "rhythm",
+      "minimum": 4,
+      "severity": "low",
+      "deduction": 4,
+      "primary": ["review", "检查连续等长短段是否有必要，保留原段序"],
+      "alternative": ["review", "若是作者刻意的节奏，保持原样"],
+      "forbidden": "不为了消除整齐感而重排或合并段落"
+    },
+    {
+      "id": "P11",
+      "profiles": ["dialogue"],
+      "detector": "tail",
+      "pattern": "^这[，,](?:才是真正的关键|才是关键|就是答案|就是意义)[。！!…]*$",
+      "severity": "high",
+      "deduction": 13,
+      "primary": ["drop_tail", "若前面已经说完实际内容，删除戏剧化尾句"],
+      "alternative": ["review", "若尾句指明了新的观点，原样保留供人工核对"],
+      "forbidden": "不换成另一句戏剧化短句，不改前一句"
+    }
+  ]
+}

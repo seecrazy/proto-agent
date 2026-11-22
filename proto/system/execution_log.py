@@ -22,9 +22,10 @@ _MAX_BYTES = 2 * 1024 * 1024
 _BACKUP_COUNT = 3
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,80}")
 _IDENTIFIERS = frozenset({"agent_id", "run_id", "call_id", "profile_id", "role", "pool",
-                          "kind", "status", "tool", "stage", "exception_type", "backend"})
+                          "kind", "status", "tool", "stage", "exception_type", "backend", "rules_version"})
 _NUMBERS = frozenset({"attempt", "duration_ms", "http_status", "retry_at", "generation",
-                     "estimated_input_tokens", "tokens", "model_retries", "restart_attempts", "exit_code"})
+                     "estimated_input_tokens", "tokens", "model_retries", "restart_attempts", "exit_code",
+                     "hits_before", "hits_after"})
 _FLAGS = frozenset({"foreground", "grouped", "failover_eligible", "resumed"})
 _REASONS = frozenset({
     "model_timeout", "model_unreachable", "model_rate_limited", "model_server_error", "model_unauthorized",

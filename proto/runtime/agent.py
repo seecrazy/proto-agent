@@ -64,6 +64,7 @@ from proto.runtime.autonomy import (
     AutonomyConflict, AutonomyPolicy, autonomous_entry, autonomous_origin, load_policy, validate_mode,
 )
 from proto.runtime.coordination import CoordinationDB, CoordinationError
+from proto.runtime.dialogue import DIALOGUE_STYLE_HINT, dialogue_profile, finish_dialogue_text
 from proto.runtime.model_pressure import ModelPressure
 from proto.runtime.personas import (
     AgentProfile, DEFAULT_PERSONA, LLM_PERSONA_PROMPT, PERSONA_DEFAULTS,
@@ -71,6 +72,7 @@ from proto.runtime.personas import (
 )
 from proto.runtime.runcontext import current_run
 from proto.runtime.self_facts import Lifetime, describe_self, local_time, self_fact_prompt, self_question
+from proto.textstyle import polish_style, scan_style
 from proto.work.delivery import (MAX_STALLED_SLICES, MAX_UNVERIFIED_SLICES, ProjectDirectoryError,
                                  ios_stage, main_project, project_bindings, project_files,
                                  project_path, stage_waiters, valid_ios_evidence)
@@ -289,6 +291,12 @@ class ProtoAgent:
         self.tools.register("clock", lambda: local_time(self._now()) or "当前服务端时间不可用",
                             category=ActionCategory.READ_DRAFT,
                             description="当前时间", parameters=builtin_parameters("clock"))
+        self.tools.register("scan_style", scan_style, category=ActionCategory.READ_DRAFT,
+                            description="离线扫描中文模板腔，返回位置和处方，不改稿",
+                            parameters=builtin_parameters("scan_style"))
+        self.tools.register("polish_style", polish_style, category=ActionCategory.READ_DRAFT,
+                            description="对传入的中文短稿按处方局部改写并复验，失败退回原文；不写文件",
+                            parameters=builtin_parameters("polish_style"))
         self.code_workspace.register_all(self.tools)
         # M61：执行链内也能做领域学习。外部内容仍是 READ_DRAFT + 白名单，
         # 并在提示词中声明为素材非指令。
@@ -1405,6 +1413,9 @@ class ProtoAgent:
 
     def _reply_dialogue(self, text, prompt, context, *, offline_activity=None):
         if self.llm is not None:
+            profile = dialogue_profile(text)
+            if profile == "dialogue":
+                prompt += DIALOGUE_STYLE_HINT
             try:
                 evidence = self.self_fact_prompt() + self.company_hint()
                 if engineering_topic(text):
@@ -1413,10 +1424,11 @@ class ProtoAgent:
                                  "只有执行回执才能说明跑了什么、为何失败；不要把尚未执行当成无法执行。\n")
                 reply = self._complete(
                     self.llm, prompt, context + evidence + "\n\n主人说：" + text, foreground=True)
-                if reply:
-                    return reply
             except Exception:
                 pass
+            else:
+                if reply:
+                    return finish_dialogue_text(reply, profile, execution_context=self._execution_context())
         if offline_activity is not None:
             return "我暂时无法调用对话模型。当前工作记录：\n" + offline_activity()
         with self.state_guard:

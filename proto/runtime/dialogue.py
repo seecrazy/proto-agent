@@ -6,8 +6,42 @@ import re
 from uuid import uuid4
 
 from proto.runtime.coordination import CoordinationError, encode
+from proto.system.execution_log import record_execution
+from proto.textstyle import polish_style
 
 RETAIN_REMEMBERED = 128
+DIALOGUE_STYLE_HINT = (
+    "\n用你自己的人设直接回答，先说事实、判断或下一步；不知道就明说。"
+    "没有信息的开场、排比和升华不必写。别用套话替代实际共情，别为了口语化添事实。"
+)
+_KEEP_REPLY = re.compile(
+    r"原样|一字不差|原封不动|照抄|照原文|逐字|(?:不要|不用|别)(?:改动|修改|改写|润色|换词)|"
+    r"不[做作]任何(?:修改|改动)|(?:引用|复述)(?:上面|下面|如下|以下|原话|原文)|\bverbatim\b|"
+    r"(?:写|创作|仿写|编)[^，。！？；\r\n]{0,10}(?:诗|歌词|剧本|台词|小说|散文|故事)|"
+    r"(?:输出|返回|给出)\s*(?:纯|严格的|原始的)?\s*(?:JSON|YAML|XML|CSV|diff|一条命令)", re.I)
+_FORMAL_REPLY = re.compile(r"(?:写|起草|拟定)[^，。！？；\r\n]{0,12}(?:公文|正式通告|正式公告|正式报告|正式邮件)")
+
+
+def dialogue_profile(owner_text):
+    if _KEEP_REPLY.search(owner_text):
+        return None
+    return "formal" if _FORMAL_REPLY.search(owner_text) else "dialogue"
+
+
+def finish_dialogue_text(text, profile, *, execution_context):
+    if profile is None:
+        return text
+    try:
+        result = polish_style(text, profile)
+    except Exception as error:
+        record_execution("dialogue_style_checked", **execution_context, status="unavailable",
+                         exception_type=type(error).__name__)
+        return text
+    before, after = result["scan_before"], result["scan_after"]
+    record_execution("dialogue_style_checked", **execution_context, status=result["status"],
+                     rules_version=before["rules_version"], attempt=result["attempts"],
+                     hits_before=len(before["hits"]), hits_after=len(after["hits"]))
+    return result["final_text"]
 
 
 class Dialogue:

@@ -5,6 +5,7 @@ import json
 import pytest
 
 from proto.llm.client import LLMClient
+from proto.memory.extract import EXTRACT_PROMPT
 from proto.memory.stream import MemoryStream
 from proto.runtime.agent import ProtoAgent
 from proto.storage.store import FileSystemStore
@@ -17,7 +18,7 @@ class MemLLM(LLMClient):
     def complete(self, system, user):
         if "归因" in system:
             return "[]"
-        if "事实" in system:
+        if system == EXTRACT_PROMPT:
             return json.dumps([{"text": "主人名叫小明", "importance": 0.9}])
         if "反思" in system:
             self.users.append(f"reflect:{user}")

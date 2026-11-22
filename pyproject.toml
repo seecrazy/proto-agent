@@ -28,6 +28,7 @@ include = ["proto*"]
 
 [tool.setuptools.package-data]
 "proto.skills" = ["*/SKILL.md"]
+"proto.textstyle" = ["rules.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
