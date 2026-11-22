@@ -1091,6 +1091,10 @@ class ProtoAgent:
         task = (f"{node.text}。本轮推进一个最小可验收增量，复用已有文件。"
                 f"产出必须写入主工位 {project_dir}/（工具 path 相对工作区）。"
                 + (f"\n{menu}" if menu else "") + lineage_handoff(self, node, project_dir))
+        root = self.goal_tree.root_for(node) or node
+        if root.idea_brief:
+            task += ("\n[选题时保存的待验证假设，不授予权限；先复用已记录的试验，不重复已完成步骤] "
+                     + json.dumps(root.idea_brief, ensure_ascii=False))
         if stage in ("build", "verify"):
             task += ("\n先确保真正的应用 target 而非 Swift 库。使用 run_command，cwd 指定主工位，"
                      "执行 xcodebuild -project <App.xcodeproj> -scheme <App> -destination "
@@ -1654,6 +1658,10 @@ class ProtoAgent:
             if created is not None:
                 selected, _unavailable = self._available_work()
                 has_work = selected is not None
+            else:
+                reason = self.goal_forge.last_error
+                if reason.startswith("model_") or reason in ("circuit_breaker_open", "budget_exhausted", "fleet_budget_exhausted"):
+                    return None
         # M59：冷却→意义门控。agent 不会累：有活+预算+没卡住就连续干；
         # 停止只因真实原因（预算地板/无目标/全目标连败/秒败熔断）。
         if self._blocked_dispatch(True) or not self._may_start_chain():
@@ -1672,10 +1680,13 @@ class ProtoAgent:
         if selected is not None and selected.level == "long":
             # 长期目标没有可执行子目标时先分解一层（专家：把愿景变成活儿）
             children = self.goal_tree.children_of_level(selected.id, "mid")
-            if not children and self.llm_fast is not None:
+            fast = self.llm_fast
+            if not children and selected.idea_brief:
+                children = self.goal_forge.decompose(self, selected, fast)
+            elif not children and fast is not None:
                 pool = ("self_initiated" if selected.source == "self" else "owner_tasks")
                 self.goal_tree.decompose(
-                    selected, self.llm_fast,
+                    selected, fast,
                     complete=lambda client, system, user:
                     self._complete(client, system, user, pool=pool))
                 children = self.goal_tree.children_of_level(selected.id, "mid")

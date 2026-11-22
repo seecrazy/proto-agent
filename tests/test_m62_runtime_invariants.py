@@ -543,13 +543,17 @@ def test_dropped_during_decomposition_creates_no_children(tmp_path):
 
 
 def test_goal_forge_does_not_duplicate_active_goal(agent):
-    text = "实现本地自动化测试工具"
+    from tests.test_idea_forge import load_example, material_packet
+
+    packet = material_packet(load_example())
+    text = packet["candidates"][0]["core_insight"]
     agent.state.owner_priority = text
     agent.goal_tree.add(text, "long", source="self")
-    agent.llm.forge_rows = [{"text": text, "rationale": agent.persona,
-                            "feasibility": 1, "acceptance": "存在测试文件与报告"}]
+    packet["candidates"] = packet["candidates"][:1]
+    agent.llm.forge_rows = packet
     assert agent.goal_forge.maybe_create(agent, trigger="schedule") is None
     assert len(agent.goal_tree.active_long_term()) == 1
+    assert agent.goal_forge.latest()["discarded"][0]["reason"] == "duplicate_active_goal"
 
 
 @pytest.fixture()

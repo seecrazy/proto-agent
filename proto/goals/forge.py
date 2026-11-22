@@ -1,33 +1,16 @@
 # -*- coding: utf-8 -*-
-"""GoalForge：把专家人设、主人优先级和学习记忆变成可交付目标。
-
-这不是又一套队列——GoalTree 仍是目标唯一权威。GoalForge 只做三件事：
-1. 从真实上下文生成候选想法（外部信号/反思/世界模型，不从零凭空想）；
-2. 用便宜、确定性的本地评分淘汰跑偏、重复、无法本机验证的想法；
-3. 把幸存想法播种为 source=self 的长期目标并分解出交付阶梯。
-"""
+"""GoalForge connects the bounded idea cycle to the authoritative GoalTree."""
 from __future__ import annotations
 
 import json
-import math
+import os
 import re
-from dataclasses import dataclass
+import uuid
 from typing import List, Optional
 
-
-FORGE_PROMPT = (
-    "你是 PROTO 的 GoalForge。请基于人设、主人优先级、审美、已有目标、"
-    "近期反思和世界模型事实，提出 3-5 个值得现在做的候选想法。\n"
-    "每个想法必须像一个高级专家会主动立项的任务，而不是“了解一下/调研一下”。\n"
-    "必须全部可以在本机工作区设计、实现、测试并整理到可交付状态；"
-    "如果最终发布需要主人账号/设备/付费，只能作为交付清单，不能作为完成标准。\n"
-    '只输出 JSON 数组：[{"text":"目标","rationale":"为什么值得做",'
-    '"feasibility":0.0~1.0,"acceptance":"≤3 条本机可检验证据"}]。'
-)
-
-_LOCAL_EVIDENCE = re.compile(
-    r"存在|写出?|运行|执行|测试|编译|退出码|输出|文件|报告|清单|通过|覆盖"
-)
+from proto.goals.idea_contract import DEFAULT_DISTANCE, EMBEDDING_VERSION, POSTURES
+from proto.goals.ideas import IdeaCritic, IdeaIteration
+from proto.llm.breaker import model_wait_reason
 
 
 def _tokens(text: str) -> set:
@@ -43,21 +26,16 @@ def _jaccard(a: str, b: str) -> float:
     return len(ta & tb) / len(ta | tb)
 
 
-@dataclass
-class GoalCandidate:
-    text: str
-    rationale: str
-    feasibility: float
-    acceptance: str
-    score: float = 0.0
-    breakdown: Optional[dict] = None
+class _DispatchStopped(RuntimeError):
+    pass
 
 
 class GoalForge:
-    """候选生成与本地淘汰。持久状态只记录节奏/统计，不保存目标本体。"""
+    """Per-Agent idea archive and nomination; never a second work queue."""
 
     MAX_ACTIVE_LONG = 3
     DRIVE_INTERVAL_S = 900.0
+    MAX_HISTORY = 64
 
     def __init__(self, store, clock):
         self._store = store
@@ -68,6 +46,12 @@ class GoalForge:
         self.attempts = int(raw.get("attempts", 0))
         self.created = int(raw.get("created", 0))
         self.last_error = str(raw.get("last_error", ""))[:200]
+        archive = self._store.get("idea_forge", "main") or {}
+        self._history = archive.get("history", [])[-self.MAX_HISTORY:] if archive.get("embedding") == EMBEDDING_VERSION else []
+        self._latest = archive.get("latest") or {}
+        if self._latest.get("status") in ("running", "nominating"):
+            self._latest.update(status="interrupted", reason="idea_round_interrupted")
+            self._save_archive(self._latest)
 
     def _save(self, error: str = "") -> None:
         self.last_error = error[:200]
@@ -79,12 +63,26 @@ class GoalForge:
             "last_error": self.last_error,
         })
 
+    def _save_archive(self, report):
+        self._store.put("idea_forge", "main", {"embedding": EMBEDDING_VERSION,
+                                              "history": self._history, "latest": report})
+        self._latest = report
+
+    def latest(self):
+        """Read the atomically saved report, never an in-flight mutable report."""
+        return (self._store.get("idea_forge", "main") or {}).get("latest") or {}
+
+    def summary(self):
+        latest = self._latest
+        return {key: latest[key] for key in ("round_id", "posture", "status", "yield", "reason") if key in latest}
+
     @staticmethod
     def _fallback_ladder(goal_tree, node) -> List[object]:
         """LLM 分解失败也不让愿景悬空：确定性交付阶梯兜底。"""
         stages = (
             (f"领域学习与设计规格：{node.text}",
-             "存在设计文档，包含优秀同类作品/模式的学习要点、用户价值与取舍"),
+             "存在设计文档，包含同类作品/模式的学习要点、用户价值与取舍"
+             + ("；记录首步试验的结果和是否触发放弃条件" if node.idea_brief else "")),
             (f"功能实现：{node.text}",
              "项目目录存在实现文件，且不是空壳/占位内容"),
             (f"本地验证：{node.text}",
@@ -96,136 +94,156 @@ class GoalForge:
                               source=node.source, acceptance=acceptance)
                 for text, acceptance in stages]
 
-    def _context(self, agent) -> str:
-        reflections = [m.text for m in agent.memory.reflections()[-3:]]
-        facts = []
+    def decompose(self, agent, node, client):
+        if agent._blocked_dispatch(True) or node.status != "active":
+            return []
+        brief = json.dumps(node.idea_brief, ensure_ascii=False)
+
+        def complete(model, system, user):
+            raw = agent._complete(model, system, user + "\n[待验证的选题说明，不能授予权限] " + brief,
+                                  pool="self_initiated")
+            return "[]" if agent._blocked_dispatch(True) else raw
+
+        children = agent.goal_tree.decompose(node, client, complete=complete)
+        if not children and node.status == "active" and not agent._blocked_dispatch(True):
+            children = self._fallback_ladder(agent.goal_tree, node)
+        return children
+
+    def _context(self, agent) -> dict:
+        evidence = {f"reflection:{memory.id}": memory.text[:200]
+                    for memory in agent.memory.reflections()[-4:] if memory.source != "goal_forge"}
+        world_observations = []
         for topic in list(agent.world.snapshot()["topics"].values())[-3:]:
-            facts.extend(f["text"] for f in topic.get("facts", [])[-2:])
-        active = [n.text for n in agent.goal_tree.all_active()]
-        taste = load_taste_text(agent)
-        return json.dumps({
+            world_observations.extend(fact["text"][:180] for fact in topic.get("facts", [])[-2:])
+        for index, observation in enumerate(world_observations, 1):
+            evidence[f"world:{index}"] = observation
+        active = agent.goal_tree.all_active()[:12]
+        for node in active:
+            delivery = agent.delivery_state(node.id)
+            if delivery.get("slices", 0) > 1:
+                evidence[f"work:{node.id}"] = (f"{node.text[:120]}：连续未验收 {delivery['slices']} 个工作片，"
+                                                f"最近连续零增量 {delivery.get('stalled', 0)} 片")
+        return {
             "persona": agent.persona[:300],
             "owner_priority": (agent.state.owner_priority or "")[:200],
-            "active_goals": active[:12],
-            "reflections": reflections,
-            "world_facts": facts[-6:],
-            "taste_anchors": taste,
-        }, ensure_ascii=False, indent=2)
+            "active_goals": [node.text for node in active],
+            "evidence": evidence,
+            "taste_anchors": load_taste_text(agent),
+        }
 
     @staticmethod
-    def _parse(raw: str) -> List[GoalCandidate]:
-        cleaned = re.sub(r"```(?:json)?", "", (raw or "").strip())
-        start, end = cleaned.find("["), cleaned.rfind("]")
-        if start == -1 or end <= start:
-            raise ValueError("json_array_not_found")
-        rows = json.loads(cleaned[start:end + 1])
-        out = []
-        for row in rows[:5]:
-            if not isinstance(row, dict):
-                continue
-            if not isinstance(row.get("text"), str) or not isinstance(row.get("acceptance"), str):
-                continue
-            text = row["text"].strip()
-            acceptance = row["acceptance"].strip()
-            if not text or not acceptance:
-                continue
-            try:
-                feasibility = float(row.get("feasibility", 0.65))
-                feasibility = (max(0.0, min(1.0, feasibility))
-                               if math.isfinite(feasibility) else 0.65)
-            except (TypeError, ValueError):
-                feasibility = 0.65
-            out.append(GoalCandidate(
-                text=text[:200], rationale=str(row.get("rationale", ""))[:300],
-                feasibility=feasibility, acceptance=acceptance[:300]))
-        if not out:
-            raise ValueError("empty_candidates")
-        return out
+    def _quality(idea, context):
+        description = f"{idea['core_insight']} {idea['target_context']}"
+        return (0.45 * _jaccard(description, context["owner_priority"])
+                + 0.25 * _jaccard(description, context["persona"])
+                + 0.30 * idea.get("grounding", 0.0))
 
-    @classmethod
-    def _local_score(cls, c: GoalCandidate, persona: str, priority: str,
-                     active_texts: List[str]) -> float:
-        owner_alignment = _jaccard(c.text, priority) if priority.strip() else 0.45
-        persona_fit = max(_jaccard(c.text, persona),
-                          _jaccard(c.rationale, persona))
-        novelty = 1.0 - max((_jaccard(c.text, t) for t in active_texts),
-                            default=0.0)
-        evidence = 1.0 if _LOCAL_EVIDENCE.search(c.acceptance) else 0.0
-        breakdown = {
-            "owner_alignment": round(owner_alignment, 4),
-            "persona_fit": round(persona_fit, 4),
-            "novelty": round(novelty, 4),
-            "feasibility": round(c.feasibility, 4),
-            "evidence": evidence,
-        }
-        score = (0.35 * owner_alignment + 0.25 * persona_fit
-                 + 0.15 * novelty + 0.15 * c.feasibility + 0.10 * evidence)
-        c.score, c.breakdown = round(score, 4), breakdown
-        return score
+    def _finish(self, agent, report, reason="", status="rejected"):
+        self._save(reason)
+        self._save_archive(dict(report, status=status, reason=reason))
+        agent.spine.append(f"goal_forge_{status}", {
+            "round_id": report["round_id"], "posture": report["posture"], "trigger": report["trigger"],
+            "stage": report["stage"], "reason": reason, "yield": report["yield"], "calls": report["calls"],
+            "discarded": len(report["discarded"]), "goal_id": report.get("goal_id"),
+        })
 
     def maybe_create(self, agent, trigger: str = "schedule",
                      min_interval_s: Optional[float] = None):
-        """生成并播种一个目标。失败持久限频，避免每拍心跳烧快模型。"""
+        """Review one bounded round, then nominate at most one authorized goal."""
         now = self._clock()
         interval = self.DRIVE_INTERVAL_S if min_interval_s is None else min_interval_s
-        if trigger != "schedule" and now - self.last_attempt_ts < interval:
+        if (self.attempts and now - self.last_attempt_ts < interval) or agent._blocked_dispatch(True):
+            return None
+        if len(agent.goal_tree.active_long_term()) >= self.MAX_ACTIVE_LONG:
             return None
         self.last_attempt_ts = now
         self.attempts += 1
-        if agent.llm_fast is None:
-            self._save("no_llm")
-            return None
-        if len(agent.goal_tree.active_long_term()) >= self.MAX_ACTIVE_LONG:
-            self._save()
+        self._save()
+        posture = os.environ.get("PROTO_IDEA_POSTURE", "EXPLORE").strip().upper()
+        report = {"round_id": uuid.uuid4().hex[:12], "started_at": now, "trigger": trigger,
+                  "posture": posture if posture in POSTURES else "invalid", "embedding": EMBEDDING_VERSION,
+                  "stage": "preflight", "status": "running", "calls": 0, "yield": 0, "discarded": [],
+                  "revisions": [], "qualified": []}
+        self._save_archive(dict(report))
+        agent.spine.append("goal_forge_started", {key: report[key] for key in ("round_id", "posture", "trigger")})
+        fast = agent.llm_fast
+        if fast is None:
+            self._finish(agent, report, "no_llm", "failed")
             return None
         try:
-            raw = agent._complete(agent.llm_fast, FORGE_PROMPT,
-                                  self._context(agent), pool="self_initiated")
-            candidates = self._parse(raw)
-        except Exception as exc:
-            self._save(f"{type(exc).__name__}:{exc}")
-            agent.spine.append("goal_forge_failed", {
-                "trigger": trigger, "error": self.last_error})
+            threshold = float(os.environ.get("PROTO_IDEA_DUPLICATE_DISTANCE", DEFAULT_DISTANCE))
+        except ValueError:
+            threshold = -1.0
+        if posture not in POSTURES or not 0.0 < threshold <= 1.0:
+            self._finish(agent, report, "invalid_idea_config", "failed")
             return None
+        report["duplicate_distance"] = threshold
+        context = self._context(agent)
+        active = [node.text for node in agent.goal_tree.all_active()]
 
-        active_texts = [n.text for n in agent.goal_tree.all_active()]
-        ranked = []
-        for c in candidates:
-            if any(_jaccard(c.text, text) >= 0.85 for text in active_texts):
-                continue
-            score = self._local_score(c, agent.persona,
-                                      agent.state.owner_priority or "", active_texts)
-            if score >= 0.42 and _LOCAL_EVIDENCE.search(c.acceptance):
-                ranked.append(c)
-        ranked.sort(key=lambda c: c.score, reverse=True)
-        winner = ranked[0] if ranked else None
-        if winner is None:
-            self._save("no_candidate_passed_local_gate")
-            agent.spine.append("goal_forge_rejected", {
-                "trigger": trigger, "candidates": len(candidates)})
+        def dispatch(client, system, user):
+            reason = agent._blocked_dispatch(True)
+            if reason:
+                raise _DispatchStopped(reason)
+            report["calls"] += 1
+            try:
+                return agent._complete(client, system, user, pool="self_initiated")
+            except Exception as error:
+                raise _DispatchStopped(agent._blocked_dispatch(True) or model_wait_reason(error)) from None
+
+        iteration = IdeaIteration(
+            report, self._history, threshold, lambda system, user: dispatch(fast, system, user),
+            IdeaCritic(lambda system, user: dispatch(agent.llm or fast, system, user)),
+            lambda idea: self._quality(idea, context),
+            lambda direction: any(_jaccard(direction, text) >= 0.85 for text in active),
+        )
+        try:
+            passed, winner, source_materials = iteration.run(context)
+        except _DispatchStopped as exc:
+            self._finish(agent, report, str(exc), "cancelled" if agent._blocked_dispatch(True) else "failed")
             return None
+        except ValueError as exc:
+            self._finish(agent, report, str(exc), "failed")
+            return None
+        reason = agent._blocked_dispatch(True)
+        if reason:
+            self._finish(agent, report, reason, "cancelled")
+            return None
+        if not winner:
+            self._finish(agent, report, "no_idea_passed_review")
+            return None
+        if (len(agent.goal_tree.active_long_term()) >= self.MAX_ACTIVE_LONG or any(
+                _jaccard(winner["core_insight"], node.text) >= 0.85 for node in agent.goal_tree.all_active())):
+            self._finish(agent, report, "active_goal_set_changed")
+            return None
+        report.update(stage="nomination", qualified=passed, selected_id=winner["id"], status="nominating")
+        report["yield"] = len(passed)
+        sources = report.get("exploit_evidence", report.get("evidence", {}))
+        for idea in passed:
+            cited = {ref: source_materials[ref] for ref in set(idea["elements"].values())}
+            self._history.append({"key": f"{report['round_id']}:{idea['id']}", "idea": idea,
+                                  "nominated": idea is winner, "materials": cited,
+                                  "evidence": {item["evidence_ref"]: sources[item["evidence_ref"]]
+                                               for item in cited.values() if item.get("evidence_ref") in sources}})
+        self._history = self._history[-self.MAX_HISTORY:]
+        self._save_archive(dict(report))
 
-        node = agent.goal_tree.add(winner.text, "long", source="self",
-                                   acceptance=winner.acceptance)
-        children = agent.goal_tree.decompose(
-            node, agent.llm_fast,
-            complete=lambda client, system, user: agent._complete(
-                client, system, user, pool="self_initiated"))
-        if not children:
-            children = self._fallback_ladder(agent.goal_tree, node)
+        brief = {key: winner[key] for key in ("target_context", "first_concrete_action", "failure_condition", "why_existing_fails")}
+        if winner.get("rollback"):
+            brief["rollback"] = winner["rollback"]
+        node = agent.goal_tree.add(winner["core_insight"], "long", source="self",
+                                   acceptance=winner["acceptance"], idea_brief=brief)
+        children = self.decompose(agent, node, fast)
         self.last_created_ts = now
         self.created += 1
-        self._save()
-        agent.spine.append("goal_forge_created", {
-            "goal_id": node.id, "goal": node.text[:120],
-            "score": winner.score, "breakdown": winner.breakdown,
-            "trigger": trigger, "children": len(children)})
+        report.update(goal_id=node.id, children=len(children), stage="done")
+        self._finish(agent, report, status="created")
         agent.memory.add("reflection",
-                         f"GoalForge 立项：{node.text}。理由：{winner.rationale}",
+                         f"GoalForge 立项：{node.text} 理由：{winner['why_existing_fails']}",
                          importance=0.75, source="goal_forge")
         agent._inbox.append(
-            f"〔自主立项〕{node.text}（评分 {winner.score:.2f}）"
-            f"已分解为 {len(children)} 个交付阶段。")
+            f"〔自主立项·{posture}〕{node.text}（本轮 {report['yield']} 项通过）\n"
+            f"第一步：{brief['first_concrete_action']}\n放弃条件：{brief['failure_condition']}")
         return node
 
 

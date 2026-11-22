@@ -10,6 +10,7 @@ from proto.llm.client import LLMClient
 from proto.memory.stream import MemoryStream
 from proto.quality.gate import artifacts_from_trace
 from proto.runtime.methods import MethodLibrary
+from tests.test_idea_forge import load_example, material_packet
 
 
 class ExpertLLM(LLMClient):
@@ -17,16 +18,17 @@ class ExpertLLM(LLMClient):
         self.prompts = []
         self.acceptance_calls = 0
         self.loop_calls = 0
+        self.ideation = material_packet(load_example())
+        self.ideation["candidates"] = self.ideation["candidates"][:1]
 
     def complete(self, system, user):
         self.prompts.append((system, user))
         if "GoalForge" in system:
-            return json.dumps([{
-                "text": "开发 iPhone app 记忆卡片本地可运行原型",
-                "rationale": "人设是 iPhone app 专家，用可测试原型学习间隔重复交互",
-                "feasibility": 0.9,
-                "acceptance": "项目目录存在可运行代码，测试退出码为 0，README 说明用法",
-            }], ensure_ascii=False)
+            return json.dumps(self.ideation, ensure_ascii=False)
+        if "创意补生成 Agent" in system:
+            return "[]"
+        if "创意批评 Agent" in system:
+            return json.dumps([{"id": "C1", "issues": []}])
         if "目标分解器" in system:
             return json.dumps([
                 {"text": "撰写产品规格与界面流", "acceptance": "存在 SPEC.md"},

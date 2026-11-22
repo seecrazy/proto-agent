@@ -62,9 +62,10 @@ class GoalNode:
     created_at: float = field(default_factory=time.time)
     acceptance: str = ""            # 最小可检验定义（想法出关门，M23）
     fail_streak: int = 0            # 连续验证未过次数（M41：轮转防饿死）
+    idea_brief: Optional[dict] = None
 
     def to_dict(self) -> dict:
-        return vars(self)
+        return {key: value for key, value in vars(self).items() if key != "idea_brief" or value is not None}
 
 
 class GoalTree:
@@ -83,16 +84,16 @@ class GoalTree:
                 source=r.get("source", "owner"),
                 created_at=float(r.get("created_at", 0.0)),
                 acceptance=r.get("acceptance", ""),
-                fail_streak=int(r.get("fail_streak", 0)))
+                fail_streak=int(r.get("fail_streak", 0)), idea_brief=r.get("idea_brief"))
             self._nodes[node.id] = node
 
     def _add_unlocked(self, text: str, level: str, parent_id: str = None,
-            source: str = "owner", acceptance: str = "") -> GoalNode:
+            source: str = "owner", acceptance: str = "", idea_brief: Optional[dict] = None) -> GoalNode:
         if level not in LEVELS:
             raise ValueError(f"非法层级: {level}")
         node = GoalNode(id=uuid.uuid4().hex[:12], text=text[:200], level=level,
                         parent_id=parent_id, source=source,
-                        acceptance=acceptance[:300])
+                        acceptance=acceptance[:300], idea_brief=idea_brief)
         self._nodes[node.id] = node
         self._store.put(self._collection, node.id, node.to_dict())
         return node
@@ -294,10 +295,12 @@ class GoalTree:
 
     def snapshot(self) -> dict:
         def node_view(n):
-            return {"id": n.id, "text": n.text, "level": n.level,
+            view = {"id": n.id, "text": n.text, "level": n.level,
                     "status": n.status, "progress": n.progress,
-                    "source": n.source, "created_at": n.created_at,
-                    "acceptance": n.acceptance}
+                    "source": n.source, "created_at": n.created_at, "acceptance": n.acceptance}
+            if n.idea_brief:
+                view["idea_brief"] = n.idea_brief.copy()
+            return view
         with self._lock:
             return {"nodes": [node_view(n) for n in
                               sorted(self._nodes.values(), key=lambda x: x.created_at)]}

@@ -661,7 +661,8 @@ class _Handler(BaseHTTPRequestHandler):
                                     "available": keeper.available})
 
         if path == "/api/goaltree" and method == "GET":
-            return self._json(200, agent.goal_tree.snapshot())
+            ideas = agent.goal_forge.latest() if query.get("ideas") == ["latest"] else agent.goal_forge.summary()
+            return self._json(200, dict(agent.goal_tree.snapshot(), idea_round=ideas))
         m6 = re.match(r"^/api/goals/([0-9a-f]+)/drop$", path)
         if m6 and method == "POST":
             agent.drop_goal(m6.group(1))

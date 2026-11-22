@@ -1,0 +1,40 @@
+{
+  "evidence": {
+    "E1": "此前读超时的故障被分类为普通模型错误，未走预期的模型组切换。",
+    "E2": "接力小结只展示发现、产出、下一步；工具结果另存于执行会话。",
+    "E3": "旧审美面板只有校准后才主动刷新。",
+    "E4": "执行会话对结果未知的动作执行核对而非重放。",
+    "E9": "构建成功和实际 XCTest 执行是不同的本机回执。",
+    "E10": "旧提议的拒绝走欲望阻尼；GoalForge 筛选没有消费拒绝缘由。"
+  },
+  "materials": [
+    {"id":"M1","source":"agent","evidence_ref":"E1","text":"模型读超时以前会被算成普通错误，备用模型不接手，原 Run 停住。","what":"模型读超时","how":"算成普通错误","value":"原 Run 停住"},
+    {"id":"M2","source":"agent","evidence_ref":"E2","text":"交接日志只有发现、产出、下一步，接班时还得另找工具回执核对最后一步。","what":"交接日志","how":"只有发现、产出、下一步","value":"核对最后一步"},
+    {"id":"M3","source":"agent","evidence_ref":"E3","text":"首次打开审美面板以前只显示「加载中」，要按一次校准才会拉数据。","what":"审美面板","how":"按一次校准","value":"才会拉数据"},
+    {"id":"M4","source":"agent","evidence_ref":"E4","text":"续批状态不确定时不能重放工具，但需要打开原 Run 才知道是否该核对。","what":"续批状态","how":"不能重放工具","value":"知道是否该核对"},
+    {"id":"M5","source":"user","actor":"iOS 审阅者","scene":"晨检离线记账原型","text":"iOS 审阅者晨检离线记账原型时，要分别打开构建与 XCTest 记录，才能确认关键路径测过。","what":"离线记账原型","how":"分别打开构建与 XCTest 记录","value":"确认关键路径测过"},
+    {"id":"M6","source":"user","actor":"值班工程师","scene":"模型超时后接管同一工位","text":"值班工程师在模型超时后接管同一工位，要先翻事件序号再对着接力笔记找下一步。","what":"同一工位","how":"先翻事件序号","value":"找下一步"},
+    {"id":"M7","source":"user","actor":"负责人","scene":"傍晚批量审建议","text":"负责人傍晚批量审建议时，看了三条换词的「学习报告」，仍不知道哪条值得做。","what":"三条换词的「学习报告」","how":"批量审建议","value":"不知道哪条值得做"},
+    {"id":"M8","source":"user","actor":"自由职业者","scene":"地铁断网，切回开销记录器","text":"自由职业者在地铁上用手机记录开销，断网切回应用后要重新核对草稿有没有保存。","what":"草稿","how":"断网切回应用","value":"核对草稿有没有保存"},
+    {"id":"M9","source":"inertia","evidence_ref":"E9","text":"构建视图只显示 build 成功时，审阅人得另外找 XCTest 回执才能分清编译和实际测试。","what":"XCTest 回执","how":"构建视图只显示 build 成功","value":"分清编译和实际测试"},
+    {"id":"M10","source":"inertia","evidence_ref":"E10","text":"旧审批把拒绝传给欲望阻尼，只提高触发阈值，没有用拒绝缘由排查下一轮相似方向。","what":"拒绝缘由","how":"只提高触发阈值","value":"排查下一轮相似方向"}
+  ],
+  "candidates": [
+    {"core_insight":"把 iOS App 的构建回执与测试回执分开呈现，能让审阅者不把构建成功误当关键路径已测试。","target_context":"iOS 审阅者晨检离线记账原型的交付卡。","mechanism":"从工位自动读取两种回执和当前源码指纹。","why_existing_fails":"只看 xcodebuild build 成功；这一步不执行 XCTest，不能判断离线记账关键操作是否通过。","failure_condition":"不用于外部真机；缺当前源码指纹或对应 XCTest 回执就不能声称已验证。","first_concrete_action":"用有、无 XCTest 的两份离线回执，画一张交付卡做状态对照试验。","required_inputs":[],"acceptance":"运行离线对照测试，只有对应当前源码且确有 XCTest 回执的卡片可显示已测。","signature":{"method":"receipt","problem":"false_success","value":"trust","actor":"reviewer"},"operator":"Op_HV","elements":{"H":"M9","V":"M5"},"outcome_range":[2,3]},
+    {"core_insight":"把上次回执与首个待做动作冻结成接力卡，能减少中断后翻轨迹和重复操作。","target_context":"后台模型超时后，值班工程师接手同一工位。","mechanism":"自动读取原 Run 与接力日志里的上次成功步骤、可继续点和文件指纹；不重放工具。","why_existing_fails":"小结的「下一步」看不出最后一次工具结果是否已持久化，需另开原 Run 核对。","failure_condition":"卡片没帮上忙时放弃。","first_concrete_action":"用已完成和状态未知的两条离线 Run 记录画卡并保留原记录链接，运行一次对照。","required_inputs":[],"acceptance":"测试两张卡的状态与原 Run 一致，状态未知的记录不可触发工具。","signature":{"method":"snapshot","problem":"lost_context","value":"continuity","actor":"builder"},"operator":"Op_WHV","elements":{"W":"M6","H":"M2","V":"M4"},"outcome_range":[1,3]},
+    {"core_insight":"分别标注编译成功与测试通过，能防止审阅人把一次构建当成离线功能验证。","target_context":"账目应用维护者看离线回执。","mechanism":"读同一个工位的两类运行收据。","why_existing_fails":"构建状态不包含测试状态。","failure_condition":"源码变动后回执不再有效。","first_concrete_action":"以一条构建收据和一条测试收据运行对照试验。","required_inputs":[],"acceptance":"跑回执状态测试。","signature":{"method":"receipt","problem":"false_success","value":"trust","actor":"reviewer"},"operator":"Op_HV","elements":{"H":"M5","V":"M8"},"outcome_range":[1,2]}
+  ],
+  "regeneration": [
+    {"core_insight":"把拒绝原因关联到候选语义标签再对照历史，可减少负责人收到的换词提议，而不只是降低提议频率。","target_context":"负责人晚上批量扫 Agent 建议。","mechanism":"系统附上当前候选；拒绝时要求填写原因、替代方向和回看日期。","why_existing_fails":"旧机制反馈不够聪明。","failure_condition":"因临时时点或预算拒绝不该永久屏蔽；若对照误过滤这种建议就停用。","first_concrete_action":"用三条离线拒绝事件做对照试验，检查是否折叠重复方向、是否误杀临时拒绝。","required_inputs":["原因","替代方向"],"acceptance":"运行三条拒绝事件的对照测试，换词重复被折叠，临时拒绝不永久屏蔽。","signature":{"method":"batch","problem":"noise","value":"focus","actor":"coordinator"},"operator":"Op_VW","elements":{"V":"M10","W":"M7"},"outcome_range":[0,4]}
+  ],
+  "criticism": [
+    {"id":"C1","issues":[]},
+    {"id":"C2","issues":[{"principle":"P1","fields":["failure_condition"],"criticism":"卡片没帮上忙是主观判断，没有可观察的放弃规则。"}]},
+    {"id":"C4","issues":[{"principle":"P2","fields":["mechanism","required_inputs"],"criticism":"机制要求填写原因、替代方向和回看日期，实际依赖三个字段。"},{"principle":"P3","fields":["why_existing_fails"],"criticism":"没有说旧流程在哪个步骤失效、如何导致同类建议再出现。"}]}
+  ],
+  "revisions": [
+    {"id":"C2","changes":{"failure_condition":"无可核对回执或文件指纹已变时只显示「需核对」；若任何状态未知的 Run 在离线对照中被标为可继续，就停止采用。"},"responses":{"P1":"限定有回执及源码指纹的适用范围，给出可反例测试的停止规则。"},"tradeoff":""},
+    {"id":"C4","changes":{"mechanism":"拒绝只需可选地选一个原因；系统自动记录语义标签和时间，临时类只作短期去噪，不自动永久屏蔽。","required_inputs":[],"why_existing_fails":"旧审批拒绝后只调整触发阈值，不把拒绝缘由交给下轮立项比对，因此换个说法仍可能被再次送来。"},"responses":{"P2":"替代方向与日期由系统省略或推导，不要求负责人填写。","P3":"点明旧审批到立项的反馈没有带入拒绝缘由。"},"tradeoff":""}
+  ],
+  "recheck": [{"id":"C2","issues":[]},{"id":"C4","issues":[]}]
+}

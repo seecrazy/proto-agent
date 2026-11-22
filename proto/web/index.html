@@ -1913,6 +1913,17 @@ async function refreshGoalTree() {
   const box = document.getElementById("goaltree");
   const active = r.nodes.filter(n => n.status === "active");
   box.innerHTML = active.length ? "" : "（暂无——设定主人优先级会播种长期目标并自动分解）";
+  const ideas = r.idea_round;
+  if (ideas?.round_id) {
+    const summary = document.createElement("div");
+    const status = {running: "取材与评审中", created: "已立项", rejected: "未立项", failed: "评审失败",
+                    cancelled: "已取消", interrupted: "上轮中断", nominating: "正在立项"};
+    const detail = status[ideas.status] || "未知状态";
+    summary.className = "empty";
+    summary.textContent = `自主选题 ${ideas.posture} · ${detail} · ${ideas.yield ?? 0} 项通过` +
+      (ideas.reason ? ` · ${ideas.reason}` : "");
+    box.prepend(summary);
+  }
   const LEVEL_TAG = {long: "长期", mid: "中期", short: "短期", task: "任务"};
   for (const n of active.slice(-10).reverse()) {
     const d = document.createElement("div");
@@ -1921,7 +1932,8 @@ async function refreshGoalTree() {
     const src = n.source === "self" ? '<span class="badge hot">自生成</span>' : '<span class="badge">主人</span>';
     d.innerHTML = `<span class="badge">${esc(LEVEL_TAG[n.level] || n.level)}</span>${src} ${esc(n.text)}` +
       `<div style="color:var(--dim);font-size:10px;margin-top:2px">创建于 ${esc(fmtTime(n.created_at))} · 进度 ${pct}%</div>` +
-      `<div class="bar" style="margin-top:3px"><div class="fill" style="width:${pct}%"></div></div>`;
+      `<div class="bar" style="margin-top:3px"><div class="fill" style="width:${pct}%"></div></div>` +
+      (n.idea_brief ? `<div class="empty">首步：${esc(n.idea_brief.first_concrete_action)}<br>放弃条件：${esc(n.idea_brief.failure_condition)}</div>` : "");
     box.appendChild(d);
   }
 }
