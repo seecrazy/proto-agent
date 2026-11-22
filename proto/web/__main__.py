@@ -16,10 +16,11 @@ import os
 import webbrowser
 from pathlib import Path
 
-from proto.config import load_default_env
+from proto.config import load_default_env, load_env_file
 from proto.llm.client import create_llm_stack
 from proto.runtime.agent import ProtoAgent
 from proto.system.execution_log import execution_logging, record_execution
+from proto.web.discovery import console_discovery
 from proto.web.server import ProtoWebServer
 
 
@@ -98,16 +99,22 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8420)
     parser.add_argument("--data-dir", default="./proto_data")
     parser.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
+    parser.add_argument("--data-env-only", action="store_true", help="只从所选数据目录加载 proto.env")
     parser.add_argument("--caffeinate", action="store_true",
                         default=bool(os.environ.get("PROTO_CAFFEINATE")),
                         help="主人显式开启防休眠（caffeinate 绑定本进程；合盖仍会睡）")
     parser.add_argument("--token", default=os.environ.get("PROTO_WEB_TOKEN", ""),
                         help="固定访问令牌（默认随机；设 PROTO_WEB_TOKEN 可固定，便于长驻）")
     args = parser.parse_args()
-    # 部署配置绑定数据目录加载（与启动目录无关——修"部署后仍离线"）
-    load_default_env(data_dir=args.data_dir)
-
     data_root = Path(args.data_dir)
+    # 部署配置绑定数据目录加载（与启动目录无关——修"部署后仍离线"）
+    if args.data_env_only:
+        env_file = data_root / "proto.env"
+        if env_file.is_file():
+            load_env_file(env_file)
+    else:
+        load_default_env(data_dir=data_root)
+
     from proto.system.instance_lock import InstanceLock
     instance_lock = InstanceLock(data_root)
     if not instance_lock.acquire():
@@ -149,9 +156,10 @@ def _serve(args, data_root):
         print(f"  模型   : {llm.describe() if llm else '离线模式（配置 PROTO_LLM_BASE_URL 启用真实对话）'}")
         print(f"  数据   : {args.data_dir}/（owner.key 请备份）")
         print(f"  Ctrl+C 停止\n")
-        if not args.no_open:
-            webbrowser.open(url)
-        server.serve_forever()
+        with console_discovery(data_root, server):
+            if not args.no_open:
+                webbrowser.open(url)
+            server.serve_forever()
     except KeyboardInterrupt:
         print("\n控制台已停止。")
     finally:

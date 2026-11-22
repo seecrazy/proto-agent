@@ -11,4 +11,6 @@ llm_models.json
 .coordination/
 .runtime-logs/
 .venv/
+node_modules/
+.proto-console/
 

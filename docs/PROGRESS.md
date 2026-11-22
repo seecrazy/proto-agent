@@ -2,6 +2,12 @@
 
 > 当前完整方案统一阅读 [DESIGN.md](DESIGN.md)。本文件只记录里程碑、实现状态与验证证据，不作为第二份设计。
 
+## Electron 控制台（2026-11-22，本地交付）
+
+- **已交付**：[与 Web 单源](DESIGN.md#electron-console)，自动接入同数据目录的本机服务，找不到时可托管，保留 `--connect-only` 和原生 Mac 壳。新增功能只改共享页面/API；退出 Electron 不停止独立 Web。
+- **验证**：Node 4 项通过；macOS 真实 Electron 窗口渲染概览，桌面与 Web 双向确认同一 Agent 的改名，并验证接入与托管退出的所有权。Python 全量 **1258 passed, 2 skipped**（启用本机 Xcode，外部 HTTPS 连接快速失败、保留本机回环）。首次全量的旧心跳测试依赖外部请求在 3 秒内完成；基线与本次版本均能用 3.4 秒合成延迟复现，不在本轮改动。
+- **启动**：按 [README](../README.md#electron-桌面控制台可选) 安装并启动 `desktop/`。更新独立 Web 时按原参数正常重启，浏览器刷新、Electron 从菜单重连；本次未重启实际舰队。
+
 ## 概览实时状态（2026-11-22，本地交付）
 
 - **定位**：iPhone app 软件专家的 Run 自 08:26:53 因模型请求失败保留安全断点；20:57 只读 API 确认它未执行，也没有等待模型冷却。概览依赖短暂的工作链内存标记，将挂起误标为「空闲」。
@@ -415,7 +421,7 @@ P2（工程化）：
 
 - [x] `python3 -m proto.agents`：舰队管理 CLI（list/create/select/pause/resume/archive，带观测快照与 UI 层输出；--root 或 PROTO_FLEET_ROOT 指定根）。
 - [x] `proto/appshell/generator.py`：一键生成 PROTO.app——macOS 原生壳（~110 行 Swift：WKWebView 窗口 + 托管 proto.web 子进程、退出即带走、就绪探测后加载带令牌 URL、令牌经环境变量不落源码）。swiftc 编译（本机验证通过，产物 ~2MB），无 swiftc 时降级为源码+说明。
-- [x] Electron 取舍：不引入（~200MB Chromium/Node 依赖，违背零依赖立身之本）；原生壳以 2MB swiftc 产物获得窗口/Dock/生命周期管理。
+- [x] M22 当时不引入 Electron，原生壳以约 2MB 的 Swift 产物获得窗口/Dock/生命周期管理；后续 [ADR 0021](adr/0021-shared-electron-console.md) 将 Electron 作为可选外壳，保留原生壳。
 - 验证：404 项测试全绿；真实 swiftc 编译通过。
 
 ### M23 — 质量三定律（feat/m23-quality-gate，回应自主质量分析）

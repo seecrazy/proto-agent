@@ -23,6 +23,7 @@ from proto.runtime.agent import ProtoAgent
 from proto.runtime.coordination import CoordinationError
 from proto.runtime.self_facts import lifetime_reply, session_reply
 from proto.system.execution_log import record_execution
+from proto.web.discovery import DESKTOP_CHALLENGE, DESKTOP_PROOF, desktop_proof
 
 INDEX_PATH = Path(__file__).with_name("index.html")
 
@@ -150,6 +151,9 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Security-Policy", INDEX_CSP)
+            proof = desktop_proof(self.server.desktop_key, self.headers.get(DESKTOP_CHALLENGE))
+            if proof:
+                self.send_header(DESKTOP_PROOF, proof)
             for key, value in SECURITY_HEADERS.items():
                 self.send_header(key, value)
             self.send_header("Content-Length", str(len(data)))
@@ -924,6 +928,7 @@ class ProtoWebServer(ThreadingHTTPServer):
         manager.enable_model_updates()
         self.agent = agent or manager.get(manager.current_id())  # 遗留引用
         self.token = token or secrets.token_urlsafe(16)
+        self.desktop_key = secrets.token_bytes(32)
         from proto.system.keepawake import KeepAwake
         self.keeper = keep_awake if keep_awake is not None else KeepAwake()
         self.lock = threading.Lock()      # 遗留别名（心跳）

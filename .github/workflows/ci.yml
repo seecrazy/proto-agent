@@ -31,3 +31,12 @@ jobs:
           python-version: "3.11"
       - run: pip install -e ".[dev,mongo,graph]"
       - run: python -m pytest -q
+
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm --prefix desktop test

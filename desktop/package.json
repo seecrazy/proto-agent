@@ -1,0 +1,14 @@
+{
+  "name": "proto-desktop-console",
+  "productName": "PROTO Console",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.cjs",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.cjs",
+    "smoke": "node test/run-smoke.cjs"
+  },
+  "devDependencies": { "electron": "45.4.1" }
+}

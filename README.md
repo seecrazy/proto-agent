@@ -177,6 +177,19 @@ PROTO> 〔主动提议〕围绕……推进一个小目标  ← 欲望缺口+调
 
 **它为什么是"主动的、类人的"**：每次对话前，它真实的内在状态（12 个参数、4 类欲望缺口、PAD 情绪导出的检索广度/探索比例/主动阈值）会被注入模型上下文——同一个模型，不同状态下行为不同；闲置会让欲望缺口增长，缺口过阈值 + 调度器到点会触发主动提议；你的每句反馈经归因累积、有界调制缓慢塑造它的倾向；一切变化都有哈希链审计。
 
+### Electron 桌面控制台（可选）
+
+在项目根目录运行（macOS/Linux，Node.js ≥22.12.0、Python ≥3.9）：
+
+```bash
+npm --prefix desktop ci
+npm --prefix desktop start
+```
+
+桌面与 Web **共用页面和后端**，公司、模型组、舰队、对话和后台状态不会分成两份。默认使用 `./proto_data`，优先接入它已运行的新版 Web（不要求固定端口）；没有服务时托管一个本机实例，默认 8431。桌面菜单可重连或在浏览器打开同一实例。选择不同舰队用 `npm --prefix desktop start -- --data-dir /path/to/fleet --port 8432`；`--connect-only` 禁止自动启动服务。可用 `PROTO_PYTHON` 指定解释器。
+
+退出桌面不停止独立启动的 Web，仅正常中断本次由 Electron 启动的服务；要一直运行自治，先单独启动 Web。已在运行的旧版 Web 按原参数重启后才能接入。后续控制台功能只改共享页面/API；更新代码并重启服务后，浏览器刷新，Electron 从菜单重连。Electron 入口从源码运行，不提供签名安装包；初次运行可能需要下载 Electron。维护时跑 `npm --prefix desktop test` 和 `npm --prefix desktop run smoke`。[设计与边界](docs/DESIGN.md#electron-console)
+
 ## 开发者快速开始
 
 ```bash
@@ -206,6 +219,7 @@ python3 -m proto.demo     # 12 段全链路演示：锚定→调制→毒化拒�
 | L5 | `proto/evolution/` | OWNER 签名只增测试集、失败关闭沙盒（macOS sandbox-exec / Linux runsc / 显式 subprocess）、私有评分器、进化树、影子双跑、分级授权（晋升必须持真实沙盒通过记录） |
 | 评估 | `proto/evalx/` | 行为代理 harness（Cohen's d ≥ 0.5 判可测）、dormant 冻结看门狗（测不出差异自动冻结调制） |
 | Web 控制台 | `proto/web/`（server + 单页前端） | `python3 -m proto.web`：对话/仪表盘/审批/任务/审计/锁定覆写静音优先级，127.0.0.1 + 令牌防跨站 |
+| Electron 控制台 | `desktop/`（可选桌面外壳） | `npm --prefix desktop start`，直接加载 Web 控制台，不复制业务功能 |
 | 运行时 | `proto/runtime/agent.py` + `proto/run.py` | **活的 Agent 入口**：主人密钥注册、对话（LLM/离线）、归因调制、主动提议、任务执行 |
 | LLM | `proto/llm/client.py` + `proto/metacog/attribution.py` + `proto/exec/planner.py` | OpenAI 兼容客户端（方舟/OpenAI/DeepSeek/Ollama）、LLM 归因（白名单+回退）、LLM 任务规划（工具白名单） |
 | L3 节奏 | `proto/metacog/{scheduler,distill,interest}.py` | 调度器（每任务蒸馏/定时目标/每日回顾，时钟可注入）、确定性策略蒸馏、兴趣强化收敛（学习权重进仲裁） |
@@ -281,6 +295,7 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 | M75 公司与组织 | 多公司模板、职位任命、汇报关系与定向消息 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#company-organization) |
 | M76 模型组 | 主/快模型可选有序组，组内有界自动切换并保留任务断点 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#model-groups) |
 | 结构化模型决策 | OpenAI/Anthropic 流式接收、兼容文本、同 Run 续作和分阶段诊断 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#model-decision-transport) |
+| Electron 桌面控制台 | 与 Web 共用页面、API 和数据目录 | ✅ [设计与验收](docs/DESIGN.md#electron-console) |
 | 模型可靠性与诊断 | Python 3.9 网络超时回退、可关联的本地滚动执行日志 | ✅ [设计与验收](docs/DESIGN.md#execution-diagnostics) |
 | 后续模型交互 | 原生工具协议、请求级用量、token 压缩与进程级取消 | 待专项，不纳入 M63/M64 |
 
@@ -325,7 +340,7 @@ PROTO 不靠"性格"掩盖能力短板。M16 起它自带完整的工具族与**
 ## 技术选型：为什么是 Python（以及什么时候不是）
 
 - **瓶颈定位**：agent 引擎的工作是 JSON/哈希/状态机（毫秒级），真正的延迟全在 LLM I/O（秒级）——换 Rust 优化的是不存在的瓶颈；
-- **零依赖可移植**：clone 即跑（3.9+ 无编译链、无运行时安装），这是产品前提，压倒性能偏好；
+- **核心零依赖可移植**：Python 引擎和 Web 后端在 3.9+ 无需额外运行时；Electron 是独立的可选安装；
 - **现有实验工具链的一致性**：L5 当前评测对象是 Python 候选函数，沿用实现语言能减少构建与验证复杂度；这不是其他语言无法生成或演化的证明，可信评测与运行时加载仍见 D13；
 - **代价与对策**：类型安全→dataclass、参数契约与回归测试；性能上限→`DocumentStore`/工具面接口，存储可下沉 SQLite；并发一致性→单 Agent 写入串行化与资源锁，不依赖 GIL，也不承诺文件后端跨进程事务；
 - **Rust/Go 的正确时机**：当记忆与审计到 10 万级条目、或多租户服务化时，把 kernel/storage 下沉为系统语言库、上层 Python 不动——**在值得重写时重写，而不是在demo阶段预支复杂度**。可靠性来自架构（三通道/锚定/审计/测试），不来自语言。
@@ -362,15 +377,16 @@ PROTO 的长期记忆是完整的记忆流（Generative Agents 架构的零依�
 - **性能**：审计链验证带缓存（append 失效）——8 秒轮询不再全量重读审计文件；状态写入保持增量小文档。
 - **安全**：token 恒时比较；策略注入带"非指令"边界声明 + 200 字符上限（外部网页蒸馏出的内容无法借策略区注入指令）；备份文件 0600（内含 owner.key）。
 
-## 三种使用形态
+## 使用形态
 
 | 形态 | 入口 | 适用 |
 |---|---|---|
-| **Web 控制台**（已有） | `python3 -m proto.web` | 日常：对话/仪表盘/舰队总览 |
+| **Web 控制台** | `python3 -m proto.web` | 日常：对话/仪表盘/舰队总览 |
+| **Electron 控制台** | `npm --prefix desktop start` | 同一 Web 控制台的桌面入口，可接入已有服务 |
 | **舰队 CLI** | `python3 -m proto.agents`：`list` / `preview` / `create` / `autonomy` / `pause` / `archive` | 查看、离线配置；Web 运行时使用已鉴权的控制台/API 写入 |
-| **原生 Mac App**（新） | `python3 -m proto.appshell` 生成 PROTO.app | 想要窗口与 Dock 图标的桌面形态 |
+| **原生 Mac App** | `python3 -m proto.appshell` 生成 PROTO.app | 不安装 Node 的 WKWebView 桌面入口 |
 
-原生壳说明：~2MB swiftc 编译产物（WKWebView + 托管服务进程，退出即停），**刻意不用 Electron**——200MB 依赖违背本项目零依赖原则，而其收益（窗口/Dock/生命周期）原生壳已覆盖。令牌经环境变量传递，不写入 App 源码。
+原生壳沿用 WKWebView + 托管服务进程，退出即停；与可选 Electron 壳独立，不影响 Python/Web 的安装。
 
 ## 多 Agent：养一支舰队
 
