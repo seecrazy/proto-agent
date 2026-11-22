@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 from proto.runtime.activity import activity_reply
 from proto.runtime.agent import ProtoAgent
 from proto.runtime.coordination import CoordinationError
+from proto.system.execution_log import record_execution
 
 INDEX_PATH = Path(__file__).with_name("index.html")
 
@@ -135,7 +136,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(exc.status, {"error": str(exc)})
         except (BrokenPipeError, ConnectionResetError):
             return None
-        except Exception:
+        except Exception as exc:
+            record_execution("runtime_error", stage="web_request", exception_type=type(exc).__name__)
             logging.exception("API 路由异常")
             return self._json(500, {"error": "internal"})
 
@@ -940,7 +942,8 @@ class ProtoWebServer(ThreadingHTTPServer):
                 self._effective_interval(interval, _time.localtime().tm_hour)):
             try:
                 self.manager.enqueue_ticks()
-            except Exception:
+            except Exception as exc:
+                record_execution("runtime_error", stage="heartbeat", exception_type=type(exc).__name__)
                 logging.exception("Fleet heartbeat enqueue failed")
 
     def server_close(self) -> None:

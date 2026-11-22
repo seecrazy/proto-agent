@@ -19,6 +19,7 @@ from pathlib import Path
 from proto.config import load_default_env
 from proto.llm.client import create_llm_stack
 from proto.runtime.agent import ProtoAgent
+from proto.system.execution_log import execution_logging, record_execution
 from proto.web.server import ProtoWebServer
 
 
@@ -106,46 +107,55 @@ def main() -> int:
     # 部署配置绑定数据目录加载（与启动目录无关——修"部署后仍离线"）
     load_default_env(data_dir=args.data_dir)
 
-    stack = create_llm_stack()
-    llm = stack["main"] if stack else None
-    fast_llm = stack["fast"] if stack else None
     data_root = Path(args.data_dir)
     from proto.system.instance_lock import InstanceLock
     instance_lock = InstanceLock(data_root)
     if not instance_lock.acquire():
         print(f"  数据目录 {data_root} 已有 proto.web 实例在运行；拒绝启动第二个。")
         return 1
+    try:
+        with execution_logging(data_root, "web"):
+            return _serve(args, data_root)
+    finally:
+        instance_lock.release()
+
+
+def _serve(args, data_root):
     from proto.llm.catalog import ModelCatalog
+    from proto.system.keepawake import KeepAwake
+
+    stack = create_llm_stack()
+    llm = stack["main"] if stack else None
+    fast_llm = stack["fast"] if stack else None
     models = ModelCatalog(data_root, llm, fast_llm)
     manager = _open_fleet(data_root, llm, fast_llm, models)
-    from proto.system.keepawake import KeepAwake
     keeper = KeepAwake()
     server = ProtoWebServer(manager=manager, host="127.0.0.1", port=args.port,
                             token=resolve_token(args.token, data_root),
                             keep_awake=keeper)
-    if args.caffeinate:
-        if keeper.start():
-            print("  防休眠  : 已开启（主人显式授权；进程退出自动解除；合盖仍会睡眠）")
-        else:
-            print("  防休眠  : 当前平台不可用（需 macOS caffeinate）")
-
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    url = server.url()
-    llm = server.agent.llm if server.agent is not None else llm
-    print(f"\n  PROTO Web 控制台已启动")
-    print(f"  地址   : {url}")
-    print(f"  模型   : {llm.describe() if llm else '离线模式（配置 PROTO_LLM_BASE_URL 启用真实对话）'}")
-    print(f"  数据   : {args.data_dir}/（owner.key 请备份）")
-    print(f"  Ctrl+C 停止\n")
-    if not args.no_open:
-        webbrowser.open(url)
     try:
+        if args.caffeinate:
+            if keeper.start():
+                print("  防休眠  : 已开启（主人显式授权；进程退出自动解除；合盖仍会睡眠）")
+            else:
+                print("  防休眠  : 当前平台不可用（需 macOS caffeinate）")
+
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+        record_execution("runtime_ready")
+        url = server.url()
+        llm = server.agent.llm if server.agent is not None else llm
+        print(f"\n  PROTO Web 控制台已启动")
+        print(f"  地址   : {url}")
+        print(f"  模型   : {llm.describe() if llm else '离线模式（配置 PROTO_LLM_BASE_URL 启用真实对话）'}")
+        print(f"  数据   : {args.data_dir}/（owner.key 请备份）")
+        print(f"  Ctrl+C 停止\n")
+        if not args.no_open:
+            webbrowser.open(url)
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n控制台已停止。")
     finally:
         server.server_close()
-        instance_lock.release()
     return 0
 
 

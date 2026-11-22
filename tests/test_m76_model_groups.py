@@ -1,5 +1,6 @@
 import io
 import json
+import socket
 import stat
 import threading
 import time
@@ -10,12 +11,14 @@ from urllib.error import HTTPError, URLError
 import pytest
 
 from proto.exec.agentic import LOOP_SYSTEM
+from proto.llm import breaker as model_breaker
 from proto.llm.breaker import model_wait_reason
 from proto.llm.catalog import ModelCatalog, ModelConfigError
 from proto.llm.client import LLMError, ModelPressureWait
 from proto.run import model_command
 from proto.runtime import runs as dispatcher
 from proto.runtime.manager import AgentManager
+from proto.system.execution_log import execution_logging
 from tests.test_m64_live_models import profile, save, select
 from tests.test_m66_fleet_runs import console, request
 from tests.test_m71_continuity import DONE, PASS, WRITE, record_writes, start_autonomous, step
@@ -287,22 +290,32 @@ def test_inflight_group_keeps_members_and_credentials_after_edit(tmp_path, provi
 
 
 @pytest.mark.parametrize("already_wrote", [False, True])
-def test_unavailable_group_requeues_same_run_and_does_not_replay_tools(tmp_path, provider, monkeypatch, already_wrote):
+@pytest.mark.parametrize("failure_mode", ["rate_limit", "read_timeout"])
+def test_unavailable_group_requeues_same_run_and_does_not_replay_tools(
+        tmp_path, provider, monkeypatch, already_wrote, failure_mode):
     fleet, agent, _ = configured(tmp_path, "primary", "fallback")
     clock = [time.time()]
     monkeypatch.setattr(dispatcher, "time", SimpleNamespace(time=lambda: clock[0], monotonic=time.monotonic))
     fleet.runs.model_pressure.now = lambda: clock[0]
-    initial = iter([json.dumps(WRITE), (429, "90")] if already_wrote else [(429, "90")])
+    if failure_mode == "read_timeout":
+        monkeypatch.setattr(model_breaker, "time", SimpleNamespace(time=lambda: clock[0]))
+        first_failure, second_failure = socket.timeout("private timeout"), socket.timeout("private timeout")
+        delay = 600
+    else:
+        first_failure, second_failure = (429, "90"), (429, "60")
+        delay = 60
+    initial = iter([json.dumps(WRITE), first_failure] if already_wrote else [first_failure])
     provider.responses.update(primary=lambda body: next(initial) if body["messages"][0]["content"] == LOOP_SYSTEM
-                              else "检查输入并核验", fallback=(429, "60"))
+                              else "检查输入并核验", fallback=second_failure)
     agent.configure_autonomy(enabled=True, mode="auto")
     run, _ = start_autonomous(fleet, agent)
     effects = tmp_path / "effects.txt"
     record_writes(agent, effects)
-    parked = step(fleet)
+    with execution_logging(tmp_path, "web"):
+        parked = step(fleet)
     assert parked["status"] == "queued" and parked["reason"] == "model_retry_wait"
     assert parked["result"]["model_reason"] == "model_group_unavailable"
-    assert parked["result"]["retry_at"] == clock[0] + 60
+    assert parked["result"]["retry_at"] == clock[0] + delay
     events = fleet.runs.activity.snapshot(agent)["events"]
     assert [event["model"] for event in events if event["phase"] == "model_failed"] == ["primary", "fallback"]
     assert "private provider" not in json.dumps(events) and "test-private-key" not in json.dumps(events)
@@ -314,13 +327,31 @@ def test_unavailable_group_requeues_same_run_and_does_not_replay_tools(tmp_path,
         return json.dumps(DONE)
 
     provider.responses["fallback"] = resume
+    if failure_mode == "read_timeout":
+        provider.responses["primary"] = socket.timeout("private timeout")
     reopened = AgentManager(tmp_path, models=ModelCatalog(tmp_path))
     reopened.runs.model_pressure.now = lambda: clock[0]
     record_writes(reopened.get(agent.fleet_id), effects)
     assert reopened.runs._pick() is None
-    clock[0] += 60
-    finished = step(reopened)
+    clock[0] += delay
+    with execution_logging(tmp_path, "web"):
+        finished = step(reopened)
     assert finished["status"] == "succeeded" and finished["id"] == run["id"]
     assert finished["session_id"] == parked["session_id"]
-    assert provider.models[-2:] == ["fallback", "fallback"]
+    assert provider.models[-1] == "fallback"
+    if failure_mode == "rate_limit":
+        assert provider.models[-2:] == ["fallback", "fallback"]
     assert (effects.read_text(encoding="utf-8") if effects.exists() else "") == ("写入\n" if already_wrote else "")
+    history = (tmp_path / ".runtime-logs/execution.jsonl").read_text(encoding="utf-8")
+    rows = [json.loads(line) for line in history.splitlines()]
+    starts = [row for row in rows if row["event"] == "run_started"]
+    finishes = [row for row in rows if row["event"] == "run_finished"]
+    assert [(row["run_id"], row["generation"], row["resumed"]) for row in starts] == [
+        (run["id"], 1, False), (run["id"], 2, True)]
+    assert len({row["boot_id"] for row in starts}) == 2
+    assert [row["status"] for row in finishes] == ["queued", "succeeded"]
+    assert finishes[0]["reason"] == "model_retry_wait" and finishes[0]["retry_at"] == parked["result"]["retry_at"]
+    assert finishes[0]["model_reason"] == "model_group_unavailable" and finishes[0]["model_retries"] == 1
+    model_failures = [row for row in rows if row["event"] == "model_failed"]
+    assert model_failures and all(row["run_id"] == run["id"] for row in model_failures)
+    assert "private provider" not in history and "private timeout" not in history and "test-private-key" not in history

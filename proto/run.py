@@ -26,6 +26,7 @@ from pathlib import Path
 from proto.config import load_default_env
 from proto.llm.client import create_llm_stack
 from proto.runtime.agent import ProtoAgent
+from proto.system.execution_log import execution_logging, record_execution
 
 BANNER = """
 ╔══════════════════════════════════════════════════════════╗
@@ -51,7 +52,14 @@ def main(argv=None) -> int:
     if not instance_lock.acquire():
         print(f"数据目录 {args.data_dir} 已有 PROTO 实例在运行，拒绝启动第二个。")
         return 1
+    try:
+        with execution_logging(args.data_dir, "cli"):
+            return _repl(args)
+    finally:
+        instance_lock.release()
 
+
+def _repl(args):
     llm = None
     if args.base_url.strip():
         from proto.llm.client import OpenAICompatClient
@@ -70,6 +78,7 @@ def main(argv=None) -> int:
     models = ModelCatalog(Path(args.data_dir), agent.llm, agent.llm_fast)
     agent.bind_model_catalog(models)
     llm = agent.llm
+    record_execution("runtime_ready")
     print(BANNER)
     print(f"  主人锚定指纹 : {agent.fingerprint[:23]}...（密钥在 {args.data_dir}/owner.key，请备份）")
     print(f"  对话模型     : {llm.describe() if llm else '离线模式（配置 PROTO_LLM_BASE_URL 启用真实对话）'}")
@@ -80,13 +89,11 @@ def main(argv=None) -> int:
             line = input("主人> ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\n再见。")
-            instance_lock.release()
             return 0
         if not line:
             continue
         if line == "/quit":
             print("再见。")
-            instance_lock.release()
             return 0
         if line == "/state":
             print(agent.status(), "\n")

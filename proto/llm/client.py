@@ -14,12 +14,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
 import threading
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
 from typing import Optional
 from urllib.parse import urlsplit
+
+
+NETWORK_TIMEOUTS = (TimeoutError, socket.timeout)
 
 
 class LLMError(Exception):
@@ -31,6 +35,15 @@ class ModelPressureWait(LLMError):
         super().__init__(reason)
         self.reason = reason
         self.retry_at = retry_at
+
+
+def _http_failure(error):
+    if error.fp is not None:
+        try:
+            error.close()
+        except OSError:
+            pass
+    return LLMError(f"LLM 调用失败: HTTP {error.code}")
 
 
 def pressure_key(base_url, credential):
@@ -108,8 +121,9 @@ class OpenAICompatClient(LLMClient):
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-                ValueError, KeyError) as exc:
+        except urllib.error.HTTPError as exc:
+            raise _http_failure(exc) from exc
+        except (urllib.error.URLError, ValueError, KeyError, *NETWORK_TIMEOUTS) as exc:
             raise LLMError(f"LLM 调用失败: {exc}") from exc
         usage = body.get("usage") or {}
         self.last_usage = {
@@ -167,13 +181,8 @@ class AnthropicCompatClient(LLMClient):
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            detail = ""
-            try:
-                detail = exc.read().decode("utf-8", "replace")[:300]
-            except Exception:
-                pass
-            raise LLMError(f"LLM 调用失败: {exc} {detail}") from exc
-        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+            raise _http_failure(exc) from exc
+        except (urllib.error.URLError, ValueError, *NETWORK_TIMEOUTS) as exc:
             raise LLMError(f"LLM 调用失败: {exc}") from exc
         usage = body.get("usage") or {}
         self.last_usage = {

@@ -128,6 +128,8 @@ python3 -m proto.run
 
 协议、状态模型、API 与验收见[总设计第 14.4 节](docs/DESIGN.md#operations)。配置合法不代表端点已真实联网验证；不会因保存接入而自动调用付费模型。
 
+**执行日志与排障：** Web 和交互 CLI 启动后自动写入数据目录下的 `.runtime-logs/execution.jsonl`（本地滚动、文件仅主人可读）。默认目录可用 `tail -F ./proto_data/.runtime-logs/execution.jsonl` 实时查看。按 `run_id` 追踪任务，按 `call_id` 核对一次模型调用的所有尝试，`profile_id` 可在 `/models` 中查到。`model_started` 表示真正进入客户端，`model_candidate_skipped` 表示未发请求，`model_failed` 记录耗时、原因和可用的 HTTP 状态；`run_finished` 可查下一次重试时间。日志不保存提示词、回复、工具输入或密钥。已有实例需要重启以启用；此前因超时误判而停住的安全任务用「继续」接原断点，不用新建任务。见[执行诊断契约](docs/DESIGN.md#execution-diagnostics)。
+
 **后台忙时怎么问（M70）：** 聊天区顶部的「后台 · 实时活动」显示当前任务、步数、等待原因、工具、文件和验收结果。单独问「在干嘛？」或「你刚才做了什么？」直接读本地记录，不调用模型、不占额度；普通对话也不再等后台模型或工具完成。主模型不可用时仍可查工作记录，自动任务在冷却到期后试探恢复。左栏「概览 → 它现在在干嘛」还显示存量项目文件，文件存在不等于已验收。旧实例用原有数据目录与启动参数重启后启用后端改动。见[设计与故障排查](docs/DESIGN.md#concurrent-dialogue-live-work)。
 
 **第 3 步，体验它"活着"**：
@@ -268,6 +270,7 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 | M74 舰队批量操作 | 全部暂停、恢复与确认归档，显示忙碌跳过和保留数据 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#fleet-bulk-controls) |
 | M75 公司与组织 | 多公司模板、职位任命、汇报关系与定向消息 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#company-organization) |
 | M76 模型组 | 主/快模型可选有序组，组内有界自动切换并保留任务断点 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#model-groups) |
+| 模型可靠性与诊断 | Python 3.9 网络超时回退、可关联的本地滚动执行日志 | ✅ [设计与验收](docs/DESIGN.md#execution-diagnostics) |
 | 后续模型交互 | 原生工具协议、请求级用量、token 压缩与进程级取消 | 待专项，不纳入 M63/M64 |
 
 ## 许可

@@ -9,5 +9,6 @@ proto_data/
 llm_models.json
 .llm-models-*
 .coordination/
+.runtime-logs/
 .venv/
 

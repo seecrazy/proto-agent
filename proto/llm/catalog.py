@@ -128,10 +128,11 @@ def _from_client(client, identity, name):
 
 
 class _PinnedClient(LLMClient):
-    def __init__(self, client, binding_key, *, name="", origin=None):
+    def __init__(self, client, binding_key, *, name="", origin=None, profile_id=None):
         self._client = client
         self.binding_key = binding_key
         self.profile_name = name
+        self.profile_id = profile_id
         self.pressure_origin = origin
 
     @property
@@ -359,7 +360,8 @@ class ModelCatalog:
             {key: profile[key] for key in ("api_style", "base_url", "model", "api_key")},
             sort_keys=True).encode("utf-8")).hexdigest()
         origin = "origin:" + pressure_key(profile["base_url"], "")
-        return _PinnedClient(client, (profile["id"], fingerprint), name=profile["name"], origin=origin)
+        return _PinnedClient(client, (profile["id"], fingerprint), name=profile["name"], origin=origin,
+                             profile_id=profile["id"])
 
     def plan(self, role):
         with self._lock:

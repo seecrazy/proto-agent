@@ -21,6 +21,7 @@ from proto.runtime.model_pressure import ModelPressure
 from proto.runtime.projects import ProjectDelivery
 from proto.runtime.runcontext import current_run
 from proto.runtime.task_plans import PLAN_EXEC_KEY, TaskPlans
+from proto.system.execution_log import record_execution
 from proto.system.instance_lock import InstanceLock
 
 
@@ -33,6 +34,11 @@ _SAFE_RESUME_REASONS = frozenset({"safe_resume_limit", "model_retry_exhausted", 
 def _continuation(run):
     result = run["result"] or {}
     return result if result.get("resume_session") is True else {}
+
+
+def _run_event(event, run, **fields):
+    record_execution(event, agent_id=run["agent_id"], run_id=run["id"], kind=run["kind"],
+                     generation=run["generation"], **fields)
 
 
 def _record(row, *, summary=False):
@@ -363,7 +369,8 @@ class RunCoordinator:
                         continue
                     if self._remember_dialogue():
                         continue
-                except Exception:
+                except Exception as exc:
+                    record_execution("runtime_error", stage="dispatcher", exception_type=type(exc).__name__)
                     logging.exception("Fleet dispatcher iteration failed")
                 with self._condition:
                     self._condition.wait(0.2)
@@ -453,7 +460,9 @@ class RunCoordinator:
     def _execute(self, run, agent):
         lease = RunLease(self, run, agent)
         token = current_run.set(lease)
+        started = time.monotonic()
         try:
+            _run_event("run_started", run, status="running", resumed=bool(_continuation(run)))
             self.activity.record(lease, "started")
             with agent.background_write():
                 result = self._invoke(run, agent, lease)
@@ -473,9 +482,12 @@ class RunCoordinator:
                     status, reason, result = self._wait_for_model(final, agent, result)
                 else:
                     status, reason = self._outcome(result, waiting, final)
-                self._save_result(connection, final, status, reason, result, waiting)
+                committed = self._save_result(connection, final, status, reason, result, waiting)
+            _run_event("run_finished", run, duration_ms=round((time.monotonic() - started) * 1000), **committed)
             self.activity.record(lease, status, reason=reason)
-        except Exception:
+        except Exception as exc:
+            _run_event("run_interrupted", run, exception_type=type(exc).__name__,
+                       duration_ms=round((time.monotonic() - started) * 1000))
             logging.exception("Run interrupted: %s", run["id"])
             self._recover_run(self.get(run["id"]), agent)
         finally:
@@ -602,6 +614,9 @@ class RunCoordinator:
         """, (status, reason, encode(result), encode(waiting) if waiting else None, time.time(), run["id"]))
         if waiting and run["cancel_requested"]:
             self._decision(connection, self._get_locked(connection, run["id"]), False, cancel=True)
+            status, reason = "queued", ""
+        return dict(status=status, reason=reason, **{key: result.get(key) for key in (
+            "retry_at", "model_retries", "model_reason", "restart_attempts")})
 
     @staticmethod
     def _evidence(run, agent):
@@ -650,7 +665,8 @@ class RunCoordinator:
         try:
             waiting, result, _ = self._evidence(run, agent)
             safe = not waiting and result is None and self._safe_session(run, agent)
-        except Exception:
+        except Exception as exc:
+            _run_event("runtime_error", run, stage="run_evidence", exception_type=type(exc).__name__)
             logging.exception("Cannot read Run evidence: %s", run["id"])
             waiting, result, safe = None, None, False
         if waiting:
@@ -681,6 +697,7 @@ class RunCoordinator:
         else:
             status, reason = "needs_reconciliation", "interrupted_without_final_receipt"
             result = {"status": status, "reason": reason}
+        committed = None
         with self.database.connect(write=True) as connection:
             latest = self._get_locked(connection, run["id"])
             if latest["status"] == "running" and latest["generation"] == run["generation"]:
@@ -689,7 +706,9 @@ class RunCoordinator:
                     result = {"status": status, "reason": reason}
                     if safe:
                         agent.sessions.abandon(run["session_id"], reason)
-                self._save_result(connection, latest, status, reason, dict(result, recovered=True), waiting)
+                committed = self._save_result(connection, latest, status, reason, dict(result, recovered=True), waiting)
+        if committed is not None:
+            _run_event("run_recovered", run, **committed)
 
     def recover(self):
         self.budget.recover()
@@ -699,7 +718,8 @@ class RunCoordinator:
             run = _record(row)
             try:
                 agent = self.manager.get(run["agent_id"])
-            except Exception:
+            except Exception as exc:
+                _run_event("runtime_error", run, stage="load_agent", exception_type=type(exc).__name__)
                 logging.exception("Cannot load Agent for Run recovery: %s", run["agent_id"])
                 agent = None
             self._recover_run(run, agent, startup=True)

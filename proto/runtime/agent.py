@@ -17,6 +17,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import replace
+from functools import partial
 from html import escape
 from pathlib import Path
 from typing import List, Optional
@@ -45,7 +46,7 @@ from proto.metacog.scheduler import MetacogScheduler
 from proto.metacog.strategies import StrategyLibrary
 from proto.state.agent_state import AgentState, StateManager
 from proto.state.desires import DesireDynamics
-from proto.llm.breaker import CircuitBreaker, GROUP_FAILOVER_REASONS, model_failure
+from proto.llm.breaker import CircuitBreaker, GROUP_FAILOVER_REASONS, describe_model_failure
 from proto.llm.client import LLMError, ModelPressureWait
 from proto.memory.extract import extract_facts, reflect as llm_reflect
 from proto.memory.extract import score_importance
@@ -57,6 +58,7 @@ from proto.state.emotion import PAD, circadian_arousal_setpoint
 from proto.state.modulation import AttributionAccumulator, ModulationPipeline
 from proto.storage.mongo_store import create_store
 from proto.storage.store import FileSystemStore
+from proto.system.execution_log import execution_reason, record_execution
 from proto.runtime.autonomy import (
     AutonomyConflict, AutonomyPolicy, autonomous_entry, autonomous_origin, load_policy, validate_mode,
 )
@@ -527,9 +529,20 @@ class ProtoAgent:
         if lease is not None and lease.agent is self:
             self._fleet_runs.activity.record(lease, phase, **fields)
 
+    def _execution_context(self):
+        lease = current_run.get()
+        ids = {"agent_id": self.fleet_id or "local"}
+        if lease is not None and lease.agent is self:
+            ids.update(run_id=lease.id, generation=lease.generation)
+        return ids
+
     @contextmanager
     def _tool_io(self, tool):
         self.activity_event("tool_start", tool=tool)
+        tool_event = partial(record_execution, **self._execution_context(),
+                             tool=tool if tool in self.tools.names() else None)
+        started = time.monotonic()
+        tool_event("tool_started")
         try:
             if tool in {"web_fetch", "github_search", "github_readme", "run_python", "run_command",
                         "list_dir", "read_file", "read_files", "grep", "write_file", "edit_file",
@@ -538,6 +551,12 @@ class ProtoAgent:
                     yield
             else:
                 yield
+        except Exception as exc:
+            tool_event("tool_failed", exception_type=type(exc).__name__,
+                       duration_ms=round((time.monotonic() - started) * 1000))
+            raise
+        else:
+            tool_event("tool_returned", duration_ms=round((time.monotonic() - started) * 1000))
         finally:
             self.activity_event("tool_returned", tool=tool)
 
@@ -612,39 +631,60 @@ class ProtoAgent:
     def _complete(self, client, system: str, user: str,
                   pool: str = "owner_tasks", *, foreground=False) -> str:
         """熔断 + 预算守卫的 LLM 调用。"""
-        reason = self._blocked_dispatch(False)
-        if reason:
-            raise LLMError(reason)
-        group, bindings = self._model_bindings(client)
-        pressure = self._pressure()
-        if group:
-            return self._complete_group(group, bindings, pressure, system, user, pool)
-        client, breaker = bindings[0]
-        if breaker.snapshot()["waiting"]:
-            raise LLMError("circuit_breaker_open")
-        route = getattr(client, "pressure_key", None)
-        with pressure.admit(route, foreground=foreground):
-            return self._model_request(client, breaker, pressure, route, system, user, pool)
+        default_role = "fast" if client is self._llm_fast and client is not self._llm else "main"
+        model_event = partial(record_execution, **self._execution_context(), call_id=pysecrets.token_hex(12),
+                              role=getattr(client, "role", default_role), pool=pool, foreground=foreground)
+        started = time.monotonic()
+        group, profile_id = "", None
+        try:
+            reason = self._blocked_dispatch(False)
+            if reason:
+                raise LLMError(reason)
+            group, bindings = self._model_bindings(client)
+            pressure = self._pressure()
+            if group:
+                return self._complete_group(group, bindings, pressure, system, user, pool, model_event)
+            client, breaker = bindings[0]
+            profile_id = getattr(client, "profile_id", None)
+            if breaker.snapshot()["waiting"]:
+                raise LLMError("circuit_breaker_open")
+            route = getattr(client, "pressure_key", None)
+            with pressure.admit(route, foreground=foreground):
+                attempt_event = partial(model_event, profile_id=profile_id, attempt=1)
+                return self._model_request(client, breaker, pressure, route, system, user, pool, attempt_event)
+        except Exception as exc:
+            failure = describe_model_failure(exc)
+            code = execution_reason(exc.args[0]) if isinstance(exc, LLMError) and exc.args else None
+            model_event("model_call_failed", reason=code if code not in (None, "other") else failure.reason,
+                        grouped=bool(group), profile_id=profile_id, retry_at=getattr(exc, "retry_at", None),
+                        duration_ms=round((time.monotonic() - started) * 1000))
+            raise
 
-    def _complete_group(self, name, bindings, pressure, system, user, pool):
+    def _complete_group(self, name, bindings, pressure, system, user, pool, model_event):
         sent_failures = 0
         for client, breaker in bindings:
             if sent_failures == 2:
                 break
+            candidate_event = partial(model_event, profile_id=client.profile_id, grouped=True)
             local = breaker.snapshot()
             if local["waiting"]:
+                candidate_event("model_candidate_skipped", reason=local["reason"] or "circuit_breaker_open",
+                                retry_at=local["retry_at"])
                 if self._group_stops_at(local):
                     raise ModelPressureWait(local["reason"], local["retry_at"])
                 continue
             route = client.pressure_key
             try:
                 with pressure.admit(route, origin=client.pressure_origin):
-                    return self._model_request(client, breaker, pressure, route, system, user, pool, grouped=True)
+                    attempt_event = partial(candidate_event, attempt=sent_failures + 1)
+                    return self._model_request(client, breaker, pressure, route, system, user, pool, attempt_event,
+                                               grouped=True)
             except _GroupMemberFailed:
                 sent_failures += 1
             except ModelPressureWait as exc:
                 if exc.reason not in ("model_route_busy", "model_rate_limited", "circuit_breaker_open"):
                     raise
+                candidate_event("model_candidate_skipped", reason=exc.reason, retry_at=exc.retry_at)
         state = self._group_model_status(name, bindings, pressure)
         reason = "model_group_unavailable"
         if not sent_failures and state["reason"] == "model_route_busy":
@@ -658,7 +698,7 @@ class ProtoAgent:
         reason = local["reason"] if self._group_stops_at(local) else "circuit_breaker_open"
         return ModelPressureWait(reason, local["retry_at"])
 
-    def _model_request(self, client, breaker, pressure, route, system, user, pool, *, grouped=False):
+    def _model_request(self, client, breaker, pressure, route, system, user, pool, attempt_event, *, grouped=False):
         blocked = self._blocked_dispatch(False)
         if blocked:
             raise LLMError(blocked)
@@ -696,6 +736,7 @@ class ProtoAgent:
         try:
             self.activity_event("model_wait", **activity)
             with self._background_io():
+                attempt_event("model_started", estimated_input_tokens=estimated_in)
                 reply = client.complete(system, user)
             usage = getattr(client, "last_usage", None)
             amounts = [usage.get(unit, 0) for unit in ("input_tokens", "output_tokens")] if isinstance(usage, dict) else []
@@ -704,7 +745,8 @@ class ProtoAgent:
             if not total:
                 total = max(1, (len(system) + len(user) + len(reply)) // 4)
         except Exception as exc:
-            incident = model_failure(exc)
+            failure = describe_model_failure(exc)
+            incident = failure.reason
             can_failover = grouped and incident in GROUP_FAILOVER_REASONS
             limited = None
             if route and incident == "model_rate_limited":
@@ -715,6 +757,10 @@ class ProtoAgent:
                                        immediate=(can_failover or bool(route and incident in (
                                            "model_unauthorized", "model_forbidden"))))
             self.activity_event("model_failed", reason=incident, **activity)
+            attempt_event("model_failed", reason=incident, http_status=failure.http_status,
+                          exception_type=failure.exception_type, failover_eligible=can_failover,
+                          duration_ms=round((time.monotonic() - started) * 1000),
+                          retry_at=limited.retry_at if limited else None)
             if ticket is not None:
                 fleet_budget.settle(ticket.id)
             self.kernel.pools.finish_model(request_id, elapsed=time.monotonic() - started)
@@ -731,6 +777,7 @@ class ProtoAgent:
             raise
         breaker.record_success(permit=permit)
         self.activity_event("model_returned", **activity)
+        attempt_event("model_returned", tokens=total, duration_ms=round((time.monotonic() - started) * 1000))
         if ticket is not None:
             fleet_budget.settle(ticket.id, tokens=total)
         self.kernel.pools.finish_model(request_id, tokens=total, elapsed=time.monotonic() - started)

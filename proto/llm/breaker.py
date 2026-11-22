@@ -8,28 +8,54 @@ from __future__ import annotations
 
 import time
 import threading
+from dataclasses import dataclass
+from typing import Optional
 from urllib.error import HTTPError, URLError
 
-from proto.llm.client import ModelPressureWait
+from proto.llm.client import ModelPressureWait, NETWORK_TIMEOUTS
+
+
+@dataclass(frozen=True)
+class ModelFailure:
+    reason: str
+    exception_type: str
+    http_status: Optional[int] = None
+
+
+def describe_model_failure(error):
+    pending = [error]
+    seen = set()
+    network = None
+    exception_type = type(error).__name__
+    while pending:
+        error = pending.pop()
+        if id(error) in seen:
+            continue
+        seen.add(id(error))
+        exception_type = type(error).__name__
+        if isinstance(error, ModelPressureWait):
+            return ModelFailure(error.reason, exception_type)
+        if isinstance(error, HTTPError):
+            reason = {401: "model_unauthorized", 403: "model_forbidden", 404: "model_not_found",
+                      429: "model_rate_limited"}.get(error.code, "model_http_error")
+            if 500 <= error.code < 600:
+                reason = "model_server_error"
+            return ModelFailure(reason, exception_type, error.code)
+        if isinstance(error, NETWORK_TIMEOUTS):
+            return ModelFailure("model_timeout", exception_type)
+        if isinstance(error, ConnectionError):
+            return ModelFailure("model_unreachable", exception_type)
+        if error.__cause__ is not None:
+            pending.append(error.__cause__)
+        if isinstance(error, URLError):
+            network = ModelFailure("model_unreachable", exception_type)
+            if isinstance(error.reason, BaseException):
+                pending.append(error.reason)
+    return network or ModelFailure("model_request_failed", exception_type)
 
 
 def model_failure(error):
-    while error is not None:
-        if isinstance(error, ModelPressureWait):
-            return error.reason
-        if isinstance(error, HTTPError):
-            if 500 <= error.code < 600:
-                return "model_server_error"
-            return {401: "model_unauthorized", 403: "model_forbidden", 404: "model_not_found",
-                    429: "model_rate_limited"}.get(error.code, "model_http_error")
-        if isinstance(error, TimeoutError):
-            return "model_timeout"
-        if isinstance(error, ConnectionError):
-            return "model_unreachable"
-        if isinstance(error, URLError) and not error.__cause__:
-            return "model_timeout" if isinstance(error.reason, TimeoutError) else "model_unreachable"
-        error = error.__cause__
-    return "model_request_failed"
+    return describe_model_failure(error).reason
 
 
 TRANSIENT_MODEL_REASONS = frozenset({
