@@ -17,6 +17,7 @@ BASE_NAMES = {
     "web_fetch", "github_search", "github_readme",
     "blackboard_read", "blackboard_post", "fleet_status",
     "company_context", "company_inbox", "company_send",
+    "run_subagent",
 }
 READ_ONLY_EXPECTED = {
     "list_dir", "read_file", "read_files", "grep", "search_symbols",
@@ -35,6 +36,7 @@ IO_EXPECTED = {
     "web_fetch", "github_search", "github_readme", "run_python", "run_command",
     "list_dir", "read_file", "read_files", "grep", "write_file", "edit_file",
     "delegate_coding", "inspect_build", "search_symbols", "explore_code",
+    "run_subagent",
 }
 
 

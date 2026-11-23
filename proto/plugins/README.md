@@ -3,7 +3,10 @@
 ## 新增一个工具 = 一个 pack 文件 + 进装配清单
 
 以前新增工具要改 4 处（实现、`contracts._BUILTINS` schema、agent 装配段、agentic 三个
-硬编码清单）。M78 之后全部声明收在 `ToolSpec` 一处：
+硬编码清单）。M78 之后行为元数据（能力级别/只读/观察限额/后台 IO）全部收在 `ToolSpec`
+一处；**内置工具的参数 schema 仍收进 `contracts._BUILTINS`**——"目录即校验源"是 M63
+钉住的安全属性（`tests/test_m63_execution_sessions.py` 会核对），pack 缺省
+`parameters` 时自动回落取得；随包分发的外部插件才自带 `parameters`。
 
 ```python
 # proto/plugins/pack_my.py
@@ -16,7 +19,7 @@ def specs(ctx) -> list:
             fn=my_function,              # 实现（通常放 proto/tools/）
             category="WORKSPACE_WRITE",  # 能力级别（字符串或 ActionCategory）
             description="给模型看的一句话说明",
-            parameters={...},            # 可省：回落 contracts.builtin_parameters，再省则按签名推导
+            # parameters 可省：内置工具回落 contracts.builtin_parameters
             owner_only=False,            # True=主人超时也绝不自主代批
             read_only=True,              # 只读探索步计数（连续探索强制转向产出）
             obs_limit=2000,              # 观察截断字符数（缺省 600）
@@ -36,6 +39,7 @@ def specs(ctx) -> list:
 | `pack_web` | web_fetch / github_search / github_readme |
 | `pack_fleet` | blackboard_read / blackboard_post / fleet_status / company_context / company_inbox / company_send |
 | `pack_bridge` | delegate_coding（探测到外部 CLI 才注册） |
+| `pack_subagent` | run_subagent（隔离子代理：能读能写工作区边界，见 exec/subagent.py） |
 
 ## 安全边界（不因插件化放松）
 

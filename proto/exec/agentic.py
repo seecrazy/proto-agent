@@ -20,6 +20,7 @@ from proto.exec.checkpoints import SCHEMA_VERSION
 from proto.exec.engineering import (engineering_topic, inspect_build, missing_checks,
                                     requested_checks, verification_receipt)
 from proto.exec.exploration import bind_explorer, investigate
+from proto.exec.subagent import bind_subagent
 from proto.exec.plan_evidence import EvidenceError, OutputEvidence
 from proto.exec.router import Task, TaskResult, VARIANT_ID
 from proto.exec.sessions import SESSION_SCHEMA_VERSION, TERMINAL_STATES
@@ -124,10 +125,33 @@ class AgenticLoop:
                            lambda system, user: self._complete(self._agent.llm_fast or self._agent.llm,
                                                                system, user, decision=True), stopped)
 
+    def _subagent(self, task, allowed="workspace", max_turns=8):
+        """子代理派发（M78）：审计取派发/返回粒度，完整轨迹由子代理报告带回。"""
+        from proto.exec.subagent import dispatch
+        context = self._session["context"]
+        workspace = self._agent.code_workspace
+
+        def stopped():
+            if workspace is not self._agent.code_workspace or str(workspace.root.resolve()) != context["workspace"]:
+                return "workspace_changed"
+            return self._autonomy_reason() or self._goal_stopped()
+
+        self._agent.spine.append("subagent_dispatch", {
+            "task": str(task)[:200], "allowed": str(allowed), "max_turns": max_turns})
+        result = dispatch(context, workspace, self._agent.webtools, task,
+                          lambda system, user: self._complete(self._agent.llm_fast or self._agent.llm,
+                                                              system, user, decision=True),
+                          stopped, allowed, max_turns)
+        self._agent.spine.append("subagent_result", {
+            "status": result.get("status"), "reason": result.get("reason", ""),
+            "files": result.get("files", []), "turns": result.get("turns", 0),
+            "tool_calls": result.get("tool_calls", 0)})
+        return result
+
     def run(self, task_text: str, acceptance: str = "",
             feedback: str = "", journal=None, goal_id: str = "",
             project_dir: str = "", *, frozen_context=None, delivery_stage=None) -> Dict:
-        with self._agent.sessions.lock, bind_explorer(self._explore):
+        with self._agent.sessions.lock, bind_explorer(self._explore), bind_subagent(self._subagent):
             try:
                 self._session = None
                 self._autonomous = bool(goal_id) or self._pool == "self_initiated"
@@ -193,7 +217,7 @@ class AgenticLoop:
     def resume(self, identifier: str, approved: bool, *, safe_only: bool = False) -> Dict:
         if type(approved) is not bool:
             return {"status": "failed", "reason": "invalid_approval_decision"}
-        with self._agent.sessions.lock, bind_explorer(self._explore):
+        with self._agent.sessions.lock, bind_explorer(self._explore), bind_subagent(self._subagent):
             try:
                 session = self._agent.sessions.lookup(identifier)
                 if session is None:

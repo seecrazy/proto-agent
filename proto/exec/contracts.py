@@ -70,6 +70,10 @@ _BUILTINS = {
         "position_id": {"type": "string", "minLength": 32, "maxLength": 32},
         "text": {"type": "string", "minLength": 1, "maxLength": 1000}}, ["position_id", "text"]),
     "delegate_coding": object_schema({"task": {"type": "string", "minLength": 1}}, ["task"]),
+    "run_subagent": object_schema({
+        "task": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "allowed": {"type": "string", "enum": ["readonly", "workspace"], "default": "workspace"},
+        "max_turns": {"type": "integer", "minimum": 1, "maximum": 12, "default": 8}}, ["task"]),
 }
 _KEYWORDS = {"type", "description", "properties", "required", "additionalProperties",
              "items", "minItems", "maxItems", "minLength", "maxLength",

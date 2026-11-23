@@ -6,7 +6,7 @@ BUILTIN_PACKS 是显式清单——项目风格：可审计、无自动发现。
 单个工具的声明（实现/能力级别/参数/只读/观察限额/后台 IO）全部收在
 ToolSpec 一处，见 base.py。
 """
-from proto.plugins import pack_bridge, pack_core, pack_files, pack_fleet, pack_web
+from proto.plugins import pack_bridge, pack_core, pack_files, pack_fleet, pack_subagent, pack_web
 
 
 def assemble_tools(registry, agent) -> None:
@@ -17,6 +17,7 @@ def assemble_tools(registry, agent) -> None:
         pack_web.specs(agent.webtools),
         pack_fleet.specs(agent),
         pack_bridge.specs(agent),
+        pack_subagent.specs(agent),
     )
     for specs in spec_groups:
         for spec in specs:

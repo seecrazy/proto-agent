@@ -19,11 +19,12 @@ PROTO_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 
 _IMPORT = re.compile(r"^\s*(?:from|import)\s+(proto\.[\w.]+)", re.M)
 
-EXEC_SHARED = {"contracts", "engineering", "exploration", "work_context"}
+EXEC_SHARED = {"contracts", "engineering", "exploration", "subagent", "work_context"}
 EXEC_CORE = {
     "router", "agentic", "sessions", "context", "contracts", "injector",
     "checkpoints", "approval", "workspace", "planner", "plan_evidence",
     "proposal_writing", "work_context", "modulators", "exploration", "engineering",
+    "subagent",
 }
 UPPER_PACKAGES = ("proto.tools", "proto.runtime", "proto.fleet", "proto.profile",
                   "proto.web", "proto.agents", "proto.appshell", "proto.adapters")
