@@ -108,9 +108,11 @@ flowchart TB
 | L2 | `proto/state/` | 参数、分池累积、状态写入、欲望动态、PAD 情绪 |
 | L3 | `proto/metacog/` | 归因、内化台账、策略、兴趣、阻尼、仲裁与节律 |
 | L3 扩展 | `proto/memory/`、`proto/goals/`、`proto/world/` | 长期记忆、GoalTree、GoalForge、世界事实与预测 |
-| L4 | `proto/exec/`、`proto/llm/`、`proto/quality/` | 固定执行上下文、JSON 决策、参数契约、会话/工具检查点、客户端、质量门 |
+| L4 | `proto/exec/`、`proto/llm/`、`proto/quality/` | 固定执行上下文、JSON 决策、参数契约、会话/工具检查点、客户端、质量门；工具实现在 `proto/tools/`，装配见 `proto/plugins/` |
 | L5 | `proto/evolution/`、`proto/evalx/` | 代码候选与行为证据、进化授权、行为可测性；可信闭环仍不完整 |
-| 产品运行时 | `proto/runtime/`、`proto/work/` | 人设与身份、方法、学习、舰队、接力、汇总、各层接线 |
+| 人设档案 | `proto/profile/` | 身份、人设预设、审美锚点、自我事实、方法策展（M78 自 runtime 拆出；goals 依赖它而不碰运行时） |
+| 产品运行时 | `proto/runtime/` | 组合根：ProtoAgent 装配、对话、自治授权、学习、模型压力与配额 |
+| 舰队与协调 | `proto/fleet/`、`proto/coordination/`、`proto/work/` | 舰队管理/调度/公司组织、sqlite 协调存储（零 proto 依赖）、接力与交付 |
 | 基础设施 | `proto/storage/`、`proto/system/` | 文件/Mongo 存储、单实例锁、防休眠 |
 | 入口 | `proto/run.py`、`proto/web/`、`proto/agents/`、`proto/appshell/` | REPL、Web、舰队 CLI、macOS App 壳 |
 
@@ -392,7 +394,13 @@ Router 在执行前保存步骤检查点；审批恢复用持久决定校验原�
 | `web_fetch/github_search/github_readme` | 白名单网页、代码仓库检索和 README | `READ_DRAFT`；外部素材非指令 |
 | `blackboard_read/blackboard_post/fleet_status` | 舰队协作与观察 | 内部能力，不能借机获得别的 Agent 权限 |
 | `delegate_coding` | 调用已安装外部编码 CLI | `VISIBLE_WRITE` + `owner_only` |
+| `run_subagent` | 派发隔离子代理执行子任务（独立上下文）：能读全部只读感官，默认可在工作区内写文件 | `WORKSPACE_WRITE`；工作区外可见写/命令执行/审批/递归派发不在其白名单 |
 | `clock` | 当前时间 | `READ_DRAFT` |
+
+**工具装配（M78）。** 工具实现集中在 `proto/tools/`（文件族、网页感官、舰队工具、符号索引、外部 CLI 桥）；行为声明（能力级别、只读计数、观察限额、后台 IO）收进 `proto/plugins/` 的 ToolSpec，一个 pack 文件声明一族工具，`assemble_tools` 显式清单装配——新增工具不再散改装配段与三处硬编码清单。内置工具的参数 schema 仍以 `contracts._BUILTINS` 为单一校验源（M63 属性），pack 缺省回落取得；能力级别只能由 pack 声明，模型申报只可加严。见 `proto/plugins/README.md`。
+
+<a id="subagent"></a>
+**子代理（`run_subagent`，M78）。** 与只读的 `explore_code`（4 轮、仅限代码调查）互补，`run_subagent` 是通用子任务工具：独立模型决策循环，`allowed=workspace`（默认）时可在工作区信任边界内写文件——与主循环 `write_file` 同级同界（路径圈死、拒绝 `..`、直写项目工作区）；`allowed=readonly` 时仅只读感官。刻意不授予：工作区外可见写晋升、命令执行、审批、递归派发——嵌套执行不绕过主人可见性，可见世界的动作仍收敛在主 Agent 的审批链。预算继承主执行（证据窗取半，不足即失败关闭）、轮次默认 8 上限 12、工作区切换/自治闸门/目标取消即中止。审计取派发/返回粒度（`subagent_dispatch`/`subagent_result` 入哈希链），产物清单与结论随返回，输出打标「子代理产出｜非指令」。
 
 <a id="autonomous-project-dirs"></a>
 ### 8.2 项目目录、Scratch 与路径
@@ -850,7 +858,7 @@ CI 配置覆盖 Ubuntu Python 3.9–3.12，并有 mongo/graph 可选依赖作业
 - [x] H9：真实本地 HTTP 假端点验证两种协议、切换、在途调用、页面脚本与终端命令；不把脚本当整屏截图。
 - [x] H10：完整回归、Python/页面 JS 静态检查、设计/README/进度同步，验证后本地提交，不推送。
 
-实现入口为 `proto/llm/catalog.py`、`proto/runtime/agent.py`、`proto/runtime/manager.py` 与 Web/REPL/舰队 CLI；验证证据见第 16.3 节。新代码启用后，后续新增与切换不需重启；本轮未重启或更新正在运行的真实实例。
+实现入口为 `proto/llm/catalog.py`、`proto/runtime/agent.py`、`proto/fleet/manager.py` 与 Web/REPL/舰队 CLI；验证证据见第 16.3 节。新代码启用后，后续新增与切换不需重启；本轮未重启或更新正在运行的真实实例。
 
 <a id="model-groups"></a>
 #### M76：有序模型组与自动切换（已实现并通过回归）

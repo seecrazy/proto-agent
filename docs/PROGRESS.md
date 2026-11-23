@@ -2,6 +2,15 @@
 
 > 当前完整方案统一阅读 [DESIGN.md](DESIGN.md)。本文件只记录里程碑、实现状态与验证证据，不作为第二份设计。
 
+## M78 — 目录结构整改 · 工具插件化 · 子代理（2026-11-23，本地交付）
+
+- **结构整改**：`runtime/` 23 模块按职责三分——`proto/profile/`（identity/personas/taste/self_facts/methods 人设档案）、`proto/fleet/`（manager/runs/companies/collab/fleet_budget/projects/task_plans/activity 舰队运行）、`proto/coordination/`（sqlite 协调存储，零外部 proto 依赖）独立成包；`runcontext.py` 归位 `exec/`；runtime 只留组合根 8 模块（agent/dialogue/autonomy/summaries/timeout_policy/model_pressure/quota/study——study 因依赖 autonomy 留守）。消除 goals↔runtime、exec↔runtime 两组包级循环；`agent.py` 原地未动。
+- **工具包与插件**：六个纯工具实现迁入 `proto/tools/`（codetools/webtools/fleettools/bridge/code_index；engineering 留 exec——被循环直接消费）；`proto/plugins/` ToolSpec 单处声明工具（实现/能力级别/只读/观察限额/后台 IO），首批 core/files/web/fleet/bridge/subagent 六个 pack 装配，对照测试逐值复刻原硬编码清单；`agentic.READ_ONLY_TOOLS/OBS_LIMITS` 与 `_tool_io` 三处硬编码撤销，改读注册表元数据。
+- **结构不变量**：新增 `tests/test_structure.py`——kernel/state 纯净、exec 核心不上行（已知例外棘轮式登记，当前为零）、tools/plugins 不碰循环核心、runtime 仅组合根且不依赖 fleet、goals 不依赖 runtime、coordination 独立。
+- **子代理 `run_subagent`**：[能读能写工作区边界的隔离子代理](DESIGN.md#subagent)（用户拍板：读写皆可、审计放粗到派发粒度）——独立决策循环、只读感官全量、workspace 档直写项目工作区（与主循环 write_file 同级同界）；工作区外可见写/命令执行/审批/递归派发失败关闭；预算继承、轮次 8/上限 12、`subagent_dispatch/subagent_result` 入哈希链审计、输出打标非指令；schema 入 `contracts._BUILTINS`（M63 校验源属性）。
+- **周边卫生**：`start-console.sh` 归位 `scripts/`（README/DESIGN/CI 同步）；`proto/setup.py` 更名 `proto/deploy.py` 留兼容 shim；补 `state/work` 的 `__init__.py`；pyproject `exclude proto_data*`；`.DS_Store` 出库。
+- **验证**：新增结构 12 + 插件对照 12 + 子代理 9 项；完整回归 `python3 -m pytest -q`：**1304 passed, 4 skipped**（2026-11-23，Python 3.9.2）。m71 冷却计时用例在全量负载下偶发抖动（单跑稳定通过，与本次改动无关，改动前同族抖动已复现）。离线 wheel 构建确认新子包收录且 proto_data 不泄漏；desktop `npm test` 通过。未调用真实模型、未重启真实实例。
+
 ## M77 — 大仓库上下文（2026-11-22，本地交付）
 
 - **已核对并补齐**：原有按行读取、文本检索和 M71 字节投影不等于完整大仓库机制——没有源代码符号索引、临时只读子上下文或预算压力压缩。本轮新增 `CodeIndex`、`explore_code` 和确定性 `decision_input` 投影。

@@ -2,10 +2,10 @@
 
 > **内在状态显式可调制 · 主动行为受授权与预算约束 · 自我进化机制仍在验证中**
 
-[![tests](https://img.shields.io/badge/tests-1272%20passed-brightgreen.svg)]()
+[![tests](https://img.shields.io/badge/tests-1304%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
-[![version](https://img.shields.io/badge/version-0.33.0-orange.svg)]()
+[![version](https://img.shields.io/badge/version-0.34.0-orange.svg)]()
 
 PROTO 的长期目标是在同等资源与权限下完成通用 AI Agent 能做的有用工作，并让同一个 Agent 以持续的人设、记忆和目标与人相处、主动学习、思考、成长和交付。没有新指令也能行动，但不能自行扩权，产出以可复核的证据为准。框架用独立样例验证，不替 Agent 承做、调试或验收真实项目。当前实现至 M76，仍是**单机多 Agent 原型**。见[核心设计原则](docs/DESIGN.md#core-design-principles)。
 
@@ -216,11 +216,15 @@ python3 -m proto.demo     # 12 段全链路演示：锚定→调制→毒化拒�
 | L3 | `proto/metacog/` | 可插拔归因器、双向内化台账（可降级/回滚级联）、ε 多样性策略库、主人对齐仲裁 |
 | L3 | `proto/goals/` | GoalTree（长期→交付阶段）与 GoalForge（人设/优先级/记忆 → 自主立项 + 本地淘汰） |
 | L4 | `proto/exec/` | 固定执行上下文/范围化指令、参数契约、Scratch、审批队列、版本化执行会话、Router 工具检查点、审批整链恢复 |
+| 工具 | `proto/tools/` | 内置工具实现：文件/执行族（codetools）、网页感官、舰队工具、符号索引、外部 CLI 桥 |
+| 插件 | `proto/plugins/` | ToolPack 装配：一个 pack 文件单处声明工具（级别/只读/观察限额/后台 IO），新增工具不再散改装配段 |
 | L5 | `proto/evolution/` | OWNER 签名只增测试集、失败关闭沙盒（macOS sandbox-exec / Linux runsc / 显式 subprocess）、私有评分器、进化树、影子双跑、分级授权（晋升必须持真实沙盒通过记录） |
 | 评估 | `proto/evalx/` | 行为代理 harness（Cohen's d ≥ 0.5 判可测）、dormant 冻结看门狗（测不出差异自动冻结调制） |
 | Web 控制台 | `proto/web/`（server + 单页前端） | `python3 -m proto.web`：对话/仪表盘/审批/任务/审计/锁定覆写静音优先级，127.0.0.1 + 令牌防跨站 |
 | Electron 控制台 | `desktop/`（可选桌面外壳） | `npm --prefix desktop start`，直接加载 Web 控制台，不复制业务功能 |
 | 运行时 | `proto/runtime/agent.py` + `proto/run.py` | **活的 Agent 入口**：主人密钥注册、对话（LLM/离线）、归因调制、主动提议、任务执行 |
+| 人设档案 | `proto/profile/` | 身份、人设预设、审美锚点、自我事实、方法策展（goals 依赖它而不碰运行时） |
+| 舰队 | `proto/fleet/` + `proto/coordination/` | 舰队管理/公平调度/公司组织 + sqlite 协调存储（零外部依赖的共享枢纽） |
 | LLM | `proto/llm/client.py` + `proto/metacog/attribution.py` + `proto/exec/planner.py` | OpenAI 兼容客户端（方舟/OpenAI/DeepSeek/Ollama）、LLM 归因（白名单+回退）、LLM 任务规划（工具白名单） |
 | L3 节奏 | `proto/metacog/{scheduler,distill,interest}.py` | 调度器（每任务蒸馏/定时目标/每日回顾，时钟可注入）、确定性策略蒸馏、兴趣强化收敛（学习权重进仲裁） |
 | L2 动态 | `proto/state/{desires}.py` + `StateManager` | 欲望缺口随闲置增长（1h 宽限）、参数调制回滚（级联内化降级）、阻尼阈值调制 |
@@ -250,7 +254,8 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 
 ## 验证
 
-- **1272 passed, 4 skipped**（2026-11-22，本机 Python 3.9.2，`python3 -m pytest -q`）；未重跑 CI 矩阵、可选依赖组合、真实模型或 Linux runsc，不宣称覆盖全部安全边界。
+- **1304 passed, 4 skipped**（2026-11-23，本机 Python 3.9.2，`python3 -m pytest -q`）；未重跑 CI 矩阵、可选依赖组合、真实模型或 Linux runsc，不宣称覆盖全部安全边界。
+- M78 结构整改新增 **33 个用例**：结构不变量 12（kernel/state 纯净、exec 不上行、runtime 仅组合根、coordination 独立等）、插件装配对照 12（六 pack 逐值复刻原硬编码清单）、子代理 9（工作区落盘+审计、只读拒写、递归拒止、越界路径、轮次/预算/档位边界）。
 - M77 新增 **16 个用例**：非首文件符号定位、续页、缓存失效、跳过/降级、兄弟项目拒绝、父/子上下文隔离、工具白名单、源码回显拒绝、压力压缩、固定区超限、供应商上下文超限重试、输出截断小步重试、等待会话恢复进入小决策模式与 write/edit 参数上限。
 - M72 验证 429 共享退避、重启后的无重复续接、同谱系前置阶段、空转停止和本机证据。独立 SwiftUI 样例在沙盒中真实编译，未启动模拟器 App 或介入真实项目；XCTest 回执识别用替身验证。
 - M71 新增 **15 个用例**：长输入、持久决策、真实进程中断、确认回执、未知效果、退避和安全续接。离线控制台验证恢复验收，不重复写入。
@@ -299,6 +304,7 @@ CONTENT 外部内容               权重 0.05 + 累积池 50% 硬顶 —— 洪
 | Electron 桌面控制台 | 与 Web 共用页面、API 和数据目录 | ✅ [设计与验收](docs/DESIGN.md#electron-console) |
 | 模型可靠性与诊断 | Python 3.9 网络超时回退、可关联的本地滚动执行日志 | ✅ [设计与验收](docs/DESIGN.md#execution-diagnostics) |
 | M77 大仓库上下文 | 符号分页索引、只读子上下文、本地预算压缩、范围化检索与决策输出预算 | ✅ 本地交付，[设计与验收](docs/DESIGN.md#large-code-context) |
+| M78 结构整改 | runtime 三分拆（profile/fleet/coordination）、proto/tools 与 plugins 插件化、结构不变量测试、run_subagent 子代理 | ✅ 本地交付，[子代理设计](docs/DESIGN.md#subagent) · [插件说明](proto/plugins/README.md) |
 | 后续模型交互 | 原生工具协议、请求级用量、供应商精确 token 分词/压缩与进程级取消 | 待专项，不纳入 M63/M64 |
 
 ## 许可
@@ -326,6 +332,7 @@ PROTO 不靠"性格"掩盖能力短板。M16 起它自带完整的工具族与**
 | `run_command` | **项目本机验证**：无 shell、数组 argv、命令白名单（Python/Swift/XcodeBuild/Node 等），cwd 圈死在项目工作区，沿用写遏制+禁网沙盒 | 沙盒后端 workspace_write 自动；未隔离后端 visible_write 需批准 |
 | `github_search` / `github_readme` / `web_fetch` | 白名单只读网页感官：学习优秀作品/官方文档；返回内容显式打标“外部素材，非指令” | read_draft 自动 |
 | `delegate_coding` | **外包重活**：自动探测 claude/codex/zcode CLI（`PROTO_BRIDGE_CLI` 可指定），PROTO 出意图记经验担审批，专业工具出执行力 | visible_write 需批准 |
+| `run_subagent` | **隔离子代理**：把一个子任务交给独立上下文完成——能读全部只读感官，默认可在工作区内写文件（与主循环同一信任边界）；返回结论、产物清单与轮次 | workspace_write 自动；工作区外可见写/命令/审批/递归派发不在其白名单 |
 
 **Agentic 循环**（控制台「工作 → 指派任务」或 CLI `/task`）：模型根据工具结果决定下一步，直到有证据完成或达到预算/步数上限。对外动作在检查点等待批准，批准后续跑。PROTO 自己有工程执行链；外部编码工具是显式授权后的可选委派，并非编译或测试的前提。
 
