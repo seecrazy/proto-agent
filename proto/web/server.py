@@ -64,7 +64,7 @@ _ACT_RE = re.compile(r"^/api/agents/([A-Za-z0-9_-]+)/act$")
 _RESUME_RE = re.compile(r"^/api/task/([A-Za-z0-9_-]+)/resume$")
 _PLAN_APPROVE_RE = re.compile(r"^/api/task/plan/([0-9a-f]{32})/approve$")
 _PROPOSAL_RE = re.compile(r"^/api/proposals/([0-9a-f]+)/(accept|deny)$")
-_RUN_RE = re.compile(r"^/api/runs/([0-9a-f]{32})(?:/(cancel|resume|reconcile))?$")
+_RUN_RE = re.compile(r"^/api/runs/([0-9a-f]{32})(?:/(cancel|resume|reconcile|timeline))?$")
 _PROJECT_RE = re.compile(r"^/api/projects/([0-9a-f]{32})(/work)?$")
 _WORK_RE = re.compile(r"^/api/projects/([0-9a-f]{32})/work/([0-9a-f]{32})/(retry|drop|artifacts/([1-9][0-9]{0,8}))$")
 _COMPANY_RE = re.compile(r"/api/companies/([0-9a-f]{32})(?:/(positions|messages))?")
@@ -83,7 +83,7 @@ READ_ONLY_GETS = {
     "/api/evolution", "/api/scratch", "/api/memory", "/api/inbox",
     "/api/goaltree", "/api/world", "/api/taste",
     "/api/summary", "/api/blackboard", "/api/projects-root", "/api/methods",
-    "/api/identity", "/api/activity", "/api/activity/live",
+    "/api/identity", "/api/activity", "/api/activity/live", "/api/chat/history",
 }
 
 
@@ -296,6 +296,16 @@ class _Handler(BaseHTTPRequestHandler):
                 run = runs.get(run_id)
                 return self._json(200, dict(run, budget=runs.budget.for_run(run_id),
                                             blocked_reason=runs.blocked_reason(run)))
+            if method == "GET" and action == "timeline":
+                from proto.fleet.timeline import run_timeline
+                try:
+                    run = runs.get(run_id)
+                except CoordinationError as exc:
+                    raise _HTTPError(404, "no_such_run") from exc
+                owner = runs.manager.get(run["agent_id"])
+                if owner is None:
+                    raise _HTTPError(404, "no_such_agent")
+                return self._json(200, run_timeline(runs, run_id, owner))
             if method == "POST" and action:
                 body = self._body()
                 if action == "cancel":
@@ -553,6 +563,16 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/state" and method == "GET":
             return self._json(200, _state_payload(agent, server))
 
+        if path == "/api/chat/history" and method == "GET":
+            try:
+                maximum = int(query.get("n", ["24"])[0])
+            except ValueError:
+                raise _HTTPError(400, "invalid_history_count") from None
+            if not 1 <= maximum <= 100:
+                raise _HTTPError(400, "invalid_history_count")
+            return self._json(200, {
+                "history": server.manager.runs.dialogue.history(agent.fleet_id, maximum)})
+
         if path == "/api/proposals" and method == "GET":
             return self._json(200, {"proposals": agent.pending_proposals()})
 
@@ -713,7 +733,13 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/activity" and method == "GET":
             return self._json(200, _activity_view(agent))
         if path == "/api/activity/live" and method == "GET":
-            return self._json(200, server.manager.runs.activity.snapshot(agent))
+            data = server.manager.runs.activity.snapshot(agent)
+            run = data.get("run")
+            if run and run.get("status") == "queued":
+                # 排队中的 run 顺带给出可行动的受阻原因（如 fleet_paused——
+                # 取消暂停即可续跑，比「等待重试」诚实得多）。
+                data["blocked"] = server.manager.runs.blocked_reason(run)
+            return self._json(200, data)
         if path == "/api/blackboard" and method == "GET":
             try:
                 notes = agent.read_blackboard()

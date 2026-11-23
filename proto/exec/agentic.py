@@ -42,8 +42,11 @@ LOOP_SYSTEM = (
     "你是 PROTO 的任务执行循环。根据任务与已有观察，决定下一个工具调用，"
     "或宣布完成。\n"
     '每次只提交一个决策 JSON：{"tool": ..., "args": {...}, '
-    '"category": "read_draft|workspace_write|visible_write"} '
+    '"category": "read_draft|workspace_write|visible_write", '
+    '"note": "这步为什么做、想得到什么（60 字内）"} '
     '或 {"done": true, "summary": "成果摘要"}。\n'
+    "note 是给主人看的执行意图，每步必填、写人话（如「跑校验脚本确认设计文档四节齐全」），"
+    "不要复述工具名和参数。\n"
     "决策输出必须精简：write_file content 至多 6000 字符；已有文件优先 edit_file，"
     "old/new 各至多 4000 字符；新大文件先写有界骨架，再分次小补丁，禁止重发整份长文件。\n"
     "规则：工作区内的探索/读写/跑代码用 workspace_write 或 read_draft；"
@@ -167,9 +170,14 @@ class AgenticLoop:
         session = self._session
         pending = session["pending_call"]
         tool = pending["tool"]
+        note = (pending.get("note") or "")[:60]
         path = ""
         if result.status != "completed":
             session["observations"].append(f"{tool} → {result.status}: {result.reason}")
+            session["trace"].append({"step": pending["step"], "tool": tool, "args": pending["args"],
+                                     "category": pending["category"], "note": note,
+                                     "result": f"{result.status}: {result.reason}"[:200],
+                                     "ok": False, "ts": time.time()})
         else:
             observation = result.step_results[-1] if result.step_results else ""
             excerpt = _clip(self._agent.tools, tool, observation)
@@ -177,7 +185,8 @@ class AgenticLoop:
             path = written_file(tool, pending["args"], observation)
             session["observations"].append(f"{tool}({call_summary}) → {excerpt}")
             row = {"step": pending["step"], "tool": tool, "args": pending["args"],
-                   "category": pending["category"], "result": excerpt,
+                   "category": pending["category"], "note": note,
+                   "result": excerpt, "ok": True, "ts": time.time(),
                    "receipt": tool_receipt(tool, pending["args"], observation)}
             if path:
                 row["written_path"] = path
@@ -637,8 +646,10 @@ class AgenticLoop:
                 continue
             last_sigs.append(signature)
             step_task_id = f"{task_id}-{step}"
+            step_note = decision.get("note") or ""
             session["pending_call"] = {"task_id": step_task_id, "step": step, "tool": tool,
-                                       "args": arguments, "category": decision.get("category", "read_draft")}
+                                       "args": arguments, "category": decision.get("category", "read_draft"),
+                                       "note": step_note[:60]}
             if ios_required and tool == "run_command":
                 proof = ios_build_start(self._agent.code_workspace, directory, arguments)
                 if proof:

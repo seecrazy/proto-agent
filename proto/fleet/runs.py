@@ -33,7 +33,12 @@ _SAFE_RESUME_REASONS = frozenset({"safe_resume_limit", "model_retry_exhausted", 
 
 def _continuation(run):
     result = run["result"] or {}
-    return result if result.get("resume_session") is True else {}
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except ValueError:
+            result = {}
+    return result if isinstance(result, dict) and result.get("resume_session") is True else {}
 
 
 def _run_event(event, run, **fields):
@@ -201,8 +206,13 @@ class RunCoordinator:
             cached = self.manager.get(row["agent_id"])
             if cached and cached.kernel.muted:
                 return "muted"
-        if row["reason"] in ("model_retry_wait", "interrupted_requeued", "safe_resume_ready"):
-            return row["reason"]
+        # 续跑中的排队 run 在舰队暂停时同样被 _pick 挡住——
+        # 只报 model_retry_wait 会掩盖「取消暂停即可续跑」这个真正的动作点。
+        if _continuation(row):
+            if info.get("paused"):
+                return "fleet_paused"
+            if row["reason"] in ("model_retry_wait", "interrupted_requeued", "safe_resume_ready"):
+                return row["reason"]
         return ""
 
     def find_link(self, agent_id, identifier):

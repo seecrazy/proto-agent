@@ -109,7 +109,10 @@ class RunActivity:
 
     def snapshot(self, agent):
         with self.database.connect() as connection:
+            # 附加 agent_id/work_id/decision/args/session_id/generation/created_at：
+            # 快照要能直接喂给 RunCoordinator.blocked_reason（判断排队 run 的真实卡点）。
             fields = """id, kind, status, reason, updated_at, cancel_requested,
+                    agent_id, work_id, decision, args, session_id, generation, created_at,
                     json_extract(result, '$.model_reason') AS model_reason,
                     coalesce(json_extract(result, '$.verified'), json_extract(result, '$.proposal.verified')) AS verified"""
             active = connection.execute(f"""

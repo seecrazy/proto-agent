@@ -34,6 +34,7 @@ def decision_tool(style):
             "tool": {"type": "string", "description": "Exact tool name from the task's tool catalog."},
             "args": {"type": "object", "description": "Named arguments from that tool's contract."},
             "category": {"type": "string", "enum": ["read_draft", "workspace_write", "visible_write"]},
+            "note": {"type": "string", "description": "One short sentence (<=60 chars): why this step advances the task."},
             "done": {"type": "boolean", "description": "True only when reporting completion without a tool."},
             "summary": {"type": "string", "description": "Evidence-based completion summary."},
         },
@@ -74,6 +75,11 @@ def validate_decision(decision):
             raise ValueError("工具决策需要非空 tool")
         if not isinstance(decision.get("args", {}), dict):
             raise ValueError("args 必须是 JSON 对象")
+    note = decision.get("note", "")
+    if not isinstance(note, str):
+        raise ValueError("note 必须是字符串")
+    if note:
+        decision["note"] = note.strip()[:60]
     return decision
 
 
