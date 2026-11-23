@@ -371,6 +371,36 @@ class CodeTools:
         executable = shutil.which(argv[0])
         if executable is None:
             return rejected("executable_not_found", f"executable_not_found:{argv[0]}", backend)
+        # SwiftPM/swiftc 默认给插件/宏进程再套一层 sandbox-exec；macOS 禁止
+        # 嵌套沙盒，宏（@State/@Model 等外部宏实现）加载必失败（2026-11-24
+        # 生产实证：sandbox_apply: Operation not permitted → StateMacro could
+        # not be loaded）。我们的外层沙盒已 enforced 写遏制+禁网，内层这层
+        # 既冗余又在嵌套下必坏——sandbox-exec 后端下自动补禁用旗标：
+        # swift build/test → --disable-sandbox；swiftc → -Xfrontend -disable-sandbox。
+        def _patch_sandbox_flag(argv):
+            if backend != "sandbox-exec":
+                return argv
+            if {"--disable-sandbox", "--sandbox"} & set(argv):
+                return argv
+            if name == "xcrun" and len(argv) > 2 and Path(argv[1]).name == "swift":
+                rest, head = argv[2:], argv[:2]
+            elif name == "swift":
+                rest, head = argv[1:], argv[:1]
+            else:
+                return argv
+            if rest[:1] and rest[0] in ("build", "test"):
+                return head + [rest[0], "--disable-sandbox"] + rest[1:]
+            return argv  # swift run/docs 等子命令保持原样
+        def _patch_swiftc_flag(argv):
+            if backend != "sandbox-exec" or "-disable-sandbox" in argv:
+                return argv
+            if name == "xcrun" and len(argv) > 2 and Path(argv[1]).name == "swiftc":
+                return argv[:2] + ["-Xfrontend", "-disable-sandbox"] + argv[2:]
+            if name == "swiftc":
+                return [argv[0], "-Xfrontend", "-disable-sandbox"] + argv[1:]
+            return argv
+        argv = _patch_sandbox_flag(argv)
+        argv = _patch_swiftc_flag(argv)
         args = {"backend": backend, "command": [name] + argv[1:]}
         with tempfile.TemporaryDirectory(prefix="proto-cmd-") as tmp:
             env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),

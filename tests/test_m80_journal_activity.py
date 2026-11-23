@@ -229,3 +229,73 @@ class TestDiagnosticLoopGuards:
         result = AgenticLoop(agent, max_steps=10).run("t")
         # 3+1(write)+3：从未连续 4 步无落盘，不应出现强制提示
         assert not any("连续 4 步没有落盘" in o for o in result["observations"])
+
+
+class TestSandboxedSwiftFlags:
+    """SwiftPM/swiftc 内层沙盒在嵌套下必坏：sandbox-exec 后端自动补禁用旗标。"""
+
+    def test_swift_build_gets_disable_sandbox(self, tmp_path, monkeypatch):
+        from proto.tools.codetools import CodeTools
+        import proto.tools.codetools as ct
+        monkeypatch.setattr(CodeTools, "execution_backend",
+                            classmethod(lambda cls: "sandbox-exec"))
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            class P: returncode = 0; stdout = b""; stderr = b""
+            return P()
+        monkeypatch.setattr(ct.subprocess, "run", fake_run)
+        monkeypatch.setattr(ct.shutil, "which", lambda n: f"/usr/bin/{n}")
+        tools = CodeTools(tmp_path)
+        result = tools.run_command(["xcrun", "swift", "build"], cwd=".")
+        assert result["command"] == ["xcrun", "swift", "build", "--disable-sandbox"]
+        assert captured["cmd"][3:5] == ["--disable-sandbox", "build"] or \
+            "--disable-sandbox" in captured["cmd"]
+
+    def test_swiftc_gets_frontend_disable_sandbox(self, tmp_path, monkeypatch):
+        from proto.tools.codetools import CodeTools
+        import proto.tools.codetools as ct
+        monkeypatch.setattr(CodeTools, "execution_backend",
+                            classmethod(lambda cls: "sandbox-exec"))
+
+        def fake_run(cmd, **kwargs):
+            class P: returncode = 0; stdout = b""; stderr = b""
+            return P()
+        monkeypatch.setattr(ct.subprocess, "run", fake_run)
+        monkeypatch.setattr(ct.shutil, "which", lambda n: f"/usr/bin/{n}")
+        tools = CodeTools(tmp_path)
+        result = tools.run_command(["xcrun", "swiftc", "-typecheck", "A.swift"], cwd=".")
+        assert result["command"][2:4] == ["-Xfrontend", "-disable-sandbox"]
+
+    def test_explicit_flag_not_doubled(self, tmp_path, monkeypatch):
+        from proto.tools.codetools import CodeTools
+        import proto.tools.codetools as ct
+        monkeypatch.setattr(CodeTools, "execution_backend",
+                            classmethod(lambda cls: "sandbox-exec"))
+
+        def fake_run(cmd, **kwargs):
+            class P: returncode = 0; stdout = b""; stderr = b""
+            return P()
+        monkeypatch.setattr(ct.subprocess, "run", fake_run)
+        monkeypatch.setattr(ct.shutil, "which", lambda n: f"/usr/bin/{n}")
+        tools = CodeTools(tmp_path)
+        r1 = tools.run_command(["swift", "build", "--disable-sandbox"], cwd=".")
+        assert r1["command"].count("--disable-sandbox") == 1
+        r2 = tools.run_command(["xcrun", "swift", "run", "Wengu"], cwd=".")
+        assert "--disable-sandbox" not in r2["command"]
+
+    def test_unisolated_backend_untouched(self, tmp_path, monkeypatch):
+        from proto.tools.codetools import CodeTools
+        import proto.tools.codetools as ct
+        monkeypatch.setattr(CodeTools, "execution_backend",
+                            classmethod(lambda cls: "subprocess"))
+
+        def fake_run(cmd, **kwargs):
+            class P: returncode = 0; stdout = b""; stderr = b""
+            return P()
+        monkeypatch.setattr(ct.subprocess, "run", fake_run)
+        monkeypatch.setattr(ct.shutil, "which", lambda n: f"/usr/bin/{n}")
+        tools = CodeTools(tmp_path)
+        result = tools.run_command(["xcrun", "swift", "build"], cwd=".")
+        assert result["command"] == ["xcrun", "swift", "build"]
