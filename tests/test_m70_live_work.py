@@ -9,7 +9,7 @@ from proto.llm.breaker import CircuitBreaker, model_failure
 from proto.llm.client import LLMClient, LLMError
 from proto.memory.extract import EXTRACT_PROMPT
 from proto.runtime.agent import ProtoAgent
-from proto.runtime.coordination import CoordinationDB
+from proto.coordination.coordination import CoordinationDB
 from proto.runtime.dialogue import Dialogue
 from proto.web.server import ProtoWebServer
 from proto.work.delivery import main_project

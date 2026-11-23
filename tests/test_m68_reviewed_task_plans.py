@@ -9,8 +9,8 @@ import pytest
 from proto.exec.context import ContextError, create_context, load_instructions, render_context
 from proto.exec.plan_evidence import EvidenceError, OutputEvidence
 from proto.llm.client import LLMClient
-from proto.runtime.coordination import CoordinationError, encode
-from proto.runtime.manager import AgentManager
+from proto.coordination.coordination import CoordinationError, encode
+from proto.fleet.manager import AgentManager
 from tests.test_m63_execution_sessions import decision, register_external
 from tests.test_m66_fleet_runs import console, members, request, waited
 

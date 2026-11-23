@@ -21,7 +21,7 @@ from proto.kernel.kernel import ActionCategory
 from proto.llm.catalog import ModelCatalog, ModelConfigError, ModelRevisionConflict
 from proto.llm.client import AnthropicCompatClient, LLMError, OpenAICompatClient
 from proto.runtime.agent import ProtoAgent
-from proto.runtime.manager import AgentManager
+from proto.fleet.manager import AgentManager
 from proto.web.server import ProtoWebServer
 
 

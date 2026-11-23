@@ -249,5 +249,5 @@ class GoalForge:
 
 def load_taste_text(agent) -> dict:
     """延迟读取审美锚点，返回维度→锚点。"""
-    from proto.runtime.taste import load_taste
+    from proto.profile.taste import load_taste
     return {k: d.get("anchor", "") for k, d in load_taste(agent.spine.store).items()}

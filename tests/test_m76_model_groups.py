@@ -16,8 +16,8 @@ from proto.llm.breaker import model_wait_reason
 from proto.llm.catalog import ModelCatalog, ModelConfigError
 from proto.llm.client import LLMError, ModelPressureWait
 from proto.run import model_command
-from proto.runtime import runs as dispatcher
-from proto.runtime.manager import AgentManager
+from proto.fleet import runs as dispatcher
+from proto.fleet.manager import AgentManager
 from proto.system.execution_log import execution_logging
 from tests.test_m64_live_models import profile, save, select
 from tests.test_m66_fleet_runs import console, request

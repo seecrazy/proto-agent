@@ -25,14 +25,11 @@ EXEC_CORE = {
     "checkpoints", "approval", "workspace", "planner", "plan_evidence",
     "proposal_writing", "work_context", "modulators", "exploration", "engineering",
 }
-UPPER_PACKAGES = ("proto.tools", "proto.runtime", "proto.web", "proto.agents",
-                  "proto.appshell", "proto.adapters")
+UPPER_PACKAGES = ("proto.tools", "proto.runtime", "proto.fleet", "proto.profile",
+                  "proto.web", "proto.agents", "proto.appshell", "proto.adapters")
 
-# 已知上行依赖（阶段 3 迁移 runcontext 后应清空 runtime 条目）
-KNOWN_UPWARD = {
-    ("exec.router", "proto.runtime.runcontext"),
-    ("exec.agentic", "proto.runtime.runcontext"),
-}
+# 已知上行依赖登记（M78 阶段 3 迁移 runcontext 后清空；新增违例必须先在此登记并说明）
+KNOWN_UPWARD = set()
 
 
 def _module_imports():
@@ -143,3 +140,42 @@ class TestPluginsBoundaries:
             if bad:
                 violations[module] = bad
         assert violations == {}, f"plugins 越界依赖: {violations}"
+
+
+class TestRuntimeSplit:
+    """M78 阶段 3：runtime 只留组合根；舰队/人设档案/协调存储各自成包，方向唯一。"""
+
+    def test_runtime_keeps_composition_root_only(self, graph):
+        expected = {"agent", "autonomy", "dialogue", "model_pressure", "quota",
+                    "study", "summaries", "timeout_policy"}
+        actual = {m.split(".")[1] for m in graph if m.startswith("runtime.")}
+        assert actual == expected, f"runtime 模块集变化: 新增={actual - expected}, 缺失={expected - actual}"
+
+    def test_runtime_does_not_depend_on_fleet(self, graph):
+        for module, deps in graph.items():
+            if module.startswith("runtime."):
+                bad = {d for d in deps if d.startswith("proto.fleet")}
+                assert not bad, f"{module} 依赖 fleet（方向应反转，由 fleet 依赖 runtime）: {bad}"
+
+    def test_goals_do_not_depend_on_runtime(self, graph):
+        for module, deps in graph.items():
+            if module.startswith("goals."):
+                bad = {d for d in deps if d.startswith("proto.runtime")}
+                assert not bad, f"{module} 依赖 runtime（人设属性应走 proto.profile）: {bad}"
+
+    def test_coordination_is_standalone(self, graph):
+        for module, deps in graph.items():
+            if module.startswith("coordination."):
+                bad = _external(module, deps)
+                assert not bad, f"{module} 协调存储应零外部 proto 依赖: {bad}"
+
+    def test_new_packages_present(self, graph):
+        for prefix, modules in (
+            ("profile.", ["identity", "personas", "taste", "self_facts", "methods"]),
+            ("fleet.", ["manager", "runs", "companies", "collab", "fleet_budget",
+                        "projects", "task_plans", "activity"]),
+            ("coordination.", ["coordination"]),
+        ):
+            for name in modules:
+                assert f"{prefix}{name}" in graph, f"proto/{prefix[:-1]}/{name}.py 应存在"
+        assert "exec.runcontext" in graph

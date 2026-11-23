@@ -72,7 +72,7 @@ class TestFleetTools:
         assert "fleet_status" in names
 
     def test_blackboard_post_and_read_roundtrip(self, tmp_path):
-        from proto.runtime.collab import Blackboard
+        from proto.fleet.collab import Blackboard
         from proto.storage.store import FileSystemStore
         from proto.tools.webtools import WebToolkit
         from proto.runtime.agent import ProtoAgent

@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 
 from proto.llm.client import LLMClient
-from proto.runtime.manager import AgentManager
-from proto.runtime.taste import DEFAULT_TASTE
+from proto.fleet.manager import AgentManager
+from proto.profile.taste import DEFAULT_TASTE
 from proto.web import server as web_server
 from proto.web.server import ProtoWebServer
 from tests.test_m66_fleet_runs import console

@@ -9,7 +9,7 @@ import pytest
 
 from proto.llm.client import LLMClient
 from proto.runtime.agent import ProtoAgent
-from proto.runtime.manager import AgentManager
+from proto.fleet.manager import AgentManager
 
 
 class Null(LLMClient):

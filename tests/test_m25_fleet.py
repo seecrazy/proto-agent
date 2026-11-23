@@ -17,7 +17,7 @@ def dead_web():
 
 @pytest.fixture()
 def mgr(tmp_path):
-    from proto.runtime.manager import AgentManager
+    from proto.fleet.manager import AgentManager
     return AgentManager(root=tmp_path, llm=Null(), webtools=dead_web())
 
 
@@ -54,7 +54,7 @@ def test_snapshot_includes_activity(mgr):
 
 
 def test_activity_status_labels(mgr):
-    from proto.runtime.manager import AgentManager
+    from proto.fleet.manager import AgentManager
     activity_of = AgentManager.activity_of
     assert activity_of([{"event_type": "web_fetch"}])["status"] == "学习中"
     assert activity_of([{"event_type": "reflection_write"}])["status"] == "反思中"

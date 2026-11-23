@@ -13,10 +13,10 @@ from proto.exec.router import Task, VARIANT_ID
 from proto.kernel import budgets
 from proto.kernel.kernel import ActionCategory
 from proto.llm.client import LLMClient, LLMError
-from proto.runtime.coordination import CoordinationError
-from proto.runtime.manager import AgentManager
-from proto.runtime.runcontext import current_run
-from proto.runtime.runs import RunLease
+from proto.coordination.coordination import CoordinationError
+from proto.fleet.manager import AgentManager
+from proto.exec.runcontext import current_run
+from proto.fleet.runs import RunLease
 from proto.web.server import ProtoWebServer
 
 

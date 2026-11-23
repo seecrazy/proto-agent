@@ -5,7 +5,7 @@ import json
 import pytest
 
 from proto.llm.client import LLMClient
-from proto.runtime.personas import PERSONA_DEFAULTS
+from proto.profile.personas import PERSONA_DEFAULTS
 
 
 class Pers(LLMClient):

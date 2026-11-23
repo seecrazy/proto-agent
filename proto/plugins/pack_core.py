@@ -5,7 +5,7 @@ from proto.plugins.base import ToolSpec
 
 
 def specs(agent):
-    from proto.runtime.self_facts import local_time
+    from proto.profile.self_facts import local_time
     from proto.textstyle import polish_style, scan_style
 
     return [

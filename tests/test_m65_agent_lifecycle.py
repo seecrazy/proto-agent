@@ -14,8 +14,8 @@ from proto.exec.router import Task
 from proto.tools.webtools import WebToolkit
 from proto.kernel.kernel import ActionCategory
 from proto.runtime.agent import ProtoAgent
-from proto.runtime.manager import AgentManager
-from proto.runtime.personas import PERSONA_DEFAULTS
+from proto.fleet.manager import AgentManager
+from proto.profile.personas import PERSONA_DEFAULTS
 from proto.runtime.timeout_policy import TimeoutDecision
 
 

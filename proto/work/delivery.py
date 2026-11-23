@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath
 
 from proto.exec.engineering import XCODE_INPUTS, command_check, read_manifest, xcode_manifest
-from proto.runtime.activity import artifact_path
+from proto.fleet.activity import artifact_path
 
 
 MAX_STALLED_SLICES = 2

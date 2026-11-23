@@ -5,7 +5,7 @@ import json
 import re
 from uuid import uuid4
 
-from proto.runtime.coordination import CoordinationError, encode
+from proto.coordination.coordination import CoordinationError, encode
 from proto.system.execution_log import record_execution
 from proto.textstyle import polish_style
 

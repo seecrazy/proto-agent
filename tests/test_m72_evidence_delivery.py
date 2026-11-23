@@ -17,8 +17,8 @@ from proto.exec.agentic import LOOP_SYSTEM
 from proto.tools.codetools import CodeTools, _darwin_build_dirs
 from proto.llm.client import AnthropicCompatClient, ModelPressureWait, OpenAICompatClient
 from proto.runtime.agent import ProtoAgent
-from proto.runtime.coordination import CoordinationDB, CoordinationError
-from proto.runtime.manager import AgentManager
+from proto.coordination.coordination import CoordinationDB, CoordinationError
+from proto.fleet.manager import AgentManager
 from proto.runtime.model_pressure import ModelPressure, retry_after
 from proto.web.server import _activity_view
 from proto.work.delivery import ios_build_result, ios_build_start, main_project, project_files, valid_ios_evidence

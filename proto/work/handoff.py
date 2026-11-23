@@ -5,7 +5,7 @@ import os
 from itertools import islice
 from pathlib import Path, PurePosixPath
 
-from proto.runtime.activity import artifact_path
+from proto.fleet.activity import artifact_path
 
 
 def lineage_handoff(agent, node, project_dir):

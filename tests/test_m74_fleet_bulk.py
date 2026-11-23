@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from proto.runtime.agent import ProtoAgent
-from proto.runtime.coordination import CoordinationError
-from proto.runtime.manager import AgentManager
+from proto.coordination.coordination import CoordinationError
+from proto.fleet.manager import AgentManager
 from proto.web.__main__ import _open_fleet
 from tests.test_m66_fleet_runs import console, request
 

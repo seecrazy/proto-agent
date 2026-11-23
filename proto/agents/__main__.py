@@ -22,7 +22,7 @@ DEFAULT_ROOT = "./proto_data"
 
 def _manager(root: str):
     from proto.llm.client import create_llm_stack
-    from proto.runtime.manager import AgentManager
+    from proto.fleet.manager import AgentManager
     stack = create_llm_stack()
     manager = AgentManager(root=Path(root), llm=stack["main"] if stack else None,
                            fast_llm=stack["fast"] if stack else None)
@@ -65,7 +65,7 @@ def main(argv=None) -> int:
     import os
     root = args.root or os.environ.get("PROTO_FLEET_ROOT", DEFAULT_ROOT)
     from proto import ui
-    from proto.runtime.manager import AgentManager
+    from proto.fleet.manager import AgentManager
     if args.cmd == "preview":
         try:
             preview = AgentManager.preview_at(Path(root), args.name, args.persona, args.priority, args.mode)

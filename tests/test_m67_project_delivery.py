@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from proto.llm.client import LLMClient
-from proto.runtime.coordination import CoordinationError, _SCHEMA
-from proto.runtime.manager import AgentManager
+from proto.coordination.coordination import CoordinationError, _SCHEMA
+from proto.fleet.manager import AgentManager
 
 from tests.test_m66_fleet_runs import console, members, request, waited
 

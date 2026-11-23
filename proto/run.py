@@ -26,7 +26,7 @@ from pathlib import Path
 from proto.config import load_default_env
 from proto.llm.client import create_llm_stack
 from proto.runtime.agent import ProtoAgent
-from proto.runtime.self_facts import self_question
+from proto.profile.self_facts import self_question
 from proto.system.execution_log import execution_logging, record_execution
 
 BANNER = """

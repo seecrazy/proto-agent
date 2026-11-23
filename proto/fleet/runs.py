@@ -12,15 +12,15 @@ from proto.exec.checkpoints import SCHEMA_VERSION
 from proto.exec.router import VARIANT_ID
 from proto.exec.sessions import SESSION_SCHEMA_VERSION, TERMINAL_STATES
 from proto.llm.breaker import TRANSIENT_MODEL_REASONS
-from proto.runtime.activity import RunActivity
-from proto.runtime.companies import CompanyDirectory
-from proto.runtime.coordination import CoordinationDB, CoordinationError, encode
+from proto.fleet.activity import RunActivity
+from proto.fleet.companies import CompanyDirectory
+from proto.coordination.coordination import CoordinationDB, CoordinationError, encode
 from proto.runtime.dialogue import Dialogue
-from proto.runtime.fleet_budget import FleetBudget
+from proto.fleet.fleet_budget import FleetBudget
 from proto.runtime.model_pressure import ModelPressure
-from proto.runtime.projects import ProjectDelivery
-from proto.runtime.runcontext import current_run
-from proto.runtime.task_plans import PLAN_EXEC_KEY, TaskPlans
+from proto.fleet.projects import ProjectDelivery
+from proto.exec.runcontext import current_run
+from proto.fleet.task_plans import PLAN_EXEC_KEY, TaskPlans
 from proto.system.execution_log import record_execution
 from proto.system.instance_lock import InstanceLock
 

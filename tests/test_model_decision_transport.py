@@ -12,9 +12,9 @@ from proto.llm.breaker import describe_model_failure
 from proto.llm.client import AnthropicCompatClient, LLMError, OpenAICompatClient
 from proto.llm.decision import DECISION_NAME, parse_decision
 from proto.llm.errors import ModelRequestStopped, ModelResponseError
-from proto.runtime import runs as dispatcher
-from proto.runtime.activity import activity_reply
-from proto.runtime.manager import AgentManager
+from proto.fleet import runs as dispatcher
+from proto.fleet.activity import activity_reply
+from proto.fleet.manager import AgentManager
 from proto.system.execution_log import execution_logging
 from tests.test_m66_fleet_runs import console, request
 from tests.test_m71_continuity import DONE, PASS, WRITE, Model, member, record_writes, start_autonomous, step

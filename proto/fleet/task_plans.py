@@ -8,7 +8,7 @@ from proto.exec.context import ContextError, create_context, render_context
 from proto.exec.plan_evidence import (EvidenceError, OutputEvidence, valid_approved_plan, valid_output_paths,
                                       valid_path, valid_sha256, valid_steps, valid_text)
 from proto.llm.client import LLMError
-from proto.runtime.coordination import CoordinationError, encode
+from proto.coordination.coordination import CoordinationError, encode
 
 
 PLAN_EXEC_KEY = "plan-exec:"

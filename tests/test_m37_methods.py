@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from proto.runtime.methods import (BUILTIN_METHODS, MethodLibrary,
+from proto.profile.methods import (BUILTIN_METHODS, MethodLibrary,
                                    detect_restriction)
 
 

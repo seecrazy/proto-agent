@@ -14,7 +14,7 @@ from proto.exec.engineering import (capability_question, command_check, inspect_
                                     verification_receipt)
 from proto.kernel.kernel import ActionCategory
 from proto.runtime.agent import ProtoAgent
-from proto.runtime.manager import AgentManager
+from proto.fleet.manager import AgentManager
 from proto.skills import read_skill
 from proto.system.execution_log import execution_logging
 from proto.work.delivery import ios_build_start, main_project, valid_ios_evidence

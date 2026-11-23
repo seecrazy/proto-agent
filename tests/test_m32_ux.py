@@ -91,7 +91,7 @@ class TestAutoApproveQuota:
 
 class TestAgentCollab:
     def test_blackboard_post_and_read(self, tmp_path):
-        from proto.runtime.collab import Blackboard
+        from proto.fleet.collab import Blackboard
         from proto.storage.store import FileSystemStore
         bb = Blackboard(FileSystemStore(tmp_path))
         bb.post("a1", "求助：谁知道 Chrome MV3 的 sidebar 权限？")
@@ -102,7 +102,7 @@ class TestAgentCollab:
 
     def test_agent_helps_agent(self, tmp_path):
         """a1 发帖求助 → a2 认领并回复 → a1 可读。"""
-        from proto.runtime.collab import Blackboard
+        from proto.fleet.collab import Blackboard
         from proto.storage.store import FileSystemStore
         from proto.runtime.agent import ProtoAgent
         bb = Blackboard(FileSystemStore(tmp_path))

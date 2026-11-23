@@ -6,7 +6,7 @@ import time
 from contextlib import contextmanager
 from uuid import uuid4
 
-from proto.runtime.coordination import CoordinationError
+from proto.coordination.coordination import CoordinationError
 
 
 MAX_POSITIONS = 40

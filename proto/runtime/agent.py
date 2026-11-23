@@ -63,15 +63,15 @@ from proto.system.execution_log import execution_reason, record_execution
 from proto.runtime.autonomy import (
     AutonomyConflict, AutonomyPolicy, autonomous_entry, autonomous_origin, load_policy, validate_mode,
 )
-from proto.runtime.coordination import CoordinationDB, CoordinationError
+from proto.coordination.coordination import CoordinationDB, CoordinationError
 from proto.runtime.dialogue import DIALOGUE_STYLE_HINT, dialogue_profile, finish_dialogue_text
 from proto.runtime.model_pressure import ModelPressure
-from proto.runtime.personas import (
+from proto.profile.personas import (
     AgentProfile, DEFAULT_PERSONA, LLM_PERSONA_PROMPT, PERSONA_DEFAULTS,
     normalize_persona, parse_recommendation,
 )
-from proto.runtime.runcontext import current_run
-from proto.runtime.self_facts import Lifetime, describe_self, self_fact_prompt, self_question
+from proto.exec.runcontext import current_run
+from proto.profile.self_facts import Lifetime, describe_self, self_fact_prompt, self_question
 from proto.work.delivery import (MAX_STALLED_SLICES, MAX_UNVERIFIED_SLICES, ProjectDirectoryError,
                                  ios_stage, main_project, project_bindings, project_files,
                                  project_path, stage_waiters, valid_ios_evidence)
@@ -259,7 +259,7 @@ class ProtoAgent:
             int(_os.environ.get("PROTO_TIMEOUT_AUTO_N", "3")),
             store=store, doc_id="timeout")
         self.owner_timeout_s = float(_os.environ.get("PROTO_OWNER_TIMEOUT_S", "1800"))
-        from proto.runtime.methods import MethodLibrary
+        from proto.profile.methods import MethodLibrary
         self.methods_lib = MethodLibrary(store)   # M37：方法策展（多元+自发明）
         self.memory = MemoryStream(store)
         self.goal_tree = GoalTree(store)
@@ -268,7 +268,7 @@ class ProtoAgent:
         self.goal_tree.on_milestone = self._on_milestone
         self.world = WorldModel(store)
         # M39 内在生活内核：OCEAN 数值人格（持久化）调制驱力速率/阈值/张力权重
-        from proto.runtime.identity import load_identity, save_identity
+        from proto.profile.identity import load_identity, save_identity
         self.identity = load_identity(store)
         if not store.get("identity", "main"):
             save_identity(store, self.identity)
@@ -833,7 +833,7 @@ class ProtoAgent:
         return SYSTEM_PROMPT + self._identity_prompt()
 
     def _identity_prompt(self) -> str:
-        from proto.runtime.taste import load_taste, taste_prompt_block
+        from proto.profile.taste import load_taste, taste_prompt_block
         internal = self.ledger.internal_rules()
         rules_block = ""
         if internal:
@@ -848,7 +848,7 @@ class ProtoAgent:
         """M39 人格有界漂移（重大经历→OCEAN 微调，双重护栏内）。"""
         changed = self.identity.apply_drift(event)
         if changed:
-            from proto.runtime.identity import save_identity
+            from proto.profile.identity import save_identity
             save_identity(self.spine.store, self.identity)
             self.spine.append("identity_drift",
                               {"event": event, "changed": changed})
@@ -1957,7 +1957,7 @@ class ProtoAgent:
         pruned = self.library.prune(min_utility=0.25, keep_per_cluster=3)
         self.interest.decay(factor=0.1)
         self.identity.pull_back(fraction=0.1)   # 向种子回拉：防长期单向社会化
-        from proto.runtime.identity import save_identity
+        from proto.profile.identity import save_identity
         save_identity(self.spine.store, self.identity)
         self.spine.append(AuditEvent.DEEP_REVIEW, {"pruned_strategies": pruned})
         self._persist_metacog()
@@ -2204,7 +2204,7 @@ class ProtoAgent:
         self.state.owner_priority = text
         self.arbiter.owner_priority = text
         self.mgr.save()
-        from proto.runtime.methods import detect_restriction
+        from proto.profile.methods import detect_restriction
         restriction = detect_restriction(text)   # 限定跟随当前优先级文本：无限定即解除
         if restriction != self.methods_lib.restriction:
             self.methods_lib.set_restriction(restriction)

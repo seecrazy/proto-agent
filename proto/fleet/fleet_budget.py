@@ -7,7 +7,7 @@ from datetime import date
 from uuid import uuid4
 
 from proto.kernel.budgets import parse_count
-from proto.runtime.coordination import CoordinationError
+from proto.coordination.coordination import CoordinationError
 
 
 @dataclass(frozen=True)

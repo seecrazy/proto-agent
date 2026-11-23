@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from proto.exec.contracts import builtin_parameters
-from proto.runtime.coordination import CoordinationError
+from proto.coordination.coordination import CoordinationError
 
 
 def _fmt_age(ts: float, now: float) -> str:

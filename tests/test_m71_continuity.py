@@ -11,9 +11,9 @@ import pytest
 
 from proto.exec.agentic import LOOP_SYSTEM, AgenticLoop
 from proto.exec.work_context import MAX_ACTOR_BYTES, MAX_HISTORY_BYTES, render_history, size
-from proto.runtime import runs as dispatcher
-from proto.runtime.coordination import CoordinationError
-from proto.runtime.manager import AgentManager
+from proto.fleet import runs as dispatcher
+from proto.coordination.coordination import CoordinationError
+from proto.fleet.manager import AgentManager
 from proto.work.journal import GoalJournal
 from tests.test_m66_fleet_runs import console, request, waited
 

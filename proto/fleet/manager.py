@@ -22,11 +22,11 @@ from typing import Dict, List, Optional
 
 from proto.runtime.agent import ProtoAgent, pools_config
 from proto.runtime.autonomy import AutonomyPolicy, load_policy, validate_mode
-from proto.runtime.coordination import CoordinationError
+from proto.coordination.coordination import CoordinationError
 from proto.storage.mongo_store import create_store
-from proto.runtime.collab import Blackboard
-from proto.runtime.personas import AgentProfile, DEFAULT_PERSONA, PERSONA_DEFAULTS, normalize_persona
-from proto.runtime.runs import RunCoordinator
+from proto.fleet.collab import Blackboard
+from proto.profile.personas import AgentProfile, DEFAULT_PERSONA, PERSONA_DEFAULTS, normalize_persona
+from proto.fleet.runs import RunCoordinator
 
 REGISTRY = "registry.json"
 

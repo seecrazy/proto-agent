@@ -81,7 +81,7 @@ def resolve_token(arg_token: str, data_dir: Path) -> str:
 
 
 def _open_fleet(data_root: Path, llm, fast_llm, models):
-    from proto.runtime.manager import AgentManager
+    from proto.fleet.manager import AgentManager
 
     legacy = (data_root / "owner.key").is_file()
     root = data_root / ".fleet" if legacy else data_root

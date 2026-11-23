@@ -18,10 +18,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from proto.runtime.activity import activity_reply
+from proto.fleet.activity import activity_reply
 from proto.runtime.agent import ProtoAgent
-from proto.runtime.coordination import CoordinationError
-from proto.runtime.self_facts import lifetime_reply, session_reply
+from proto.coordination.coordination import CoordinationError
+from proto.profile.self_facts import lifetime_reply, session_reply
 from proto.system.execution_log import record_execution
 from proto.web.discovery import DESKTOP_CHALLENGE, DESKTOP_PROOF, desktop_proof
 
@@ -629,21 +629,21 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": str(exc)})
             return self._json(200, {"root": root})
         if path == "/api/taste" and method == "GET":
-            from proto.runtime.taste import load_taste
+            from proto.profile.taste import load_taste
             return self._json(200, {"taste": load_taste(agent.spine.store)})
         if path == "/api/taste" and method == "POST":
-            from proto.runtime.taste import refine_from_feedback
+            from proto.profile.taste import refine_from_feedback
             merged = refine_from_feedback(agent,
                                           self._body().get("feedback", ""))
             if merged is None:
                 return self._json(200, {"taste":
-                                        __import__("proto.runtime.taste",
+                                        __import__("proto.profile.taste",
                                                    fromlist=["load_taste"])
                                         .load_taste(agent.spine.store),
                                         "refined": False})
             return self._json(200, {"taste": merged, "refined": True})
         if path == "/api/judge" and method == "POST":
-            from proto.runtime.taste import judge, weighted_score
+            from proto.profile.taste import judge, weighted_score
             verdicts = judge(agent, self._body().get("subject", ""))
             if verdicts is None:
                 return self._json(200, {"verdicts": [], "score": None})
@@ -913,7 +913,7 @@ class ProtoWebServer(ThreadingHTTPServer):
     def __init__(self, agent: ProtoAgent = None, host: str = "127.0.0.1",
                  port: int = 8420, token: str = None, heartbeat_s: float = 30.0,
                  keep_awake=None, manager=None, workers: int = 2):
-        from proto.runtime.manager import AgentManager
+        from proto.fleet.manager import AgentManager
         self.index_html = INDEX_PATH.read_bytes()
         if manager is None:
             assert agent is not None, "需要 agent 或 manager 之一"

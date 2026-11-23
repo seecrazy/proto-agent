@@ -19,7 +19,7 @@ from proto.exec.contracts import (ParameterError, builtin_parameters, check_sche
                                   checked_arguments, infer_parameters)
 from proto.exec.workspace import ScratchWorkspace
 from proto.kernel.kernel import ActionCategory, Kernel
-from proto.runtime.runcontext import track_checkpoint
+from proto.exec.runcontext import track_checkpoint
 
 DEFAULT_STEP_COST = {"tokens": 20.0}
 VARIANT_ID = "core@0.3.0"

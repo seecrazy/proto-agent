@@ -6,10 +6,10 @@ from uuid import uuid4
 import pytest
 
 from proto.exec.agentic import AgenticLoop, LOOP_SYSTEM
-from proto.runtime.coordination import (
+from proto.coordination.coordination import (
     _DIALOGUE_SCHEMA, _MODEL_PRESSURE_SCHEMA, _PROJECT_SCHEMA, _SCHEMA, CoordinationError,
 )
-from proto.runtime.manager import AgentManager
+from proto.fleet.manager import AgentManager
 from tests.test_m66_fleet_runs import console, request
 
 

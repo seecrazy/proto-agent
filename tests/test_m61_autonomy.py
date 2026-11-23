@@ -9,7 +9,7 @@ from proto.tools.codetools import CodeTools
 from proto.llm.client import LLMClient
 from proto.memory.stream import MemoryStream
 from proto.quality.gate import artifacts_from_trace
-from proto.runtime.methods import MethodLibrary
+from proto.profile.methods import MethodLibrary
 from tests.test_idea_forge import load_example, material_packet
 
 

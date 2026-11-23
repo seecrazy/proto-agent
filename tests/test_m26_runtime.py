@@ -50,7 +50,7 @@ class TestPageHealthGate:
 class TestConsoleE2E:
     def test_full_console_flow_over_http(self, tmp_path):
         from proto.llm.client import LLMClient
-        from proto.runtime.manager import AgentManager
+        from proto.fleet.manager import AgentManager
         from proto.web.server import ProtoWebServer
         from proto.tools.webtools import WebToolkit
 
@@ -109,7 +109,7 @@ def test_all_observability_payloads_carry_time():
     import urllib.request as _ur
     import tempfile
     from proto.llm.client import LLMClient
-    from proto.runtime.manager import AgentManager
+    from proto.fleet.manager import AgentManager
     from proto.web.server import ProtoWebServer
     from proto.tools.webtools import WebToolkit
 

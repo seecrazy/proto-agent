@@ -5,7 +5,7 @@ import json
 import pytest
 
 from proto.llm.client import LLMClient
-from proto.runtime.taste import DEFAULT_TASTE, load_taste
+from proto.profile.taste import DEFAULT_TASTE, load_taste
 
 
 class Taste(LLMClient):
@@ -81,7 +81,7 @@ class TestTasteSystem:
         a = ProtoAgent(data_dir=tmp_path, llm=llm, goal_interval_s=10 ** 9,
                        webtools=WebToolkit(fetch=lambda u, x="t":
                                            (_ for _ in ()).throw(OSError("禁网"))))
-        from proto.runtime.taste import judge, weighted_score
+        from proto.profile.taste import judge, weighted_score
         verdicts = judge(a, "一个把终端命令转成自然语言的 DSL")
         assert verdicts and verdicts[0]["score"] == 4
         score = weighted_score(verdicts)
@@ -91,7 +91,7 @@ class TestTasteSystem:
         agent.llm.scripts["审美校准"] = json.dumps({
             "fun": {"anchor": "主人觉得好笑的东西",
                     "anti_anchor": "只有我自己觉得好玩", "weight": 0.3}})
-        from proto.runtime.taste import refine_from_feedback, load_taste
+        from proto.profile.taste import refine_from_feedback, load_taste
         merged = refine_from_feedback(agent, "你觉得有趣的东西太无聊了")
         assert merged["fun"]["anchor"] == "主人觉得好笑的东西"
         assert merged["fun"]["weight"] == 0.3

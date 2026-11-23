@@ -3,7 +3,7 @@
 统一张力 / 显式 wait / 记忆驱力快照。"""
 import pytest
 
-from proto.runtime.identity import (Identity, load_identity, save_identity,
+from proto.profile.identity import (Identity, load_identity, save_identity,
                                     MAX_TOTAL_DRIFT)
 from proto.state.desires import DesireDynamics
 from proto.state.store import FileSystemStore

@@ -28,7 +28,7 @@ from proto.exec.work_context import (actor_input_budget, decision_input, size, t
 from proto.llm.breaker import TRANSIENT_MODEL_REASONS, model_wait_reason
 from proto.llm.client import ModelPressureWait
 from proto.llm.decision import parse_decision as _parse_decision
-from proto.runtime.runcontext import current_run, track_session
+from proto.exec.runcontext import current_run, track_session
 from proto.system.execution_log import record_execution
 from proto.work.delivery import ios_build_result, ios_build_start, snapshot, valid_ios_evidence
 

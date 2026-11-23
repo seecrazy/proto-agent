@@ -8,7 +8,7 @@ import time
 from uuid import uuid4
 
 from proto.llm.client import LLMError
-from proto.runtime.coordination import CoordinationError, encode
+from proto.coordination.coordination import CoordinationError, encode
 
 
 _ID = re.compile(r"[0-9a-f]{32}\Z")

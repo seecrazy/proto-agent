@@ -8,8 +8,8 @@ from proto import run
 from proto.exec.agentic import LOOP_SYSTEM, AgenticLoop
 from proto.exec.context import create_context
 from proto.runtime.agent import ProtoAgent
-from proto.runtime.manager import AgentManager
-from proto.runtime.self_facts import self_question
+from proto.fleet.manager import AgentManager
+from proto.profile.self_facts import self_question
 from tests.test_m66_fleet_runs import console
 from tests.test_web import call
 
