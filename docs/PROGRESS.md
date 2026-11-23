@@ -2,6 +2,15 @@
 
 > 当前完整方案统一阅读 [DESIGN.md](DESIGN.md)。本文件只记录里程碑、实现状态与验证证据，不作为第二份设计。
 
+## M81 — 完全自主三缺口闭合（2026-11-24，主人问责后补交）
+
+- **背景**：M80 收尾时主人问责"为什么没达到自主完成 App 的水平"。生产实证支撑问责：夜间 02:28 run 停在 needs_reconciliation/model_retry_exhausted **死等主人 5 小时零进展**（M80 声称的"可无人值守"被证伪）；交付阻塞同样只能主人 retry；D22 验收自指未机制化（入账≠兑现——直接堵死目标的问题不可推迟）。
+- **① model_retry_exhausted 自动续航**（`RunCoordinator.auto_recover`）：失败在模型侧、无未知副作用，与主人点"继续原任务"同语义；冷却 10 分钟、每 run 上限 24 次，耗尽才真正留给主人；worker 空闲分支 30s 节流调用；首次自动续接入收件箱告知。
+- **② 交付阻塞自动恢复**：`_available_work` 前扫描到期阻塞——首次 15 分钟/后续 30 分钟/上限 3 次；无 `blocked_at` 的旧状态保守不恢复；主人手动 retry 重置配额；恢复置 `auto_feedback`，下轮 work_on_goal 注入"禁止重复此前失败路径，第 1 步必须落盘不同做法的最小增量"；`auto_retries` 跨轮保留（曾发现每轮覆写丢计数→无限重试的真 bug，已修）。
+- **③ D22 最小机制·Swift 编译回执强制**：`_has_swift_sources`（磁盘 rglob 封顶 64 + 轨迹写过 .swift）→ requirements 加 build——工程事实优先于任务措辞，写 .swift 不编译不再能过验收（静态脚本自证完成被封死）；确定性门先于语义门（M67/M68 先例）。D22 登记为部分偿还（iOS Simulator 证据链与通用确定性验收仍待 D11 专项）。
+- **测试**：tests/test_m81_autonomy_closures.py 12 项（含真实 swiftc typecheck 正路径）；m71 连续性家族交付物 Product.swift→Report.md（它们测断点续作，新契约下写 .swift 不编译本就不该过）；全量 **1344 passed + 4 skipped**（m76 一项 D23 抖动单跑稳定）。
+- **部署**：提交 ba7496b；生产重启后生效（run 266 是部署前旧代码挡的、状态无 blocked_at 被新代码保守跳过——主人 retry 一次后新结构生效）。
+
 ## M80 — 监督实战：iPhone 专家自主开发 App 首轮（2026-11-24，进行中）
 
 - **背景**：主人指令——启动 proto-agent，监督 iPhone 专家开发完整 App，期间发现任何问题及时修正，最终目标是完全自主开发完整 App。本条目随监督进程持续更新。
