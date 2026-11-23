@@ -22,7 +22,16 @@ _SUMMARY_PROMPT = (
 )
 
 _MAX_ROUNDS_IN_HEAD = 2
-_PLACEHOLDER_MARKS = ("待填", "（见 observations", "（见 observations 尾部）")
+_PLACEHOLDER_MARKS = ("待填", "（见 observations")
+# 提示词模板自身的指示范式——LLM 把模板原样回显等于没总结（生产实证：
+# 2026-11-19 日志整块"发现：（本轮摸清的关键事实）…"就是这么来的）。
+_TEMPLATE_ECHO_MARKS = ("本轮摸清的关键事实", "写出/修改的文件", "下一轮第 1 步")
+
+
+def _is_template_echo(value: str) -> bool:
+    v = str(value or "").strip()
+    return (v.startswith("（") and v.endswith("）")
+            and any(mark in v for mark in _TEMPLATE_ECHO_MARKS))
 
 
 def _cut_sentence(text: str, limit: int) -> str:
@@ -36,7 +45,7 @@ def _cut_sentence(text: str, limit: int) -> str:
 
 
 def _is_placeholder(line: str) -> bool:
-    return any(mark in line for mark in _PLACEHOLDER_MARKS)
+    return any(mark in line for mark in _PLACEHOLDER_MARKS) or _is_template_echo(line)
 
 
 def _mechanical_findings(trace: List[dict]) -> List[str]:
@@ -97,7 +106,14 @@ class GoalJournal:
         return count
 
     def note_model_block(self, trace: List[dict]) -> None:
-        self.note_round("model_blocked", ["调用模型受阻；不是实现或验收失败"], self._written_files(trace)[:5],
+        files = self._written_files(trace)[:5]
+        if not files:
+            blocks = self._round_blocks()
+            if blocks and blocks[-1].splitlines()[0].endswith("· model_blocked"):
+                # 连续受阻状态未变不再追加——历史上每拍心跳都记一条，
+                # 单目标刷出 1800+ 条同文块（2026-11 生产实证）。
+                return
+        self.note_round("model_blocked", ["调用模型受阻；不是实现或验收失败"], files,
                         ["模型恢复后从已有文件继续，不重复生成"])
 
     def latest_round(self) -> Optional[dict]:

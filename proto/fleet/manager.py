@@ -387,7 +387,11 @@ class AgentManager:
             if event_type in latest["event_type"]:
                 status = label
                 break
-        return {"status": status, "detail": str(latest.get("payload", ""))[:80],
+        payload = latest.get("payload", "")
+        if isinstance(payload, dict):
+            # dict 直接 str() 会显示 "{}"（M61 修过 force_act 同类，此处漏网）
+            payload = "，".join(f"{k}={v}" for k, v in payload.items()) or "（无细节）"
+        return {"status": status, "detail": str(payload)[:80],
                 "at": latest.get("ts")}
 
     def ops_lock(self, agent_id: str):

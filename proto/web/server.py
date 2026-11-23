@@ -738,7 +738,13 @@ class _Handler(BaseHTTPRequestHandler):
             if run and run.get("status") == "queued":
                 # 排队中的 run 顺带给出可行动的受阻原因（如 fleet_paused——
                 # 取消暂停即可续跑，比「等待重试」诚实得多）。
-                data["blocked"] = server.manager.runs.blocked_reason(run)
+                # blocked_reason 会读 result 判续跑形态，而快照投影没有该列，
+                # 必须取完整记录——曾直接喂投影导致未暂停的续跑排队 500。
+                try:
+                    data["blocked"] = server.manager.runs.blocked_reason(
+                        server.manager.runs.get(run["id"]))
+                except CoordinationError:
+                    data["blocked"] = ""
             return self._json(200, data)
         if path == "/api/blackboard" and method == "GET":
             try:

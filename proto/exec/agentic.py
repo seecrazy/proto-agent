@@ -205,14 +205,32 @@ class AgenticLoop:
                 if evidence:
                     session["delivery"]["ios_build"] = evidence
                     session["observations"].append(f"已核对模拟器应用包：{evidence['bundle']}")
-            # 只读探索步计数（M45）：连续多个只读步后强制转向产出
-            session["explore_run"] = session["explore_run"] + 1 if tool in self._agent.tools.read_only_tools() else 0
+            # 无落盘步计数（M45 探索配额，2026-11-23 修正计数键）：原实现只数
+            # 只读工具，run_command 跑诊断脚本会把计数清零——生产实证出现过
+            # 「跑校验→读文件→跑校验」交替 24 步零写入烧完整个工作片。
+            session["explore_run"] = session["explore_run"] + 1 if not path else 0
             if session["explore_run"] >= 4:
                 session["observations"].append(
-                    "提示：已连续 4 步探索。若这是只读分析，给出结论和可回查位置即可结束；"
-                    "交付任务禁止再调用 list_dir/read_file/grep/search_symbols/explore_code——"
-                    "下一步必须用 write_file/edit_file 或验证命令推进。")
+                    "提示：已连续 4 步没有落盘修改。若这是只读分析，给出结论和可回查位置即可结束；"
+                    "交付任务禁止继续 list_dir/read_file/grep/重复跑诊断命令——"
+                    "下一步必须用 write_file/edit_file 修改文件，或跑能推进验收的验证命令。")
                 session["explore_run"] = 0
+            # 同一验证反复同样失败 → 强制换法（2026-11-23 生产实证：同一 FAIL
+            # 看了 8 遍仍在原样重跑）。只在第 3 次提醒一次，不反复刷屏。
+            if tool in ("run_command", "run_python") and isinstance(observation, dict) \
+                    and type(observation.get("exit")) is int and observation["exit"] != 0:
+                text = " ".join(str(observation.get(key, ""))
+                                for key in ("stdout", "stderr", "reason") if key in observation)
+                key = " ".join(text.split())[:120]
+                repeats = session.get("fail_repeat") or {}
+                repeats = {"key": key, "count": repeats["count"] + 1} if repeats.get("key") == key \
+                    else {"key": key, "count": 1}
+                session["fail_repeat"] = repeats
+                if repeats["count"] == 3:
+                    session["observations"].append(
+                        "提示：同一验证命令已 3 次以相同方式失败（"
+                        + key[:80] + "…）。重复同样的诊断不会改变结果——"
+                        "下一步必须修改相关文件（edit_file/write_file）或根本性更换方法。")
         session["events"].append({"kind": "tool_result", "task_id": pending["task_id"],
                                   "status": result.status,
                                   "results": json.loads(json.dumps(result.step_results, ensure_ascii=False, default=str)),

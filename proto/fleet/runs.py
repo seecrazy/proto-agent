@@ -32,7 +32,14 @@ _SAFE_RESUME_REASONS = frozenset({"safe_resume_limit", "model_retry_exhausted", 
 
 
 def _continuation(run):
-    result = run["result"] or {}
+    # sqlite3.Row 缺列抛 IndexError、dict 抛 KeyError——两者都按"无 result"处理，
+    # 不让投影形状的行（如活动快照）把调用方炸成 500。
+    try:
+        result = run["result"]
+    except (KeyError, IndexError):
+        result = None
+    if not result:
+        return {}
     if isinstance(result, str):
         try:
             result = json.loads(result)

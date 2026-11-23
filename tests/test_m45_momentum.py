@@ -114,7 +114,7 @@ class TestLoopMomentum:
         forced = [o for o in result["observations"] if "必须" in o and "write_file" in o]
         assert forced, "连续探索未触发强制产出提示"
         later_prompts = [p[1] for p in agent.llm.prompts[1:]]
-        assert any("禁止再" in p for p in later_prompts)
+        assert any("禁止继续" in p or "禁止再" in p for p in later_prompts)
 
     def test_write_tool_resets_explore_counter(self, agent):
         agent.llm.decisions = [
@@ -129,7 +129,7 @@ class TestLoopMomentum:
             "发现：ok\n产出：a.py\n下一步：done",         # summarize
         ]
         result = AgenticLoop(agent, max_steps=8).run("t")
-        assert not [o for o in result["observations"] if "禁止再" in o]
+        assert not [o for o in result["observations"] if "禁止继续" in o or "禁止再" in o]
 
     def test_journal_records_round_on_finish(self, agent, tmp_path):
         j = GoalJournal(tmp_path / "J.md")
