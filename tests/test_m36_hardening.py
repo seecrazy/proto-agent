@@ -18,7 +18,7 @@ import urllib.request
 
 import pytest
 
-from proto.exec.codetools import CodeTools, MAX_EDIT
+from proto.tools.codetools import CodeTools, MAX_EDIT
 from proto.exec.router import Router, Task, ToolRegistry
 from proto.exec.workspace import ScratchWorkspace
 from proto.kernel.audit import AuditSpine
@@ -35,7 +35,7 @@ class Null(LLMClient):
 
 
 def dead_web():
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
     return WebToolkit(fetch=lambda u, a="t": (_ for _ in ()).throw(OSError("禁网")))
 
 

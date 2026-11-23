@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """阶段 7：变体验证沙盒（设计 §9.1 代码轨）。
 
-可插拔后端（与 proto.exec.codetools 同一词汇表，默认失败关闭）：
+可插拔后端（与 proto.tools.codetools 同一词汇表，默认失败关闭）：
   auto（默认）——Linux + runsc → runsc；macOS + sandbox-exec → sandbox-exec；
       都没有则 none（拒绝执行）；
   runsc（gVisor）——生产形态（Linux + 安装 runsc）；

@@ -2,7 +2,7 @@
 """M16a: 编码工具族（工作区文件/检索/Python 沙盒执行）+ workspace_write 分级。"""
 import pytest
 
-from proto.exec.codetools import CodeTools
+from proto.tools.codetools import CodeTools
 from proto.kernel.kernel import ActionCategory, Kernel
 from proto.kernel.anchor import OwnerAnchor
 from proto.kernel.audit import AuditSpine

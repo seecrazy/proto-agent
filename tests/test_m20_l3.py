@@ -25,7 +25,7 @@ class L3LLM(LLMClient):
 
 
 def dead_web(fetch_map=None):
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
     def fetch(url, accept="text/html"):
         if fetch_map:
             for frag, body in fetch_map.items():

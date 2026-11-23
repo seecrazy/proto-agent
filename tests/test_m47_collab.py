@@ -26,7 +26,7 @@ class LoopLLM:
 
 @pytest.fixture()
 def agent(tmp_path):
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
     from proto.runtime.agent import ProtoAgent
     dead = WebToolkit(fetch=lambda u, a="t": (_ for _ in ()).throw(OSError("禁网")))
     return ProtoAgent(data_dir=tmp_path, llm=LoopLLM([]), goal_interval_s=10**9,
@@ -74,7 +74,7 @@ class TestFleetTools:
     def test_blackboard_post_and_read_roundtrip(self, tmp_path):
         from proto.runtime.collab import Blackboard
         from proto.storage.store import FileSystemStore
-        from proto.exec.webtools import WebToolkit
+        from proto.tools.webtools import WebToolkit
         from proto.runtime.agent import ProtoAgent
         dead = WebToolkit(fetch=lambda u, a="t": (_ for _ in ()).throw(OSError("禁网")))
         bb = Blackboard(FileSystemStore(tmp_path / "fleet"))
@@ -88,7 +88,7 @@ class TestFleetTools:
         assert "温故" in listed or "暂无" in listed
 
     def test_fleet_status_reports_peers(self, tmp_path):
-        from proto.exec.webtools import WebToolkit
+        from proto.tools.webtools import WebToolkit
         from proto.runtime.agent import ProtoAgent
         dead = WebToolkit(fetch=lambda u, a="t": (_ for _ in ()).throw(OSError("禁网")))
         a = ProtoAgent(data_dir=tmp_path / "ag1", llm=None,

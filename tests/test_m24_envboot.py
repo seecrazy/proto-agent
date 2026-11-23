@@ -28,7 +28,7 @@ def test_boot_agent_uses_real_webtools(tmp_path, monkeypatch):
 
 
 def test_offline_reply_names_env_path(tmp_path):
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
     from proto.runtime.agent import ProtoAgent
     agent = ProtoAgent(data_dir=tmp_path, goal_interval_s=10**9,
                        webtools=WebToolkit(fetch=lambda u, a="t":

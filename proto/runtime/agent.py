@@ -27,7 +27,7 @@ from proto.exec.agentic import AgenticLoop
 from proto.exec.contracts import builtin_parameters
 from proto.exec.sessions import ExecutionSessions
 from proto.exec.checkpoints import CheckpointStore
-from proto.exec.codetools import CodeTools
+from proto.tools.codetools import CodeTools
 from proto.exec.engineering import capability_question, capability_reply, engineering_topic
 from proto.exec.injector import StateInjector
 from proto.exec.planner import LLMPlanner
@@ -184,7 +184,7 @@ class ProtoAgent:
         self._suggestion = store.get("config", "autonomy_suggestion") or {}
         self.webtools = webtools
         if self.webtools is None:
-            from proto.exec.webtools import WebToolkit
+            from proto.tools.webtools import WebToolkit
             self.webtools = WebToolkit()
         self.webtools.on_fetch = self._audit_fetch
 
@@ -302,9 +302,9 @@ class ProtoAgent:
         # M61：执行链内也能做领域学习。外部内容仍是 READ_DRAFT + 白名单，
         # 并在提示词中声明为素材非指令。
         self.webtools.register_readonly(self.tools)
-        from proto.exec.fleettools import FleetTools
+        from proto.tools.fleettools import FleetTools
         FleetTools(self).register_all(self.tools)
-        from proto.exec.bridge import CodingBridge
+        from proto.tools.bridge import CodingBridge
         self.bridge = CodingBridge.autodetect(os.environ.get("PROTO_BRIDGE_CLI", ""))
         if self.bridge and self.bridge.available:
             self.tools.register(
@@ -2346,7 +2346,7 @@ class ProtoAgent:
     def _build_projects_workspace(self):
         """项目根决策（单一来源）：控制台配置 > PROTO_PROJECTS_ROOT > 默认。"""
         import os as _os
-        from proto.exec.codetools import CodeTools
+        from proto.tools.codetools import CodeTools
         doc = self.spine.store.get("config", "projects_root")
         protected = [self.data_dir / "owner.key", self.data_dir / "proto.env",
                      self.data_dir / "data", self.data_dir / ".fleet",

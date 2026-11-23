@@ -29,7 +29,7 @@ class MemLLM(LLMClient):
 
 @pytest.fixture()
 def dead_web():
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
     return WebToolkit(fetch=lambda u, accept="text/html":
                       (_ for _ in ()).throw(OSError("禁网")))
 

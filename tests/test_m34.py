@@ -21,7 +21,7 @@ class Taste(LLMClient):
 
 
 def dead_web():
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
     return WebToolkit(fetch=lambda u, a="t": (_ for _ in ()).throw(OSError("禁网")))
 
 
@@ -77,7 +77,7 @@ class TestTasteSystem:
             "useful": {"score": 3, "reason": "场景较窄"},
             "beautiful": {"score": 4, "reason": "克制"},
             "elegant": {"score": 5, "reason": "一机制解多问题"}})})
-        from proto.exec.webtools import WebToolkit
+        from proto.tools.webtools import WebToolkit
         a = ProtoAgent(data_dir=tmp_path, llm=llm, goal_interval_s=10 ** 9,
                        webtools=WebToolkit(fetch=lambda u, x="t":
                                            (_ for _ in ()).throw(OSError("禁网"))))
@@ -100,7 +100,7 @@ class TestTasteSystem:
 
     def test_taste_prompt_injected_into_chat(self, tmp_path):
         """对话时 agent 的审美宣言进入系统提示。"""
-        from proto.exec.webtools import WebToolkit
+        from proto.tools.webtools import WebToolkit
         llm = Taste()
         from proto.runtime.agent import ProtoAgent
         a = ProtoAgent(data_dir=tmp_path, llm=llm, goal_interval_s=10 ** 9,

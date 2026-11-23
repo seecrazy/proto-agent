@@ -17,7 +17,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterable, List
 
-from proto.exec.code_index import CodeIndex
+from proto.tools.code_index import CodeIndex
 from proto.exec.contracts import builtin_parameters
 from proto.exec.engineering import ISOLATED, inspect_build
 from proto.exec.exploration import explore_code

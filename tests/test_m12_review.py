@@ -22,7 +22,7 @@ class ChatLLM(LLMClient):
 
 @pytest.fixture()
 def agent(tmp_path):
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
     return ProtoAgent(data_dir=tmp_path, llm=ChatLLM(), goal_interval_s=0,
                       webtools=WebToolkit(fetch=lambda u, accept="text/html":
                                           (_ for _ in ()).throw(OSError("禁网"))))
@@ -135,7 +135,7 @@ class TestHumanLikeness:
         assert agent.pop_inbox() == []              # 取走即清
 
     def test_deny_produces_in_character_reply(self, agent):
-        from proto.exec.webtools import WebToolkit
+        from proto.tools.webtools import WebToolkit
         agent2 = ProtoAgent(data_dir=agent.data_dir / "x", llm=ChatLLM(),
                             goal_interval_s=0,
                             webtools=WebToolkit(fetch=lambda u, accept="text/html":

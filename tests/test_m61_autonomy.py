@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from proto.exec.codetools import CodeTools
+from proto.tools.codetools import CodeTools
 from proto.llm.client import LLMClient
 from proto.memory.stream import MemoryStream
 from proto.quality.gate import artifacts_from_trace
@@ -62,7 +62,7 @@ class ExpertLLM(LLMClient):
 
 
 def dead_web():
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
     return WebToolkit(fetch=lambda u, a="t": (_ for _ in ()).throw(OSError("禁网")))
 
 

@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from proto.exec.webtools import WebToolkit
+from proto.tools.webtools import WebToolkit
 
 
 @pytest.fixture()

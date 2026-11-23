@@ -76,7 +76,7 @@ class TestNonInteractiveSetup:
         assert result["token"] == "deploy-token"
         # 人设与优先级已写入 agent
         from proto.runtime.agent import ProtoAgent
-        from proto.exec.webtools import WebToolkit
+        from proto.tools.webtools import WebToolkit
         agent = ProtoAgent(data_dir=tmp_path, goal_interval_s=10**9,
                            webtools=WebToolkit(fetch=lambda u, a="t":
                                                (_ for _ in ()).throw(OSError("禁网"))))

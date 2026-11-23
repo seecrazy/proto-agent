@@ -338,7 +338,7 @@ def run_setup(data_dir: Path, provider=None, base_url=None, api_key=None,
         except Exception:
             llm_ok = False
     if persona or priority:
-        from proto.exec.webtools import WebToolkit
+        from proto.tools.webtools import WebToolkit
         from proto.runtime.agent import ProtoAgent
 
         def dead_fetch(url, accept="text/html"):
@@ -482,7 +482,7 @@ def _boot_agent(data_dir):
     """部署后即达：构建带真实 LLM 与真实 Web 感官的 Agent。"""
     from pathlib import Path as _P
     from proto.config import load_default_env
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
     from proto.llm.client import create_llm_stack
     from proto.runtime.agent import ProtoAgent
     load_default_env(data_dir=data_dir)          # 绑定数据目录（与 CWD 无关）

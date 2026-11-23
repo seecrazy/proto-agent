@@ -52,7 +52,7 @@ class TestConsoleE2E:
         from proto.llm.client import LLMClient
         from proto.runtime.manager import AgentManager
         from proto.web.server import ProtoWebServer
-        from proto.exec.webtools import WebToolkit
+        from proto.tools.webtools import WebToolkit
 
         class Null(LLMClient):
             def complete(self, s, u):
@@ -111,7 +111,7 @@ def test_all_observability_payloads_carry_time():
     from proto.llm.client import LLMClient
     from proto.runtime.manager import AgentManager
     from proto.web.server import ProtoWebServer
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
 
     class Null(LLMClient):
         def complete(self, s, u): return "[]" if "归因" in s else "好的。"

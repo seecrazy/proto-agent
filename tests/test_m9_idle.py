@@ -26,7 +26,7 @@ class ScriptedLLM(LLMClient):
 
 @pytest.fixture()
 def agent(tmp_path):
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
 
     def dead_fetch(url, accept="text/html"):
         raise OSError("测试环境禁网")
@@ -55,7 +55,7 @@ class TestIdleLife:
         assert "提案" in message and agent.pending_proposals()
 
     def test_offline_idle_draft_uses_template(self, tmp_path):
-        from proto.exec.webtools import WebToolkit
+        from proto.tools.webtools import WebToolkit
         agent = ProtoAgent(data_dir=tmp_path, goal_interval_s=0,
                            webtools=WebToolkit(fetch=lambda u, accept="text/html":
                                                (_ for _ in ()).throw(OSError("禁网"))))

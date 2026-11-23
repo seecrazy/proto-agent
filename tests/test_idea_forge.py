@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from proto.exec.webtools import WebToolkit
+from proto.tools.webtools import WebToolkit
 from proto.goals.idea_contract import DEFAULT_DISTANCE, candidate, distance, diverse_set, materials
 from proto.goals.ideas import CRITIQUE, GENERATE, REGENERATE, REPAIR
 from proto.runtime.agent import ProtoAgent

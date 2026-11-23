@@ -24,7 +24,7 @@ class LoopLLM(LLMClient):
 
 @pytest.fixture()
 def agent(tmp_path):
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
     from proto.runtime.agent import ProtoAgent
     dead = WebToolkit(fetch=lambda u, a="t": (_ for _ in ()).throw(OSError("禁网")))
     return ProtoAgent(data_dir=tmp_path, llm=LoopLLM([]), goal_interval_s=10**9,
@@ -82,7 +82,7 @@ class TestAgenticLoop:
         assert result["status"] == "max_steps"
 
     def test_offline_returns_no_llm(self, tmp_path, agent):
-        from proto.exec.webtools import WebToolkit
+        from proto.tools.webtools import WebToolkit
         from proto.runtime.agent import ProtoAgent
         plain = ProtoAgent(data_dir=tmp_path / "x", goal_interval_s=10**9,
                            webtools=WebToolkit(fetch=lambda u, a="t":
@@ -105,7 +105,7 @@ class TestAgentTaskUsesLoop:
 
 class TestCodingBridge:
     def test_detects_and_invokes_external_cli(self, tmp_path, agent):
-        from proto.exec.bridge import CodingBridge
+        from proto.tools.bridge import CodingBridge
         fake = tmp_path / "fakeclaude"
         fake.write_text('#!/bin/sh\necho "CLAUDE_SAYS_OK"\n')
         fake.chmod(fake.stat().st_mode | stat.S_IEXEC)

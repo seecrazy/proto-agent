@@ -9,7 +9,7 @@ from proto.runtime.agent import ProtoAgent
 
 
 def dead_web():
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
     return WebToolkit(fetch=lambda u, a="t": (_ for _ in ()).throw(OSError("禁网")))
 
 

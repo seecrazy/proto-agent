@@ -28,7 +28,7 @@ class LoopLLM:
 
 @pytest.fixture()
 def agent(tmp_path):
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
     from proto.runtime.agent import ProtoAgent
     dead = WebToolkit(fetch=lambda u, a="t": (_ for _ in ()).throw(OSError("禁网")))
     return ProtoAgent(data_dir=tmp_path, llm=LoopLLM([]), goal_interval_s=10**9,

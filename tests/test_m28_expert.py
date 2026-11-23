@@ -26,7 +26,7 @@ class Expert(LLMClient):
 
 
 def dead_web():
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
     return WebToolkit(fetch=lambda u, a="t": (_ for _ in ()).throw(OSError("禁网")))
 
 
@@ -78,7 +78,7 @@ class TestMorningBrief:
         assert len(briefs2) == len(briefs)
 
     def test_brief_uses_real_trending_when_online(self, tmp_path):
-        from proto.exec.webtools import WebToolkit
+        from proto.tools.webtools import WebToolkit
         from proto.runtime.agent import ProtoAgent
         web = WebToolkit(allowlist=("api.github.com", "raw.githubusercontent.com"),
                          fetch=lambda url, accept="text/html": (

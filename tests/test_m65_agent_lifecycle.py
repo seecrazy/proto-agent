@@ -11,7 +11,7 @@ import pytest
 from proto.exec.agentic import AgenticLoop
 from proto.exec.approval import ActionProposal
 from proto.exec.router import Task
-from proto.exec.webtools import WebToolkit
+from proto.tools.webtools import WebToolkit
 from proto.kernel.kernel import ActionCategory
 from proto.runtime.agent import ProtoAgent
 from proto.runtime.manager import AgentManager

@@ -101,7 +101,7 @@ class TestProviderPresets:
 
 class TestAgentFastModelRouting:
     def test_extraction_uses_fast_client(self, tmp_path):
-        from proto.exec.webtools import WebToolkit
+        from proto.tools.webtools import WebToolkit
         from proto.llm.client import LLMClient
         from proto.runtime.agent import ProtoAgent
 

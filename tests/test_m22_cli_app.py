@@ -13,7 +13,7 @@ class Null:
 @pytest.fixture()
 def fleet_root(tmp_path):
     from proto.runtime.manager import AgentManager
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
     mgr = AgentManager(root=tmp_path / "fleet", llm=Null(),
                        webtools=WebToolkit(fetch=lambda u, a="t":
                                            (_ for _ in ()).throw(OSError("禁网"))))

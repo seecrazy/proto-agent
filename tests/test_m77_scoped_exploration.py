@@ -4,14 +4,14 @@ import os
 import pytest
 
 from proto.exec.agentic import LOOP_SYSTEM, AgenticLoop
-from proto.exec.code_index import CodeIndex
-from proto.exec.codetools import CodeTools
+from proto.tools.code_index import CodeIndex
+from proto.tools.codetools import CodeTools
 from proto.exec.exploration import SYSTEM as EXPLORER_SYSTEM, explore_code, investigate
 from proto.exec.contracts import builtin_parameters, checked_arguments
 from proto.exec.work_context import decision_input, size
 from proto.llm.errors import ModelResponseError
 from proto.runtime.agent import ProtoAgent
-from proto.exec.webtools import WebToolkit
+from proto.tools.webtools import WebToolkit
 
 
 class ScriptModel:
@@ -96,7 +96,7 @@ def test_symbol_search_locates_nonfirst_file_and_line_window(tmp_path):
 
 
 def test_symbol_pages_are_cursor_contiguous(tmp_path, monkeypatch):
-    monkeypatch.setattr("proto.exec.code_index.PAGE_FILES", 2)
+    monkeypatch.setattr("proto.tools.code_index.PAGE_FILES", 2)
     root = tmp_path / "workspace"
     root.mkdir()
     for name in ("a.py", "b.py", "c.py"):
@@ -111,7 +111,7 @@ def test_symbol_pages_are_cursor_contiguous(tmp_path, monkeypatch):
 
 
 def test_symbol_cache_is_bounded_and_invalidates_on_change(tmp_path, monkeypatch):
-    monkeypatch.setattr("proto.exec.code_index.FILE_BYTES", 64)
+    monkeypatch.setattr("proto.tools.code_index.FILE_BYTES", 64)
     root = tmp_path / "workspace"
     root.mkdir()
     target = root / "service.py"
@@ -130,7 +130,7 @@ def test_symbol_cache_is_bounded_and_invalidates_on_change(tmp_path, monkeypatch
 
 
 def test_index_skips_or_degrades_unsafe_and_unparsable_sources(tmp_path, monkeypatch):
-    monkeypatch.setattr("proto.exec.code_index.FILE_BYTES", 40)
+    monkeypatch.setattr("proto.tools.code_index.FILE_BYTES", 40)
     root = tmp_path / "workspace"
     root.mkdir()
     (root / "node_modules").mkdir()

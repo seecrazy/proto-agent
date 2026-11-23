@@ -6,9 +6,9 @@ import pytest
 
 from proto.exec.agentic import AgenticLoop
 from proto.exec.approval import ActionProposal
-from proto.exec.codetools import CodeTools
+from proto.tools.codetools import CodeTools
 from proto.exec.router import Task
-from proto.exec.webtools import WebToolkit
+from proto.tools.webtools import WebToolkit
 from proto.goals.system import GoalTree
 from proto.kernel.budgets import BudgetPools, parse_amount
 from proto.kernel.kernel import ActionCategory

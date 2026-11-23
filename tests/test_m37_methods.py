@@ -113,7 +113,7 @@ class TestAccounting:
 
 class TestWorkOnGoalIntegration:
     def test_prompt_carries_method_menu_and_invention_audited(self, tmp_path):
-        from proto.exec.webtools import WebToolkit
+        from proto.tools.webtools import WebToolkit
         from proto.llm.client import LLMClient
         from proto.runtime.agent import ProtoAgent
 
@@ -162,7 +162,7 @@ class TestWorkOnGoalIntegration:
         assert result.get("status") in ("completed", "verified")
 
     def test_owner_restriction_flows_from_priority(self, tmp_path):
-        from proto.exec.webtools import WebToolkit
+        from proto.tools.webtools import WebToolkit
         from proto.llm.client import LLMClient
         from proto.runtime.agent import ProtoAgent
 

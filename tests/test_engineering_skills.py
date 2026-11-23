@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from proto.exec.agentic import LOOP_SYSTEM, AgenticLoop
-from proto.exec.codetools import CodeTools
+from proto.tools.codetools import CodeTools
 from proto.exec.engineering import (capability_question, command_check, inspect_build, requested_checks,
                                     verification_receipt)
 from proto.kernel.kernel import ActionCategory
@@ -83,7 +83,7 @@ def test_probe_finds_project_entries_and_same_runner_without_executing_scripts(t
     def no_process(*args, **kwargs):
         pytest.fail("inspect_build must not start any process")
 
-    monkeypatch.setattr("proto.exec.codetools.subprocess.run", no_process)
+    monkeypatch.setattr("proto.tools.codetools.subprocess.run", no_process)
     tools = CodeTools(tmp_path / "work")
     for path in ("app/App.xcodeproj/project.pbxproj", "app/Package.swift", "app/pyproject.toml", "app/Cargo.toml"):
         tools.write_file(path, "fixture")

@@ -14,7 +14,7 @@ from urllib.error import HTTPError
 import pytest
 
 from proto.exec.agentic import LOOP_SYSTEM
-from proto.exec.codetools import CodeTools, _darwin_build_dirs
+from proto.tools.codetools import CodeTools, _darwin_build_dirs
 from proto.llm.client import AnthropicCompatClient, ModelPressureWait, OpenAICompatClient
 from proto.runtime.agent import ProtoAgent
 from proto.runtime.coordination import CoordinationDB, CoordinationError

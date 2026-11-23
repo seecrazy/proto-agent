@@ -24,7 +24,7 @@ class LoopLLM(LLMClient):
 
 
 def dead_web():
-    from proto.exec.webtools import WebToolkit
+    from proto.tools.webtools import WebToolkit
     return WebToolkit(fetch=lambda u, a="t": (_ for _ in ()).throw(OSError("禁网")))
 
 
@@ -50,7 +50,7 @@ class TestLoopStateInjection:
         assert "外部" in LOOP_SYSTEM and "非指令" in LOOP_SYSTEM
 
     def test_delegate_output_prefixed_as_external(self, tmp_path):
-        from proto.exec.bridge import CodingBridge
+        from proto.tools.bridge import CodingBridge
 
         class FakeAgent:
             bridge = CodingBridge(cli_path="/bin/echo", cli_name="claude")

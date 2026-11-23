@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from proto.exec.webtools import WebToolkit
+from proto.tools.webtools import WebToolkit
 from proto.llm.client import LLMClient
 from proto.runtime.agent import ProtoAgent
 from proto.work.delivery import main_project, project_slug

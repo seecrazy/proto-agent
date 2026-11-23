@@ -13,7 +13,7 @@ from proto.exec.agentic import AgenticLoop, PLAN_PROMPT
 from proto.exec.context import ContextError, create_context, render_context
 from proto.exec.contracts import ParameterError, builtin_parameters, object_schema
 from proto.exec.router import Task, ToolRegistry
-from proto.exec.webtools import WebToolkit
+from proto.tools.webtools import WebToolkit
 from proto.kernel.kernel import ActionCategory
 from proto.runtime.agent import ProtoAgent
 
