@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
-      - run: bash -n scripts/deploy.sh   # 语法防线（macOS bash 3.2 兼容约定）
+      - run: bash -n scripts/deploy.sh scripts/start-console.sh   # 语法防线（macOS bash 3.2 兼容约定）
       - run: python -m pytest -q
 
   extras:

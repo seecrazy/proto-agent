@@ -656,7 +656,7 @@ CodingBridge 自动探测 `claude/codex/zcode`，可用 `PROTO_BRIDGE_CLI` 指�
 ### Electron 桌面控制台
 
 - **目标与非目标**：给 macOS/Linux 增加可选的桌面入口。Electron 和浏览器显示同一服务返回的页面，共用 Agent、公司、模型目录、额度、运行及断点。不替换原生 Mac 壳，不新增调度或业务 API，不要求 Python/Web 安装 Node，不做签名安装包或应用自动升级。浏览器与 Electron 各自保存界面偏好；不需要跨客户端复制草稿和布局。
-- **用户流程**：项目根目录先 `npm --prefix desktop ci`，再 `npm --prefix desktop start`。默认同 `start-console.sh` 使用 `./proto_data`，如该目录的服务已运行即接入实际端口，否则用 `--no-open` 托管一个 Web 实例，默认端口 8431。`--data-dir` 选目录，`--port` 只指定新托管实例的端口（可用 0），`--connect-only` 只接入。菜单支持重新连接及用浏览器打开同一控制台。macOS 关窗可从 Dock 再打开；退出 Electron 只向本次启动的子进程发正常中断，不停止外部 Web。要在退出 Electron 后继续自治，用独立 Web 服务。
+- **用户流程**：项目根目录先 `npm --prefix desktop ci`，再 `npm --prefix desktop start`。默认同 `scripts/start-console.sh` 使用 `./proto_data`，如该目录的服务已运行即接入实际端口，否则用 `--no-open` 托管一个 Web 实例，默认端口 8431。`--data-dir` 选目录，`--port` 只指定新托管实例的端口（可用 0），`--connect-only` 只接入。菜单支持重新连接及用浏览器打开同一控制台。macOS 关窗可从 Dock 再打开；退出 Electron 只向本次启动的子进程发正常中断，不停止外部 Web。要在退出 Electron 后继续自治，用独立 Web 服务。
 - **连接与状态**：Web 仅监听 `127.0.0.1`；实例锁仍按数据目录生效。连接描述放在该目录的私有 `.proto-console/`，包含协议版本、规范数据目录、进程、端口、既有主人令牌和每次启动独立的随机回签密钥；原子写入，不进 Git 或备份，正常退出移除。Electron 仅读同用户、同数据目录的私有记录，对指定回环端点验证一次性随机挑战的 HMAC，再加载原页面；主框架导航重新验签。真实令牌在主进程接到同源 API 请求时沿用既有请求头，不进入 Electron 渲染器或托管进程的参数；主人明确选「在浏览器打开」仍走原 Web 令牌片段。Electron 不提供 Node、预加载桥或外部导航，拒绝弹窗、权限和非本服务请求。保持工作区、模型及工具政策原样，不声称抵御已控制同一 OS 用户的进程。
 - **边界与错误**：同一数据目录多个入口不启动第二个写者，目录不同不会静默切到默认舰队；托管进程仅加载该目录的部署配置和显式继承的环境。缺 Python、端口冲突、旧 Web 无可信记录、服务停机或验签失败时给出失败与重连入口；不把任意 200 页面当成本机控制台，不强杀已有端口。旧实例用原参数重启后可接入。
 - **验收与后续同步**：真实 Electron 渲染概览并通过原 API 更名，独立 Web 查询见同一 Agent；复用实例、拒绝错误来源、窗口退出所有权和失联可复验。改功能只改 `proto/web/` 等共享实现，并在同一变更验证两端，不在 `desktop/` 复制 UI；更新后按原参数重启服务，浏览器刷新、Electron 从菜单重连，两端加载同一版本。若将来新功能需要桌面权限，显式更新壳策略和测试。见 [ADR 0021](adr/0021-shared-electron-console.md)。
@@ -793,13 +793,13 @@ M68 保持原「执行」、待批徽标、锚点与样式；`#task-plan-{projec
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install -e '.[dev]'
-python3 -m proto.setup
+python3 -m proto.deploy
 python3 -m proto.web
 ```
 
 也可使用 `bash scripts/deploy.sh` 一键向导；日常 Web 为 `python3 -m proto.web`，REPL 为 `python3 -m proto.run`，演示为 `python3 -m proto.demo`。向导不回显 API key，摘要只显示掩码，可回退重选；配置存 `proto_data/proto.env`（0600）。可选安装 macOS launchd 服务、防休眠和原生 App 壳；它们不是新的权限边界。
 
-Web 进程在启动时加载一份页面资源，与进程中已加载的 API 一同使用，刷新不会读取更新后的工作树。代码更新后按原数据目录、端口及启动方式正常退出并重启，避免版本混用；`start-console.sh` 检测到端口已监听时只提示，不自动中断旧进程。模型配置的热更新不受这项约束。
+Web 进程在启动时加载一份页面资源，与进程中已加载的 API 一同使用，刷新不会读取更新后的工作树。代码更新后按原数据目录、端口及启动方式正常退出并重启，避免版本混用；`scripts/start-console.sh` 检测到端口已监听时只提示，不自动中断旧进程。模型配置的热更新不受这项约束。
 
 ### 14.2 配置类别
 

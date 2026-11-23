@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PROTO 控制台启动脚本——你的完整实例（3 个 agent 的舰队都在 ./proto_data）
-# 用法：bash start-console.sh   （或 chmod +x 后 ./start-console.sh）
+# 用法：bash scripts/start-console.sh   （或 chmod +x 后 ./scripts/start-console.sh）
 set -euo pipefail
 cd "$(dirname "$0")"
 

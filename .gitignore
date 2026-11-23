@@ -4,6 +4,7 @@ __pycache__/
 data/
 .superpowers/
 dist/
+build/
 *.egg-info/
 proto_data/
 llm_models.json
@@ -13,4 +14,5 @@ llm_models.json
 .venv/
 node_modules/
 .proto-console/
+.DS_Store
 

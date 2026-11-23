@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PROTO 一键部署引导：venv → 安装 → 部署向导
-# 用法：bash scripts/deploy.sh [--install-service ...其余参数原样传给 proto.setup]
+# 用法：bash scripts/deploy.sh [--install-service ...其余参数原样传给 proto.deploy]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -61,4 +61,4 @@ ok "已安装：proto-run / proto-web / proto-backup"
 # 4) 向导
 step 4 "部署向导（LLM 配置 / 自检 / 令牌 / 人设 / 可选开机自启）"
 printf "%s  向导支持：任意步 < 回上一步；确认页数字跳步重选%s\n" "$C_DIM" "$C_OFF"
-exec .venv/bin/python -m proto.setup "$@"
+exec .venv/bin/python -m proto.deploy "$@"
