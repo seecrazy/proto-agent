@@ -5,7 +5,7 @@
 [![tests](https://img.shields.io/badge/tests-1304%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
-[![version](https://img.shields.io/badge/version-0.34.0-orange.svg)]()
+[![version](https://img.shields.io/badge/version-0.35.0-orange.svg)]()
 
 PROTO 的长期目标是在同等资源与权限下完成通用 AI Agent 能做的有用工作，并让同一个 Agent 以持续的人设、记忆和目标与人相处、主动学习、思考、成长和交付。没有新指令也能行动，但不能自行扩权，产出以可复核的证据为准。框架用独立样例验证，不替 Agent 承做、调试或验收真实项目。当前实现至 M76，仍是**单机多 Agent 原型**。见[核心设计原则](docs/DESIGN.md#core-design-principles)。
 
@@ -430,6 +430,8 @@ PROTO 的长期记忆是完整的记忆流（Generative Agents 架构的零依�
 **更新控制台：** 页面与 API 随进程一起更新。若公司弹窗提示后端未加载此功能，请在原启动终端按 `Ctrl+C` 正常退出，再用原数据目录、端口和启动参数重启。默认实例可运行 `bash scripts/start-console.sh`；脚本提示「已在运行」时没有启动新进程，仅刷新浏览器也不会加载新后端。用启动终端输出的完整 URL 重新打开页面。
 
 队列、票据、项目、对话回执、模型冷却和公司数据保存在舰队根下 `.coordination/state.sqlite3`。M75 首次启动自动迁移到 v5；若需要保留回退能力，请在升级前退出实例并冷备份整个数据目录，不要在线只拷贝数据库主文件。[调度 API](docs/DESIGN.md#run-scheduler) · [项目与验收](docs/DESIGN.md#project-delivery) · [实现进展](docs/PROGRESS.md)
+
+**看懂它在干什么（M79）：** 聊天区顶部的「后台 · 实时活动」下方有「执行链」面板——它每一步调用了什么工具、为什么（模型自己写的执行意图）、结果如何、哪步失败、是不是同一条 24 步链在断点续跑（会话标识 + 第几次调度），全部逐步可见；失败原因用中文写明（模型限流/超时/输出截断各有说法）。刷新页面聊天记录不再清空（自动回放最近对话）；若整个舰队被暂停时有任务还在排队等续跑，面板会直接给出「恢复运行（取消暂停，从断点续跑）」一键按钮。`GET /api/runs/{id}/timeline` 与 `GET /api/chat/history` 为对应只读 API。
 
 ## 没人理它的时候，它在干什么？
 

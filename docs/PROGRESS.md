@@ -2,6 +2,15 @@
 
 > 当前完整方案统一阅读 [DESIGN.md](DESIGN.md)。本文件只记录里程碑、实现状态与验证证据，不作为第二份设计。
 
+## M79 — 主人可见性四件套（2026-11-23，本地交付）
+
+- **背景**：用户打开控制台只能看到"第 N/24 步、等模型、失败、过会儿重来"——每步做了什么/为什么/新旧 24 步/失败原因全部不可见；聊天记录刷新即丢；暂停舰队里躺着的排队续跑无任何引导；JOURNAL 多组"第1轮/第2轮"重复块加占位符。
+- **① 聊天历史回放**：新增 `GET /api/chat/history?n=`（只读路由，鉴权+1..100 校验），前端 boot 拉一次回放进消息区并加分隔线；`Dialogue.history()` 本就存在但从未接线。
+- **④ 逐步可见**：决策协议新增可选 `note` 字段（≤60 字执行意图，写进 LOOP_SYSTEM 提示词与原生工具 schema）；trace 每步补 `note/ts/ok`，**失败步也进步数**（此前失败只进 observations 文本）；新增 `GET /api/runs/{id}/timeline`（`proto/fleet/timeline.py`）投影：任务/目标/验收、进度、调度代次+会话连续性（"续跑同一条执行链"=老 24 步、"新开执行链"=全新 24 步）、逐步工具/参数摘要/意图/结果/写入路径、结论与缺失证据。前端聊天区顶部新增「执行链」折叠面板（记住开合，每 4 次轮询拉一次，最新步高亮，失败步红字）。
+- **③ 断点引导**：`RunCoordinator.blocked_reason` 修复——续跑中的排队 run 在舰队暂停时报 `fleet_paused`（此前只报 `model_retry_wait`，掩盖"取消暂停即可续跑"）；`/api/activity/live` 快照附带 `blocked` 字段；前端状态徽章显示「已暂停 · 恢复后从断点续跑（不是重开）」+ 一键恢复按钮（走主人快通道）。
+- **② JOURNAL 修复**：轮次编号跨进程接续（`note_round` 读已有块数，不再每次从 1 重开）；机械回退摘要输出真实事实（步数/工具分布/落盘/失败尾），消灭"（见 observations 尾部）""（待填）"死引用；LLM 小结含占位符的行被丢弃；三行字段按句子边界截断（句末标点优先，硬切兜底加省略号）；活动中心产出/下一步显示从 50 字放宽到 110 字+悬停全文。
+- **验证**：新增 `tests/test_m79_visibility.py` 9 项（历史回放+鉴权边界、时间线 note/链标识/404、paused 续跑 blocked_reason+live.blocked、JOURNAL 编号接续/机械摘要/占位符过滤/句子截断）；完整回归 **1314 passed, 4 skipped**（Python 3.9.2）；desktop `npm test` 4 绿；临时数据目录冒烟实例（不碰生产）逐张截图目检——修复两处目检发现的缺陷（历史被轮询 loop 重复灌两次、聊天区横向溢出），恢复按钮点击后舰队解除暂停、排队 run 被消化、状态归空闲，闭环验证通过。生产 8431 实例未动，改动在下次正常重启后生效。
+
 ## M78 — 目录结构整改 · 工具插件化 · 子代理（2026-11-23，本地交付）
 
 - **结构整改**：`runtime/` 23 模块按职责三分——`proto/profile/`（identity/personas/taste/self_facts/methods 人设档案）、`proto/fleet/`（manager/runs/companies/collab/fleet_budget/projects/task_plans/activity 舰队运行）、`proto/coordination/`（sqlite 协调存储，零外部 proto 依赖）独立成包；`runcontext.py` 归位 `exec/`；runtime 只留组合根 8 模块（agent/dialogue/autonomy/summaries/timeout_policy/model_pressure/quota/study——study 因依赖 autonomy 留守）。消除 goals↔runtime、exec↔runtime 两组包级循环；`agent.py` 原地未动。
