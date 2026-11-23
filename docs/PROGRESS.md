@@ -2,6 +2,20 @@
 
 > 当前完整方案统一阅读 [DESIGN.md](DESIGN.md)。本文件只记录里程碑、实现状态与验证证据，不作为第二份设计。
 
+## M80 — 监督实战：iPhone 专家自主开发 App 首轮（2026-11-24，进行中）
+
+- **背景**：主人指令——启动 proto-agent，监督 iPhone 专家开发完整 App，期间发现任何问题及时修正，最终目标是完全自主开发完整 App。本条目随监督进程持续更新。
+- **现场盘点**：生产 8431 跑 M79 版（重启于 11-23 23:42）；专家 4 目标（概念规格/SwiftUI 实现/验证交付/总目标）；工作区两套概念漂移（docs/DESIGN.md=EchoNote 回声笔记 vs Swift 源码=Wengu SM-2 背卡）+ 两套并行实现（根目录 5 文件 vs Wengu/Sources 5 文件）；verify_app.py 静态检查 34/34 全绿而 `xcrun swiftc -typecheck` 实际编译失败（`\u{}` 转义嵌插值、SeedData 未定义）——D11 的活体案例。
+- **修复①（提交 82f2d50）**：四件生产实证问题——JOURNAL 模板回显（LLM 原样回显 _SUMMARY_PROMPT 占位文本未被过滤）/note_model_block 每拍刷同文块（单目标 1800+ 条，已归档压缩生产数据 244KB→5KB 活跃+全量 JOURNAL.archive.md）/活动 detail 对 dict payload 显示 "{}"（M61 同类漏网）/**/api/activity/live 对未暂停的排队续跑 500**（blocked_reason 收到的快照投影无 result 列，_continuation KeyError；M79 测试只覆盖了已暂停早退分支——路由改喂完整记录+_continuation 容错）。
+- **修复②（同提交）**：M45 探索配额计数键从"只读工具"改为"本步未落盘"——run_command 跑诊断脚本曾清零计数，"跑校验→读文件"交替 24 步零写入烧完整个工作片（run 250 时间线铁证）；新增"同一验证 3 次同失败强制换法"提示。m45 两断言随文案语义更新。
+- **修复③（提交 3ce145c）**：GET /api/runs 接通 limit（D24 登记即修）；DEBT 入账 D22（验收自指）/D23（m76 计时抖动）。
+- **主人介入**：retry 被 delivery_not_verified 挡住的概念目标；模型组"模型组1"三成员原全是 glm-5.3-flash（执行决策长期跑弱模型——循环纪律差的根因之一），重排为 glm-5.3×3 优先、flash×3 兜底，后因 paas/v4 两接入持续 429 把 env-main（anthropic 端点，实测健康）提到组首；优先级文本写入五条工程纪律（概念唯一/三者一致/真实编译回执/重复失败禁原样重跑/每轮必落盘）——**教训：主人聊天指引不进工作循环提示词（工作上下文只含 owner_priority），指令要走优先级文本或项目 AGENTS.md**。
+- **修复④（提交 c384f38）· 嵌套沙盒根治**：专家正确地对 Wengu 源码跑真实 `swift build`/`swiftc -typecheck`，但 SwiftPM 与 swift-frontend 的宏插件系统会给自己再套一层 sandbox-exec，macOS 禁止嵌套沙盒 → `sandbox_apply: Operation not permitted` → `@State`/`@Model` 等外部宏一律加载失败（生产 run c5a9f68f 铁证）。临时目录复现+双修：run_command 在 sandbox-exec 后端下自动补 `swift build/test → --disable-sandbox`（子命令后插）、`swiftc → -Xfrontend -disable-sandbox`（显式传旗标不加倍、swift run 等子命令与未隔离后端不动）；外层 proto 沙盒仍 enforced 写遏制+禁网。端到端实证：补丁后沙盒内真实构建含 @State 宏的 Swift 包 exit 0。
+- **修复⑤（提交 f13f6c4）· D26 偿还**：交付门未验收片上限 4→12——App 级目标每轮都有真实文件增量（DESIGN_SPEC/SM2Engine/Models/WenguApp/Package.swift 逐轮落盘）仍 4 片被 blocked，监督者成自主链条瓶颈。三计数器方案（停滞/无增量/有增量分开计数）推演后否决——交替模式互相清零永不暂停；最终保持 M72 全量计数语义仅提上限，零进展灾难仍由 stalled≥2 第 2 片拦截，安全保证不降。原 4 片契约测试改写+零进展快速拦截钉死。
+- **验证**：新增回归 18 项（tests/test_m80_journal_activity.py）+ m72 契约改写 2 项；最终全量 **1333 passed + 4 skipped**（m76 一项计时抖动两次全量分别挂不同参数、单跑/整模块稳定，D23 入账）；生产三轮重启部署（23:42/00:10/01:45 后）后 live 路由 200、活动 detail 人类可读、journal 轮次接续、swift build 穿透沙盒拿到真实编译错误均实证。
+- **专家执行轨迹（截至 02:10）**：概念收敛成功（保留 Wengu，DESIGN_SPEC.md 110 行含数据模型表/SM-2 伪代码/六屏清单/无障碍要点）；SM2Engine.swift 重写为纯数据结构+静态调度（修掉字面 \n 语法损坏与 isDue 恒真缺陷）后 **swiftc typecheck exit 0**；Models.swift/WenguApp.swift/Package.swift/spec_check.py 逐轮落盘；当前循环形态=swift build 拿真实编译错误→读源码修类型不一致（D11 方向的验证闭环跑通）。剩余：视图层六屏、XCTest、README、NEEDS_FROM_OWNER。监督者已可离场——模型组重排+12 片跑道+安全会话断点+自动重试构成无人值守链条。
+- **DEBT 变动**：D24 登记即修（/api/runs limit）；D22（验收自指）/D23（m76 抖动）入账待专项；D26 登记即偿还。
+
 ## M79 — 主人可见性四件套（2026-11-23，本地交付）
 
 - **背景**：用户打开控制台只能看到"第 N/24 步、等模型、失败、过会儿重来"——每步做了什么/为什么/新旧 24 步/失败原因全部不可见；聊天记录刷新即丢；暂停舰队里躺着的排队续跑无任何引导；JOURNAL 多组"第1轮/第2轮"重复块加占位符。
