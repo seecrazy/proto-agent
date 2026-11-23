@@ -125,3 +125,21 @@ class TestToolsBoundaries:
     def test_tools_present(self, graph):
         for name in ("codetools", "webtools", "fleettools", "bridge", "code_index"):
             assert f"tools.{name}" in graph, f"proto/tools/{name}.py 应存在"
+
+
+class TestPluginsBoundaries:
+    def test_plugins_do_not_import_exec_core(self, graph):
+        """pack 可用 kernel/exec 共享层/tools/skills，不得触碰循环核心与 UI 层。"""
+        violations = {}
+        for module, deps in graph.items():
+            if not module.startswith("plugins."):
+                continue
+            bad = set()
+            for dep in deps:
+                if dep.startswith("proto.exec.") and dep.split(".")[2] not in EXEC_SHARED:
+                    bad.add(dep)
+                if dep.startswith(("proto.web", "proto.agents", "proto.appshell", "proto.adapters")):
+                    bad.add(dep)
+            if bad:
+                violations[module] = bad
+        assert violations == {}, f"plugins 越界依赖: {violations}"

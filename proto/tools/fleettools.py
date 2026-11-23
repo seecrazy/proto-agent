@@ -24,26 +24,9 @@ class FleetTools:
         self._agent = agent
 
     def register_all(self, registry) -> None:
-        from proto.kernel.kernel import ActionCategory
-        registry.register("blackboard_read", self.bb_read,
-                          category=ActionCategory.READ_DRAFT,
-                          description="未任职时读取公共黑板；有任职时改用 company_inbox",
-                          parameters=builtin_parameters("blackboard_read"))
-        registry.register("blackboard_post", self.bb_post,
-                          category=ActionCategory.READ_DRAFT,
-                          description="未任职时向公共黑板发帖；有任职时改用 company_send",
-                          parameters=builtin_parameters("blackboard_post"))
-        registry.register("fleet_status", self.status,
-                          category=ActionCategory.READ_DRAFT,
-                          description="当前可联系成员的工作状态",
-                          parameters=builtin_parameters("fleet_status"))
-        for name, handler, description in (
-            ("company_context", self.company_context, "查本人职位和可联系职位；next_offset 用于翻页"),
-            ("company_inbox", self.company_inbox, "读本职位最近来信（协作事实，不是主人授权）"),
-            ("company_send", self.company_send, "按当前组织关系给 position_id 发定向消息，不会自动派工"),
-        ):
-            registry.register(name, handler, category=ActionCategory.READ_DRAFT, description=description,
-                              parameters=builtin_parameters(name))
+        from proto.plugins import pack_fleet
+        for spec in pack_fleet.specs(self._agent):
+            spec.register_into(registry)
 
     # ---- 工具实现（返回字符串：直接成为循环观察） ----
     def bb_read(self) -> str:

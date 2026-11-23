@@ -23,6 +23,8 @@ from proto.runtime.runcontext import track_checkpoint
 
 DEFAULT_STEP_COST = {"tokens": 20.0}
 VARIANT_ID = "core@0.3.0"
+# 未声明观察限额的工具，观察文本默认截断长度（M47）
+OBS_DEFAULT = 600
 _CATEGORY_RANK = {
     ActionCategory.READ_DRAFT: 0,
     ActionCategory.WORKSPACE_WRITE: 1,
@@ -44,10 +46,15 @@ class ToolRegistry:
     def __init__(self):
         self._tools: Dict[str, tuple] = {}
         self._parameters: Dict[str, dict] = {}
+        self._read_only: set = set()
+        self._obs_limits: Dict[str, int] = {}
+        self._background_io: set = set()
 
     def register(self, name: str, fn: Callable, policy: ToolPolicy = None,
                  category: ActionCategory = None, description: str = "",
-                 owner_only: bool = False, parameters: dict = None) -> None:
+                 owner_only: bool = False, parameters: dict = None,
+                 read_only: bool = False, obs_limit: int = None,
+                 background_io: bool = False) -> None:
         if policy is None:
             policy = ToolPolicy(category=category or ActionCategory.READ_DRAFT,
                                 description=description, owner_only=owner_only)
@@ -57,6 +64,19 @@ class ToolRegistry:
             raise ValueError("tool_parameters_must_be_object")
         self._tools[name] = (fn, policy)
         self._parameters[name] = schema
+        # 行为元数据（只读探索计数 / 观察截断 / 后台 IO）：重复注册按最新声明覆盖
+        if read_only:
+            self._read_only.add(name)
+        else:
+            self._read_only.discard(name)
+        if obs_limit is not None:
+            self._obs_limits[name] = int(obs_limit)
+        else:
+            self._obs_limits.pop(name, None)
+        if background_io:
+            self._background_io.add(name)
+        else:
+            self._background_io.discard(name)
 
     def get(self, name: str) -> Callable:
         if name not in self._tools:
@@ -70,6 +90,18 @@ class ToolRegistry:
 
     def names(self):
         return set(self._tools)
+
+    def read_only_tools(self) -> set:
+        """只读工具集合（探索步数配额计数用）。"""
+        return set(self._read_only)
+
+    def obs_limit(self, name: str) -> int:
+        """观察文本截断限额；未声明的工具取 OBS_DEFAULT。"""
+        return self._obs_limits.get(name, OBS_DEFAULT)
+
+    def is_background_io(self, name: str) -> bool:
+        """耗时 I/O 工具：执行时切后台，避免阻塞前台对话。"""
+        return name in self._background_io
 
     def definition(self, name: str) -> dict:
         policy = self.policy(name)

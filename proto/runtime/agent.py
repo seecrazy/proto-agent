@@ -24,7 +24,6 @@ from typing import List, Optional
 
 from proto.exec.approval import ActionProposal, ApprovalQueue
 from proto.exec.agentic import AgenticLoop
-from proto.exec.contracts import builtin_parameters
 from proto.exec.sessions import ExecutionSessions
 from proto.exec.checkpoints import CheckpointStore
 from proto.tools.codetools import CodeTools
@@ -72,8 +71,7 @@ from proto.runtime.personas import (
     normalize_persona, parse_recommendation,
 )
 from proto.runtime.runcontext import current_run
-from proto.runtime.self_facts import Lifetime, describe_self, local_time, self_fact_prompt, self_question
-from proto.textstyle import polish_style, scan_style
+from proto.runtime.self_facts import Lifetime, describe_self, self_fact_prompt, self_question
 from proto.work.delivery import (MAX_STALLED_SLICES, MAX_UNVERIFIED_SLICES, ProjectDirectoryError,
                                  ios_stage, main_project, project_bindings, project_files,
                                  project_path, stage_waiters, valid_ios_evidence)
@@ -289,30 +287,12 @@ class ProtoAgent:
         self.sessions = ExecutionSessions(store)
         self.code_workspace = self._build_projects_workspace()
         self.tools = ToolRegistry()
-        self.tools.register("clock", lambda: local_time(self._now()) or "当前服务端时间不可用",
-                            category=ActionCategory.READ_DRAFT,
-                            description="当前时间", parameters=builtin_parameters("clock"))
-        self.tools.register("scan_style", scan_style, category=ActionCategory.READ_DRAFT,
-                            description="离线扫描中文模板腔，返回位置和处方，不改稿",
-                            parameters=builtin_parameters("scan_style"))
-        self.tools.register("polish_style", polish_style, category=ActionCategory.READ_DRAFT,
-                            description="对传入的中文短稿按处方局部改写并复验，失败退回原文；不写文件",
-                            parameters=builtin_parameters("polish_style"))
         self.code_workspace.register_all(self.tools)
-        # M61：执行链内也能做领域学习。外部内容仍是 READ_DRAFT + 白名单，
-        # 并在提示词中声明为素材非指令。
-        self.webtools.register_readonly(self.tools)
-        from proto.tools.fleettools import FleetTools
-        FleetTools(self).register_all(self.tools)
         from proto.tools.bridge import CodingBridge
         self.bridge = CodingBridge.autodetect(os.environ.get("PROTO_BRIDGE_CLI", ""))
-        if self.bridge and self.bridge.available:
-            self.tools.register(
-                "delegate_coding",
-                lambda task: self._delegate_output(task),
-                category=ActionCategory.VISIBLE_WRITE,
-                description="外包给外部编码 agent（需审批）",
-                owner_only=True, parameters=builtin_parameters("delegate_coding"))
+        # M78：工具装配收敛为插件 pack 清单（proto/plugins），声明单一来源
+        from proto.plugins import assemble_tools
+        assemble_tools(self.tools, self)
         self.router = Router(self.kernel, self.queue, self.workspace,
                              self.checkpoints, self.tools,
                              code_workspace=self.code_workspace,
@@ -593,9 +573,7 @@ class ProtoAgent:
         started = time.monotonic()
         tool_event("tool_started")
         try:
-            if tool in {"web_fetch", "github_search", "github_readme", "run_python", "run_command",
-                        "list_dir", "read_file", "read_files", "grep", "write_file", "edit_file",
-                        "delegate_coding", "inspect_build", "search_symbols", "explore_code"}:
+            if self.tools.is_background_io(tool):
                 with self._background_io():
                     yield
             else:

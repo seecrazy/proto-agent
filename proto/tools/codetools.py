@@ -415,55 +415,8 @@ class CodeTools:
 
     # ---- 注册到 Router ----
     def register_all(self, registry) -> None:
-        from proto.kernel.kernel import ActionCategory
-        def register(name, function, **options):
-            registry.register(name, function, parameters=builtin_parameters(name), **options)
+        # 声明面在 proto/plugins/pack_files.py（M78 起单一来源；工作区热切换沿用本入口）
+        from proto.plugins import pack_files
+        for spec in pack_files.specs(self):
+            spec.register_into(registry)
 
-        register("read_file",
-                          lambda path, offset=0, limit=200:
-                          self.read_file(path, offset, limit),
-                          category=ActionCategory.READ_DRAFT,
-                          description="读工作区文件（行级分页：offset/limit）")
-        register("read_files", lambda paths=None: self.read_files(paths),
-                          category=ActionCategory.READ_DRAFT,
-                          description="批量读多个文件（≤5 个，各前 60 行）")
-        register("write_file",
-                          lambda path, content: self.write_file(path, content),
-                          category=ActionCategory.WORKSPACE_WRITE,
-                          description="写工作区文件；content ≤6000 字符，长文件先骨架再分次 edit")
-        register("edit_file", lambda path, old, new, replace_all=False:
-                          self.edit_file(path, old, new, replace_all),
-                          category=ActionCategory.WORKSPACE_WRITE,
-                          description="精确替换工作区文件片段；old/new 各 ≤4000 字符，优先小补丁")
-        register("list_dir", lambda path="": self.list_dir(path),
-                          category=ActionCategory.READ_DRAFT,
-                          description="列工作区目录")
-        register("grep", self.grep,
-                          category=ActionCategory.READ_DRAFT,
-                          description="在指定目录流式搜索文本，返回命中行和位置")
-        register("search_symbols", self.code_index.search, category=ActionCategory.READ_DRAFT,
-                 description="按标识符/文档词找代码声明；返回路径和行号。next_cursor 非空仅表示本页，原查询可续页")
-        register("explore_code", explore_code, category=ActionCategory.READ_DRAFT,
-                 description="执行会话内委派只读代码调查，子上下文自行检索、分段读取，仅返回短结论和已读位置")
-        register("read_skill", read_skill, category=ActionCategory.READ_DRAFT,
-                 description="按需加载一份内置工作法（不授予权限）：" + skill_catalog())
-        register("inspect_build", lambda cwd="": inspect_build(self, cwd), category=ActionCategory.READ_DRAFT,
-                 description="只读核对工位、沙盒、构建入口和本机工具；next 可传给 run_command，不表示已编译")
-        # 沙盒后端（写遏制+禁网）下代码只能写 tmp/工作区 → 能力等同 WORKSPACE_WRITE；
-        # 未隔离 subprocess 后端必须人工审批；none 后端执行时直接拒绝。
-        backend = self.execution_backend()
-        run_python_category = (ActionCategory.WORKSPACE_WRITE
-                               if backend in ("runsc", "sandbox-exec")
-                               else ActionCategory.VISIBLE_WRITE)
-        # 未隔离执行=较高权限：主人超时也绝不自主代批
-        register("run_python", lambda code, timeout_s=60:
-                          self.run_python(code, timeout_s),
-                          category=run_python_category,
-                          description="沙盒跑 Python（验证/测试）",
-                          owner_only=backend not in ("runsc", "sandbox-exec"))
-        register(
-            "run_command", lambda argv, cwd="", timeout_s=120:
-            self.run_command(argv, cwd, timeout_s),
-            category=run_python_category,
-            description="沙盒跑白名单本机验证命令（数组参数，无 shell）",
-            owner_only=backend not in ("runsc", "sandbox-exec"))
