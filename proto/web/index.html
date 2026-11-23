@@ -59,8 +59,8 @@
   #chat { grid-row: 1; grid-column: 2; display: flex; flex-direction: column;
           min-height: 0; }
   #side { border-right: 1px solid var(--border); }
-  #messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
-  .msg { max-width: 78%; padding: 8px 12px; border-radius: 10px; white-space: pre-wrap; line-height: 1.55; }
+  #messages { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 78%; padding: 8px 12px; border-radius: 10px; white-space: pre-wrap; line-height: 1.55; overflow-wrap: anywhere; }
   .msg.owner { align-self: flex-end; background: #24457a; }
   .msg.agent { align-self: flex-start; background: var(--panel2); }
   .msg-time { font-size: 10px; color: var(--dim); margin-right: 8px;
@@ -85,6 +85,22 @@
   #live-events li { display: flex; gap: 8px; padding: 4px 0; border-top: 1px solid var(--border); }
   #live-events time { flex: 0 0 auto; color: var(--dim); font-variant-numeric: tabular-nums; }
   #live-events span { min-width: 0; overflow-wrap: anywhere; }
+  #run-chain { border-top: 1px solid var(--border); font-size: 11px; }
+  #run-chain > summary { cursor: pointer; padding: 6px 12px; color: var(--dim); }
+  #chain-head { padding: 0 12px 6px; line-height: 1.65; overflow-wrap: anywhere; }
+  #chain-head b { color: var(--text); }
+  #chain-head .chain-stall { color: var(--warn); }
+  #chain-steps { max-height: min(26vh, 200px); overflow-y: auto; padding: 0 12px 8px;
+    list-style: none; overscroll-behavior: contain; }
+  #chain-steps li { padding: 3px 0; border-top: 1px solid var(--border);
+    line-height: 1.55; overflow-wrap: anywhere; }
+  #chain-steps .chain-step-no { color: var(--dim); font-variant-numeric: tabular-nums; }
+  #chain-steps .chain-note { color: var(--accent); }
+  #chain-steps .chain-res { color: var(--dim); display: block; }
+  #chain-steps li.chain-fail .chain-res { color: var(--bad); }
+  #chain-steps li.chain-latest { background: rgba(79, 140, 255, 0.07); }
+  #chain-actions { padding: 2px 12px 6px; }
+  #chain-actions button { font-size: 11px; }
 
   /* ---- 右：仪表 ---- */
   #side { display: none; }   /* M55: 卡片池（HTML 定义处），不参与布局 */
@@ -503,6 +519,12 @@
       <summary><span class="live-title">后台 · 实时活动</span><span id="live-status" role="status">同步中…</span></summary>
       <div id="live-detail">模型等待、工具和文件证据会显示在这里。</div>
       <ol id="live-events" aria-label="最近的后台执行事件"></ol>
+      <details id="run-chain">
+        <summary>执行链 · 它每一步在做什么、为什么</summary>
+        <div id="chain-head">暂无执行记录。</div>
+        <div id="chain-actions"></div>
+        <ol id="chain-steps" aria-label="执行链逐步记录"></ol>
+      </details>
     </details>
     <div id="messages"></div>
     <div id="composer">
@@ -1101,21 +1123,43 @@ async function reloadModels() {
   await modelAction(() => api("POST", "/api/models/reload", {expected_revision: modelCatalog.revision}), "已从 llm_models.json 重载，下一次调用生效");
 }
 
-function addMsg(text, who) {
+function addMsg(text, who, opts = {}) {
   const box = document.getElementById("messages");
   const div = document.createElement("div");
   div.className = "msg " + who;
-  // 每条消息带时间戳（小字灰色，hover 可复制完整内容）
-  const time = document.createElement("span");
-  time.className = "msg-time";
-  time.textContent = fmtTime(Date.now());
-  div.appendChild(time);
+  // 每条消息带时间戳（小字灰色，hover 可复制完整内容）；历史回放没有可靠时间，不标
+  if (!opts.history) {
+    const time = document.createElement("span");
+    time.className = "msg-time";
+    time.textContent = fmtTime(Date.now());
+    div.appendChild(time);
+  }
   const body = document.createElement("span");
   body.textContent = text;
   div.appendChild(body);
-  div.title = new Date().toLocaleString();
+  div.title = opts.history ? "历史消息" : new Date().toLocaleString();
   box.appendChild(div);
   box.scrollTop = box.scrollHeight;
+}
+
+/* 聊天历史回放：后端 dialogue_turns 一直落盘，但此前没有入口拉回来——
+   刷新页面聊天框清空，好对话一去不返。只在 boot 拉一次（轮询 loop 不重复灌）。 */
+let chatHistoryLoaded = false;
+async function loadChatHistory(agentId) {
+  if (!agentId || chatHistoryLoaded) return;
+  chatHistoryLoaded = true;   // 先占位：失败也不重试，聊天功能本身不受影响
+  try {
+    const data = await api("GET", "/api/chat/history?n=24", undefined, undefined, agentId);
+    const history = data.history || [];
+    const box = document.getElementById("messages");
+    for (const turn of history) addMsg(turn.text, turn.role === "owner" ? "owner" : "agent", {history: true});
+    if (history.length) {
+      const divider = document.createElement("div");
+      divider.className = "msg system";
+      divider.textContent = "—— 以上为最近的历史对话 ——";
+      box.appendChild(divider);
+    }
+  } catch (error) { /* 历史拉不到不阻塞聊天 */ }
 }
 
 async function sendChat() {
@@ -1308,7 +1352,7 @@ let liveRowsKey = "";
 function liveTime(seconds) {
   return new Date(seconds * 1000).toLocaleTimeString("zh-CN", {hour12: false});
 }
-function livePresentation({run, current, model, autonomy}) {
+function livePresentation({run, current, model, autonomy, blocked}) {
   const waiting = (badge, summary) => ({state: "waiting", badge, summary});
   if (run?.status === "running") {
     if (run.cancel_requested) return waiting("正在取消", "等在途步骤到达安全边界");
@@ -1320,6 +1364,9 @@ function livePresentation({run, current, model, autonomy}) {
       ? waiting("待继续", LIVE_REASONS[run.reason]) : waiting("待核对", LIVE_PHASES.needs_reconciliation);
   }
   if (run?.status === "awaiting_approval") return waiting("待批准", LIVE_PHASES.awaiting_approval);
+  if (run?.status === "queued" && blocked === "fleet_paused") {
+    return waiting("已暂停", "舰队已暂停 · 恢复后从断点续跑（不是重开）");
+  }
   if (run?.status === "queued" && run.reason === "model_retry_wait") {
     return waiting("待重试", LIVE_REASONS.model_retry_wait);
   }
@@ -1351,15 +1398,19 @@ function renderLiveWork(data, selected) {
   const runReason = LIVE_REASONS[run?.model_reason];
   const routeReason = data.model.waiting && LIVE_REASONS[data.model.reason];
   const pastReason = LIVE_REASONS[last?.reason];
+  const stall = data.blocked === "fleet_paused"
+    ? "舰队已暂停 · 恢复后从断点续跑" : LIVE_REASONS[data.blocked];
   const description = [data.goal || (run && (RUN_KINDS[run.kind] || "后台任务")),
     data.step && data.max_steps && `第 ${data.step}/${data.max_steps} 步`,
-    runReason && `本轮卡点：${runReason}`,
+    stall && `卡点：${stall}`,
+    runReason && stall !== runReason && `本轮卡点：${runReason}`,
     run && run.status !== "running" && run.updated_at && `本轮状态记录：${new Date(run.updated_at * 1000).toLocaleString("zh-CN")}`,
     routeReason && routeReason !== runReason && `接入目前受阻：${routeReason}`,
     last && (last.verified ? "最近一轮已验收" : `最近一轮：${LIVE_PHASES[last.status] || last.status} · 无通过验收记录`),
     pastReason && `此前轮次（${new Date(last.updated_at * 1000).toLocaleString("zh-CN")}）：${pastReason}`,
   ].filter(Boolean).join(" ｜ ");
   renderLiveStatus(livePresentation(data), description);
+  refreshRunChain(selected, run?.id || last?.id, data);
   const events = data.events.slice(-12).reverse();
   const key = `${selected}:${events.map(e => `${e.seq}@${e.at}`).join(",")}`;
   if (key === liveRowsKey) return;
@@ -1390,11 +1441,15 @@ function resetLiveWork(selected, message = selected ? "同步中…" : "舰队�
   liveRead = null;
   liveLastSync = 0;
   liveRowsKey = "";
+  chainKey = ""; chainRunId = ""; chainTick = 0;
   renderLiveStatus({state: "unknown", badge: selected ? "待同步" : "暂无 Agent", summary: message});
   updateLiveSync(false);
   for (const id of ["live-events", "activity-goals", "activity-files", "activity-inventory-status"]) {
     document.getElementById(id).replaceChildren();
   }
+  document.getElementById("chain-head").textContent = "同步中…";
+  document.getElementById("chain-actions").replaceChildren();
+  document.getElementById("chain-steps").replaceChildren();
 }
 async function refreshLiveWork() {
   if (document.hidden) return;
@@ -1421,6 +1476,82 @@ async function refreshLiveWork() {
     if (liveRead === controller) liveRead = null;
   }
 }
+
+/* ---- 执行链逐步可见：run → 会话 → 每步工具/意图/结果/失败原因 ----
+   同一 session 跨重试存活：会话短标识 + 调度代次能回答「老 24 步续跑还是新开」。 */
+let chainKey = "", chainRunId = "", chainTick = 0, chainRead = null;
+const CHAIN_FETCH_EVERY = 4;   // 每 4 次轮询拉一次完整时间线（重轮询只对活跃 run 值得）
+async function refreshRunChain(selected, runId, live) {
+  const head = document.getElementById("chain-head");
+  if (!runId) { head.textContent = "暂无执行记录。"; return; }
+  chainTick = (chainTick + 1) % CHAIN_FETCH_EVERY;
+  if (chainRead || (runId === chainRunId && chainTick !== 0)) return;
+  const controller = new AbortController();
+  chainRead = controller;
+  const timeout = setTimeout(() => controller.abort(), LIVE_TIMEOUT_MS);
+  try {
+    const data = await api("GET", `/api/runs/${runId}/timeline`, undefined, undefined, selected, controller.signal);
+    if (document.getElementById("agent-select").value !== selected) return;
+    const key = [runId, data.run?.status, data.progress?.next_step, data.steps?.length,
+                 data.run?.updated_at, live?.blocked || ""].join(":");
+    if (key !== chainKey || runId !== chainRunId) {
+      chainKey = key; chainRunId = runId;
+      renderRunChain(selected, data, live);
+    }
+  } catch (error) { /* 面板拉取失败不干扰轮询；下次轮询重试 */ }
+  finally { clearTimeout(timeout); if (chainRead === controller) chainRead = null; }
+}
+function renderRunChain(selected, data, live) {
+  const run = data.run || {}, chain = data.chain || {}, intent = data.intent || {},
+        progress = data.progress || {}, journal = data.journal || {}, outcome = data.outcome || {};
+  const head = [];
+  if (intent.task) head.push(`<div><b>在做什么：</b>${esc(intent.task)}` +
+    (intent.project_dir ? ` <span style="color:var(--dim)">（${esc(intent.project_dir)}）</span>` : "") + `</div>`);
+  const sessionShort = run.session_id ? run.session_id.replace(/^loop-/, "").slice(0, 8) : "";
+  const chainLabel = chain.same_as_previous ? "续跑同一条执行链" : (run.resumed || chain.attempt > 1 ? "续跑执行链" : "新开执行链");
+  head.push(`<div><b>进度：</b>第 ${progress.next_step || 0}/${progress.max_steps || "?"} 步 · ` +
+    `第 ${chain.attempt || 1} 次调度（${chainLabel}${sessionShort ? ` · 会话 ${esc(sessionShort)}…` : ""}` +
+    `${chain.restarts ? ` · 重启续跑 ${chain.restarts} 次` : ""}）</div>`);
+  const statusText = LIVE_PHASES[run.status] || run.status || "";
+  const reasonText = LIVE_REASONS[run.reason] || LIVE_REASONS[run.model_reason] ||
+    (run.status === "queued" && live?.blocked ? LIVE_REASONS[live.blocked] : "");
+  head.push(`<div><b>状态：</b>${esc(statusText)}${reasonText ? ` <span class="chain-stall">· ${esc(reasonText)}</span>` : ""}` +
+    (run.updated_at ? ` <span style="color:var(--dim)">${new Date(run.updated_at * 1000).toLocaleString("zh-CN")}</span>` : "") + `</div>`);
+  if (journal.next) head.push(`<div><b>下一步计划：</b>${esc(journal.next)}</div>`);
+  if (outcome.status === "max_steps") head.push(`<div class="chain-stall">这轮 24 步用尽仍没到验收——上面每步就是它实际的动作轨迹。</div>`);
+  if (outcome.summary) head.push(`<div style="color:var(--dim)"><b>结论：</b>${esc(outcome.summary)}</div>`);
+  document.getElementById("chain-head").innerHTML = head.join("");
+  const actions = document.getElementById("chain-actions");
+  actions.replaceChildren();
+  if (run.status === "queued" && live?.blocked === "fleet_paused") {
+    const btn = document.createElement("button");
+    btn.className = "primary"; btn.textContent = "▶ 恢复运行（取消暂停，从断点续跑）";
+    btn.onclick = async () => {
+      btn.disabled = true; btn.textContent = "恢复中…";
+      try {
+        await api("POST", `/api/agents/${encodeURIComponent(selected)}/pause`, { on: false });
+        addMsg("▶ 已解除暂停：排队的执行链会从断点续跑（不是重开 24 步）。", "system");
+        chainKey = ""; chainTick = 0; refreshLiveWork();
+      } catch (error) { btn.textContent = "恢复失败：" + error.message; btn.disabled = false; }
+    };
+    actions.append(btn);
+  }
+  const steps = (data.steps || []).slice().reverse();   // 最新在最上
+  document.getElementById("chain-steps").replaceChildren(...steps.map((step, index) => {
+    const li = document.createElement("li");
+    if (!step.ok) li.className = "chain-fail";
+    if (index === 0) li.className = (li.className ? li.className + " " : "") + "chain-latest";
+    const note = step.note ? ` <span class="chain-note">${esc(step.note)}</span>` : "";
+    li.innerHTML = `<span class="chain-step-no">#${step.step ?? "?"}</span> <b>${esc(step.tool)}</b>` +
+      (step.args ? ` <span style="color:var(--dim)">${esc(step.args)}</span>` : "") + note;
+    const res = document.createElement("span");
+    res.className = "chain-res";
+    res.textContent = (step.ok === false ? "失败：" : "") +
+      (step.result || "") + (step.written ? ` · 已写入 ${step.written}` : "");
+    li.append(res);
+    return li;
+  }));
+}
 async function refreshActivity() {
   const selector = document.getElementById("agent-select"), selected = selector.value;
   if (!selected) return;
@@ -1445,8 +1576,8 @@ async function refreshActivity() {
         (g.delivery?.blocked ? `<div>${esc(LIVE_REASONS[g.delivery.reason] || "交付已暂停")} ` +
           `<button class="secondary" data-retry-delivery="${esc(g.goal_id)}">恢复此目标</button></div>` :
           g.waiting_for_stage ? `<div style="color:var(--dim)">等待前一阶段验收</div>` : "") +
-        `<div style="color:var(--dim)">产出：${esc((g.produced || "无").slice(0, 50))}</div>` +
-        `<div style="color:var(--dim)">下一步：${esc((g.next || "—").slice(0, 50))}</div></div>`).join("")
+        `<div style="color:var(--dim)" title="${esc(g.produced || "无")}">产出：${esc((g.produced || "无").slice(0, 110))}</div>` +
+        `<div style="color:var(--dim)" title="${esc(g.next || "—")}">下一步：${esc((g.next || "—").slice(0, 110))}</div></div>`).join("")
     : "";
   for (const button of gbox.querySelectorAll("[data-retry-delivery]")) {
     button.addEventListener("click", async () => {
@@ -3092,6 +3223,7 @@ async function loop() {
       const inbox = await api("GET", "/api/inbox");
       for (const m of inbox.messages) addMsg(m, "agent");
     })();
+    await SAFE("chat-history", () => loadChatHistory(document.getElementById("agent-select").value))();
     for (const [name, fn] of [["state", refreshState], ["proposals", refreshProposals],
       ["audit", refreshAudit], ["rules", refreshRules], ["evolution", refreshEvolution],
       ["scratch", refreshScratch], ["memory", refreshMemory], ["goaltree", refreshGoalTree],
@@ -3117,6 +3249,9 @@ loop();
 const liveWorkPanel = document.getElementById("live-work");
 liveWorkPanel.open = localStorage.getItem("proto_live_work_open") !== "0";
 liveWorkPanel.addEventListener("toggle", () => localStorage.setItem("proto_live_work_open", liveWorkPanel.open ? "1" : "0"));
+const runChainPanel = document.getElementById("run-chain");
+runChainPanel.open = localStorage.getItem("proto_run_chain_open") !== "0";
+runChainPanel.addEventListener("toggle", () => localStorage.setItem("proto_run_chain_open", runChainPanel.open ? "1" : "0"));
 refreshLiveWork();
 setInterval(refreshLiveWork, LIVE_POLL_MS);
 document.addEventListener("visibilitychange", refreshLiveWork);

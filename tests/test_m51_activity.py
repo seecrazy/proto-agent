@@ -115,6 +115,7 @@ def activity_browser():
     harness = r'''
 const assert = require("assert");
 const ids = ["agent-select", "live-work", "live-status", "live-detail", "live-events",
+  "run-chain", "chain-head", "chain-actions", "chain-steps",
   "act-state", "activity-now", "activity-detail", "activity-sync", "activity-goals",
   "activity-files", "activity-inventory-status"];
 function element() {
