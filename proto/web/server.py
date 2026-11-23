@@ -275,9 +275,13 @@ class _Handler(BaseHTTPRequestHandler):
                     before = int(query["before"][0]) if "before" in query else None
                     if before is not None and not 0 < before < 2**63:
                         raise ValueError
+                    limit = int(query["limit"][0]) if "limit" in query else 60
+                    if not 1 <= limit <= 200:
+                        raise ValueError
                 except ValueError:
                     raise _HTTPError(400, "invalid_run_cursor")
                 return self._json(200, {"runs": runs.list(query.get("agent", [None])[0], before=before,
+                                                         limit=limit,
                                                          active=query.get("active") == ["true"],
                                                          reviewable=query.get("reviewable") == ["true"])})
             body = self._body()

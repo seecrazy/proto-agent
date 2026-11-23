@@ -144,6 +144,17 @@ class TestLiveRouteQueuedContinuation:
         # 投影行判不出续跑形态时安全返回字符串（曾在此 KeyError → 500）
         assert isinstance(runs.blocked_reason(row), str)
 
+    def test_limit_param_honored_and_bounded(self, server):
+        agent = server.manager.get(server.manager.current_id())
+        runs = server.manager.runs
+        for i in range(3):
+            runs.enqueue(agent.fleet_id, "task", {"text": f"t{i}"})
+        status, data = call(server, "GET", "/api/runs?limit=2", token=server.token)
+        assert status == 200 and len(data["runs"]) == 2
+        assert call(server, "GET", "/api/runs?limit=0", token=server.token)[0] == 400
+        assert call(server, "GET", "/api/runs?limit=999", token=server.token)[0] == 400
+        assert call(server, "GET", "/api/runs?limit=abc", token=server.token)[0] == 400
+
 
 class TestDiagnosticLoopGuards:
     """生产实证（2026-11-23 run 250）：跑校验→读文件交替 24 步零写入。

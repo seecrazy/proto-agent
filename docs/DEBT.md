@@ -140,3 +140,24 @@
 - **风险**：低（本项目目标形态是独立运行，不计划进 PyPI 公共生态与 Google 云栈共存）。
 - **方案**：若未来需要共存，顶层包改名 `protoagent`（一次机械替换 + 文档同步），不建议现在做。
 - **建议时机**：出现与环境共存的真实需求时；发布到 PyPI 前必须重新评估。
+
+## D22 · 目标验收自指：Agent 自写校验脚本可自证完成（D11 的活体案例）
+
+- **触发条件**：目标验收写的是「run_python 运行 check_*.py exit 0 即完成」，而脚本由同一 Agent 编写——静态正则检查全绿不等于产物真实可用。生产实证（2026-11-23）：verify_app.py 34/34 全绿，`xcrun swiftc -typecheck` 实际编译失败（`\u{}` 转义嵌插值、SeedData 未定义）；且 docs/DESIGN.md（EchoNote）与 Swift 源码（Wengu）概念漂移两套。
+- **风险**：自主交付质量靠 Agent 自觉；「完成」可以被自写脚本自证，D11 的确定性验收缺口在真实任务里兑现。
+- **方案**：验收钉死时对 Swift/iOS 等工程目标附加确定性条款（真实编译/测试回执：run_command 之 xcrun swiftc -typecheck 或 swift build exit 0）；质量门读取工具回执而非仅文件文本。已用主人优先级文本与聊天指引在当前目标上人工补强（概念收敛 + 真实编译回执），机制化改造未做。
+- **建议时机**：下一轮交付质量专项（与 D11 合并处理），优先级高。
+
+## D23 · m76 模型组重试用例全量负载下偶发计时抖动
+
+- **触发条件**：`python3 -m pytest -q` 全量运行时 `test_unavailable_group_requeues_same_run_and_does_not_replay_tools` 的随机参数偶发失败（2026-11-23 两次全量分别挂 [read_timeout-True] 与 [rate_limit-False]，单跑与整模块均稳定通过；M78 已记录同族抖动）。
+- **风险**：低（非正确性问题），但污染全量绿灯信号，掩盖真失败。
+- **方案**：给该用例的时钟/等待注入确定性（fake clock 或放宽窗口断言），与 m71 冷却计时用例一并处理。
+- **建议时机**：下次触碰 m76/m71 测试时顺手修。
+
+## D24 · GET /api/runs 未接 limit 参数
+
+- **现状**：路由只解析 `before/active/reviewable`，`?limit=N` 被静默忽略恒返回 60 条（`runs.list` 本身支持 limit）；监督脚本与外部观测者按 limit 取样时会误以为无新 run。
+- **风险**：低（前端走 before 游标不受影响）。
+- **方案**：路由补解析 `limit`（1..200 夹紧）传给 `runs.list`，加回归。
+- **建议时机**：下一批控制台/路由小修时顺手。
