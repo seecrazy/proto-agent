@@ -1190,8 +1190,13 @@ class ProtoAgent:
             if build.get("tested") or not valid_ios_evidence(self.code_workspace, project_dir, previous):
                 self.spine.store.put("delivery_builds", hashlib.sha256(project_dir.encode()).hexdigest(), {"build": build})
         passed = result.get("verified") is True
+        progress = bool(result.get("delivery_progress"))
+        # D26：slices 保持 M72 全量未验收计数，上限 4→12 给 App 级多轮
+        # 构建留空间（健康 WIP 每轮有真实增量，4 片即停会把监督者变成
+        # 自主链条的瓶颈）；零进展灾难仍由 stalled≥2 在第 2 片拦截，
+        # 三计数器互相清零的方案推演后被否（交替模式永不暂停）。
         slices = 0 if passed else prior.get("slices", 0) + 1
-        stalled = 0 if passed or result.get("delivery_progress") else prior.get("stalled", 0) + 1
+        stalled = 0 if passed or progress else prior.get("stalled", 0) + 1
         reason = ("delivery_no_progress" if stalled >= MAX_STALLED_SLICES else
                   "delivery_not_verified" if slices >= MAX_UNVERIFIED_SLICES else "")
         self.spine.store.put("goal_delivery", node.id, {"slices": slices, "stalled": stalled,

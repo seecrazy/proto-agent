@@ -21,7 +21,8 @@ from proto.coordination.coordination import CoordinationDB, CoordinationError
 from proto.fleet.manager import AgentManager
 from proto.runtime.model_pressure import ModelPressure, retry_after
 from proto.web.server import _activity_view
-from proto.work.delivery import ios_build_result, ios_build_start, main_project, project_files, valid_ios_evidence
+from proto.work.delivery import (MAX_UNVERIFIED_SLICES, ios_build_result, ios_build_start,
+                                  main_project, project_files, valid_ios_evidence)
 from proto.work.journal import GoalJournal
 
 
@@ -146,7 +147,10 @@ def test_max_steps_and_no_evidence_pause_across_restart(tmp_path):
         restarted.retry_delivery(goal.id)
 
 
-def test_changed_files_do_not_reset_total_unverified_limit(tmp_path):
+def test_changed_files_defer_pause_until_higher_unverified_limit(tmp_path):
+    """D26：有文件增量的多轮工程不被 4 片未验收卡停；全量未验收计数
+    到 12 才 blocked——否则监督者是自主链条瓶颈（2026-11-24 生产实证：
+    新 Wengu 树每轮落盘新文件仍 4 片被挡）。"""
     model = Scripted()
     agent = ProtoAgent(tmp_path, llm=model)
     goal = agent.goal_tree.add("修复小工具", "mid", acceptance="需要真实结果")
@@ -155,9 +159,27 @@ def test_changed_files_do_not_reset_total_unverified_limit(tmp_path):
         model.decisions = [{"tool": "write_file", "args": {"path": f"{project}/code.py", "content": str(number)}}]
         last = agent.work_on_goal(goal)
         assert last["delivery_progress"] is True
+    state = agent.delivery_state(goal.id)
+    assert not state["blocked"] and state["slices"] == 4
+    assert all("独立验收" in system for system in model.other)
+    for number in range(4, MAX_UNVERIFIED_SLICES):
+        model.decisions = [{"tool": "write_file", "args": {"path": f"{project}/code.py", "content": str(number)}}]
+        last = agent.work_on_goal(goal)
     assert last["reason"] == "delivery_not_verified" and last["status"] == "blocked"
     assert agent.delivery_state(goal.id)["stalled"] == 0
-    assert all("独立验收" in system for system in model.other)
+
+
+def test_progressless_rounds_pause_fast_on_stall(tmp_path):
+    """连续零进展轮仍由 stalled≥2 快速拦截（M72 安全性不降）。"""
+    model = Scripted()
+    agent = ProtoAgent(tmp_path, llm=model)
+    goal = agent.goal_tree.add("空转目标", "mid", acceptance="需要真实结果")
+    main_project(agent, goal)
+    model.decisions = [{"tool": "clock", "args": {}, "category": "read_draft"}]
+    agent.work_on_goal(goal)
+    model.decisions = [{"tool": "clock", "args": {}, "category": "read_draft"}]
+    last = agent.work_on_goal(goal)
+    assert last["reason"] == "delivery_no_progress" and last["status"] == "blocked"
 
 
 def test_shared_workspace_and_prerequisites_leave_legacy_projects_intact(tmp_path):

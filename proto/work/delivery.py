@@ -15,7 +15,10 @@ from proto.fleet.activity import artifact_path
 
 
 MAX_STALLED_SLICES = 2
-MAX_UNVERIFIED_SLICES = 4
+# D26（2026-11-24）：4→12。App 级目标需要多轮 24 步才能凑齐验收，每轮
+# 都有真实文件增量的健康 WIP 在 4 片处被卡停会把监督者变成自主链条的
+# 瓶颈；零进展灾难仍由 MAX_STALLED_SLICES=2 在第 2 牏拦截。
+MAX_UNVERIFIED_SLICES = 12
 _GENERATED = {"node_modules", "__pycache__", "build", "DerivedData", "dist"}
 _APP = re.compile(r"(?:iphone|ios|swiftui)", re.I)
 _DESIGN = re.compile(r"规格|设计|概念|spec(?:ification)?|design", re.I)
