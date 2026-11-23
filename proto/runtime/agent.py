@@ -72,7 +72,9 @@ from proto.profile.personas import (
 )
 from proto.exec.runcontext import current_run
 from proto.profile.self_facts import Lifetime, describe_self, self_fact_prompt, self_question
-from proto.work.delivery import (MAX_STALLED_SLICES, MAX_UNVERIFIED_SLICES, ProjectDirectoryError,
+from proto.work.delivery import (DELIVERY_AUTO_RETRY_MAX, DELIVERY_AUTO_RETRY_FIRST_S,
+                                 DELIVERY_AUTO_RETRY_COOLDOWN_S, MAX_STALLED_SLICES, MAX_UNVERIFIED_SLICES,
+                                 ProjectDirectoryError,
                                  ios_stage, main_project, project_bindings, project_files,
                                  project_path, stage_waiters, valid_ios_evidence)
 
@@ -1154,6 +1156,13 @@ class ProtoAgent:
                 cross_feedback = "；".join(bits)[:300]
         if self.delivery_state(node.id).get("stalled"):
             cross_feedback += "；上一工作片没有实质增量，改变做法或缩小到一个能验证的改动。"
+        state = self.delivery_state(node.id)
+        if state.get("auto_feedback"):
+            cross_feedback += ("；该目标曾因零进展/未验收被系统暂停后自动恢复（第 "
+                               f"{state.get('auto_retries')} 次）——禁止重复此前失败的路径，"
+                               "本轮第 1 步必须落盘一个与之前不同做法的最小增量。")
+            self.spine.store.put("goal_delivery", node.id,
+                                 {**state, "auto_feedback": False})
         result = AgenticLoop(self, max_steps=24, pool=pool).run(
             task, acceptance=acceptance, journal=journal,
             feedback=cross_feedback, goal_id=node.id, project_dir=project_dir, delivery_stage=stage)
@@ -1172,7 +1181,7 @@ class ProtoAgent:
             raise CoordinationError("no_active_goal", 404)
         if not self.delivery_state(goal_id).get("blocked") or self.sessions.pending_for_goal(goal_id):
             raise CoordinationError("delivery_not_retryable")
-        self.spine.store.put("goal_delivery", goal_id, {"slices": 0, "stalled": 0})
+        self.spine.store.put("goal_delivery", goal_id, {"slices": 0, "stalled": 0, "auto_retries": 0})
         self.spine.append(AuditEvent.OWNER_OVERRIDE, {"action": "retry_delivery", "goal_id": goal_id})
 
     def _record_delivery(self, node, result, project_dir):
@@ -1200,7 +1209,9 @@ class ProtoAgent:
         reason = ("delivery_no_progress" if stalled >= MAX_STALLED_SLICES else
                   "delivery_not_verified" if slices >= MAX_UNVERIFIED_SLICES else "")
         self.spine.store.put("goal_delivery", node.id, {"slices": slices, "stalled": stalled,
-                             "session_id": token, "reason": reason, "blocked": bool(reason), "verified": passed})
+                             "auto_retries": prior.get("auto_retries", 0),
+                             "session_id": token, "reason": reason, "blocked": bool(reason), "verified": passed,
+                             **({"blocked_at": self._now()} if reason else {})})
         if reason:
             self.spine.append("goal_delivery_hold", {"goal_id": node.id, "reason": reason, "slices": slices})
             self._inbox.append(f"〔交付暂停〕{node.text[:60]}未形成可验证成果；保留原工位和验收。"
@@ -1635,10 +1646,39 @@ class ProtoAgent:
 
     def _available_work(self):
         active = self.goal_tree.all_active()
+        self._auto_recover_delivery(active)
         excluded = self._goals_with_live_sessions() | stage_waiters(self.goal_tree, active)
         excluded.update(node.id for node in active if self.delivery_state(node.id).get("blocked"))
         selected = self.goal_tree.select_executable(self.state.owner_priority or "", excluded=excluded)
         return selected, bool(excluded)
+
+    def _auto_recover_delivery(self, active):
+        """交付阻塞不再死等主人：冷却后自动恢复并注入换打法指令（有上限），
+        上限耗尽才真正留给人。主人手动 retry 会重置自动配额。"""
+        now = self._now()
+        for node in active:
+            state = self.delivery_state(node.id)
+            if not state.get("blocked"):
+                continue
+            retries = state.get("auto_retries", 0)
+            if retries >= DELIVERY_AUTO_RETRY_MAX or self.sessions.pending_for_goal(node.id):
+                continue
+            blocked_at = state.get("blocked_at") or 0
+            if not blocked_at:
+                continue  # 旧格式/未知阻塞时间：保守留给主人
+            cooldown = DELIVERY_AUTO_RETRY_FIRST_S if retries == 0 else DELIVERY_AUTO_RETRY_COOLDOWN_S
+            if now - blocked_at < cooldown:
+                continue
+            reset = {"slices": 0, "stalled": 0, "auto_retries": retries + 1, "auto_feedback": True,
+                     "session_id": state.get("session_id"), "reason": "", "blocked": False,
+                     "verified": False}
+            self.spine.store.put("goal_delivery", node.id, reset)
+            self.spine.append("goal_delivery_auto_retry",
+                              {"goal_id": node.id, "attempt": retries + 1,
+                               "reason": state.get("reason")})
+            if retries == 0:
+                self._inbox.append(f"〔自动恢复〕{node.text[:50]}…此前因{state.get('reason')}暂停，"
+                                   "已自动恢复并要求换打法；多次仍不行会再来找你。")
 
     def heartbeat_ready(self):
         if self.model_status()["waiting"]:

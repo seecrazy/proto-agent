@@ -18,9 +18,9 @@ from proto.work.journal import GoalJournal
 from tests.test_m66_fleet_runs import console, request, waited
 
 
-TASK = "推进 SwiftUI 交付"
-ACCEPTANCE = "Product.swift 已写入，包含产品名称"
-WRITE = {"tool": "write_file", "args": {"path": "Product.swift", "content": "产品名称"}, "category": "workspace_write"}
+TASK = "推进交付简报"
+ACCEPTANCE = "Report.md 已写入，包含产品名称"
+WRITE = {"tool": "write_file", "args": {"path": "Report.md", "content": "产品名称"}, "category": "workspace_write"}
 DONE = {"done": True, "summary": "可交付"}
 PASS = {"verdict": "pass"}
 EXIT_AT_CHECKPOINT = 87
@@ -158,11 +158,11 @@ def test_process_death_resumes_same_autonomous_run_without_replaying_tools(tmp_p
                 assert saved["result"]["proposal"]["verified"] is True
                 assert agent.goal_tree.get(goal_id).status == "done"
                 trace = agent.sessions.lookup(session["id"])["trace"]
-                assert len(trace) == 1 and trace[0]["result"] == "written:Product.swift"
+                assert len(trace) == 1 and trace[0]["result"] == "written:Report.md"
                 assert len({entry["step"] for entry in agent.sessions.lookup(session["id"])["events"]
                             if entry["kind"] == "decision"}) == 2
                 if phase != "verified":
-                    assert "已写入 Product.swift" in model.actor_inputs[0][1]
+                    assert "已写入 Report.md" in model.actor_inputs[0][1]
             assert len(model.actor_inputs) == (0 if phase in ("unknown", "verified") else 1)
         finally:
             restarted.runs.stop()
@@ -334,7 +334,7 @@ def test_actor_context_is_bounded_and_keeps_older_receipts(tmp_path):
         assert user.count(TASK) == 1
         assert unique not in user
         assert size(user[user.index("\n\n已有观察"):]) <= MAX_HISTORY_BYTES
-    assert "已写入 Product.swift" in model.actor_inputs[-1][1]
+    assert "已写入 Report.md" in model.actor_inputs[-1][1]
     history = model.actor_inputs[-1][1].split("\n\n已有观察", 1)[1]
     assert "notes-4.txt" in history
     assert "notes-0.txt" not in history
@@ -348,7 +348,7 @@ def test_oversized_mandatory_context_fails_closed(tmp_path):
     result = AgenticLoop(agent).run("中" * MAX_ACTOR_BYTES)
     assert result["status"] == "failed" and result["reason"] == "context_budget_exceeded"
     assert not agent.llm.actor_inputs
-    assert not (agent.code_workspace.root / "Product.swift").exists()
+    assert not (agent.code_workspace.root / "Report.md").exists()
 
 
 def test_journal_does_not_treat_failed_edit_or_model_summary_as_artifact(tmp_path):

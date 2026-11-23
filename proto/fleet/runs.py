@@ -29,6 +29,12 @@ _KEY = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _MODEL_RETRY_DELAYS = (5, 10, 20)
 _MAX_RESTART_RESUMES = 2
 _SAFE_RESUME_REASONS = frozenset({"safe_resume_limit", "model_retry_exhausted", "safe_resume_model"})
+# 模型重试耗尽后的自动续接：失败发生在模型侧、无未知副作用，与主人点
+# "继续原任务"同语义。夜间供应商长时间限流时若无自动续接，run 会停在
+# needs_reconciliation 死等主人（2026-11-24 生产实证：02:28 停摆 5 小时
+# 零进展）。长冷却 + 每条 run 有界次数，耗尽才真正留给主人裁决。
+AUTO_RECOVER_AFTER_S = 600
+AUTO_RECOVER_MAX = 24
 
 
 def _continuation(run):
@@ -119,6 +125,7 @@ class RunCoordinator:
         self._pick_lock = threading.Lock()
         self._workers = []
         self._live = 0
+        self._next_auto_recover = 0.0
 
     def notify(self):
         with self._condition:
@@ -293,6 +300,55 @@ class RunCoordinator:
     def continue_reconciliation(self, run_id, generation):
         return self._resolve_reconciliation(run_id, generation, resume=True)
 
+    def auto_recover(self):
+        """模型重试耗尽的 needs_reconciliation 自动续接（主人零介入的
+        夜间续航）。只碰 reason=model_retry_exhausted 且会话可安全恢复
+        的 run；每条 run 最多 AUTO_RECOVER_MAX 次，冷却 AUTO_RECOVER_AFTER_S。
+        """
+        deadline = time.time() - AUTO_RECOVER_AFTER_S
+        with self.database.connect() as connection:
+            rows = connection.execute("""
+                SELECT id, agent_id, generation, updated_at,
+                       coalesce(json_extract(result, '$.auto_recovers'), 0) AS auto_recovers
+                FROM runs WHERE status = 'needs_reconciliation'
+                AND reason = 'model_retry_exhausted' AND updated_at <= ?
+                AND auto_recovers < ?
+            """, (deadline, AUTO_RECOVER_MAX)).fetchall()
+        recovered = []
+        for row in rows:
+            lock = self.manager.ops_lock(row["agent_id"])
+            if not lock.acquire(blocking=False):
+                continue
+            try:
+                agent = self.manager.get(row["agent_id"])
+                if agent is None:
+                    continue
+                with self.database.connect(write=True) as connection:
+                    run = self._get_locked(connection, row["id"])
+                    if run["status"] != "needs_reconciliation" or run["reason"] != "model_retry_exhausted":
+                        continue
+                    if not (run["reason"] in _SAFE_RESUME_REASONS and self._safe_session(run, agent)):
+                        continue
+                    if run["cancel_requested"]:
+                        continue
+                    attempts = (run["result"] or {}).get("auto_recovers", 0)
+                    self._save_result(connection, run, "queued", "safe_resume_ready",
+                                      self._resume_result(run, model_retries=0, restart_attempts=0,
+                                                          auto_recovers=attempts + 1))
+                    record = self._get_locked(connection, row["id"])
+                record_execution("run_auto_recovered", agent_id=row["agent_id"], run_id=row["id"],
+                                 generation=record["generation"], attempt=attempts + 1)
+                if attempts == 0:
+                    with agent.background_write():
+                        agent._inbox.append("〔自动续航〕模型长时间不可用后已自动续接原任务，"
+                                            "不需要你操作；若多次续接仍失败会再来找你。")
+                recovered.append(row["id"])
+            finally:
+                lock.release()
+        if recovered:
+            self.notify()
+        return recovered
+
     def _resolve_reconciliation(self, run_id, generation, *, resume):
         original = self.get(run_id)
         lock = self.manager.ops_lock(original["agent_id"])
@@ -386,6 +442,10 @@ class RunCoordinator:
                         continue
                     if self._remember_dialogue():
                         continue
+                    now = time.time()
+                    if now >= self._next_auto_recover:
+                        self._next_auto_recover = now + 30.0
+                        self.auto_recover()
                 except Exception as exc:
                     record_execution("runtime_error", stage="dispatcher", exception_type=type(exc).__name__)
                     logging.exception("Fleet dispatcher iteration failed")
@@ -624,7 +684,7 @@ class RunCoordinator:
 
     def _save_result(self, connection, run, status, reason, result, waiting=None):
         previous = run["result"] or {}
-        result = {**{key: previous[key] for key in ("model_retries", "restart_attempts") if key in previous}, **result}
+        result = {**{key: previous[key] for key in ("model_retries", "restart_attempts", "auto_recovers") if key in previous}, **result}
         if run["work_id"]:
             status, reason, result = self.projects.finish(connection, run, status, reason, result)
         connection.execute("""

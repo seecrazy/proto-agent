@@ -19,6 +19,11 @@ MAX_STALLED_SLICES = 2
 # 都有真实文件增量的健康 WIP 在 4 片处被卡停会把监督者变成自主链条的
 # 瓶颈；零进展灾难仍由 MAX_STALLED_SLICES=2 在第 2 牏拦截。
 MAX_UNVERIFIED_SLICES = 12
+# 交付阻塞的自动恢复（D26 续·完全自主）：冷却后带换打法指令自动重试，
+# 有界次数；上限耗尽前不再自行恢复，真正留给人裁决。
+DELIVERY_AUTO_RETRY_MAX = 3
+DELIVERY_AUTO_RETRY_FIRST_S = 900      # 首次：15 分钟
+DELIVERY_AUTO_RETRY_COOLDOWN_S = 1800  # 后续：30 分钟
 _GENERATED = {"node_modules", "__pycache__", "build", "DerivedData", "dist"}
 _APP = re.compile(r"(?:iphone|ios|swiftui)", re.I)
 _DESIGN = re.compile(r"规格|设计|概念|spec(?:ification)?|design", re.I)

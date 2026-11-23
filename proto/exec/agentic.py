@@ -94,6 +94,26 @@ def _overlap(a: str, b: str) -> bool:
     return bool(_tokens(a) & _tokens(b))
 
 
+def _has_swift_sources(workspace, directory, trace) -> bool:
+    """工位里是否已有 Swift 源码：磁盘现存（含子目录，封顶扫描）或本轮轨迹
+    写过 .swift。D22 的工程事实判定——不依赖任务措辞。"""
+    root = getattr(workspace, "root", None)
+    if root is not None and directory:
+        try:
+            base = (Path(root) / str(directory)).resolve()
+            base.relative_to(Path(root).resolve())
+            for index, path in enumerate(base.rglob("*.swift")):
+                if index >= 64:
+                    break
+                return True
+        except (OSError, ValueError):
+            pass
+    for step in trace or []:
+        if str((step.get("args") or {}).get("path") or "").endswith(".swift"):
+            return True
+    return False
+
+
 class AgenticLoop:
     def __init__(self, agent, max_steps: int = 12, pool: str = "owner_tasks"):
         self._agent = agent
@@ -443,6 +463,12 @@ class AgenticLoop:
         directory = session["context"]["project_dir"]
         ios_required = delivery is not None and delivery["stage"] in ("build", "verify")
         requirements = set() if ios_required else set(session.get("local_checks", []))
+        if not ios_required and "build" not in requirements and _has_swift_sources(
+                self._agent.code_workspace, directory, trace):
+            # D22（2026-11-24 生产实证）：确定性编译回执不依赖任务文本恰好
+            # 写着"编译/构建"——工位里已有 .swift 源码（含本轮写入）就必
+            # 须有真实编译回执，自写静态检查脚本不能自证实现完成。
+            requirements.add("build")
 
         def _finish(result: Dict) -> Dict:
             """统一出口：无论怎么结束都把接力小结写进日志（M45）。"""
