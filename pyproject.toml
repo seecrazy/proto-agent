@@ -28,7 +28,7 @@ include = ["proto*"]
 exclude = ["proto_data*"]
 
 [tool.setuptools.package-data]
-"proto.skills" = ["*/SKILL.md"]
+"proto.skills" = ["*/SKILL.md", "*/*.py"]
 "proto.textstyle" = ["rules.json"]
 
 [tool.pytest.ini_options]

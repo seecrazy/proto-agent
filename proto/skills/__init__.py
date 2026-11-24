@@ -6,7 +6,8 @@ from functools import lru_cache
 from importlib.resources import files
 
 
-_NAMES = ("design-development-verification", "swift-ios-build", "local-verification", "natural-chinese-dialogue")
+_NAMES = ("design-development-verification", "swift-ios-build", "ios-app-project", "local-verification",
+          "natural-chinese-dialogue")
 _MAX_BYTES = 2500
 
 
@@ -31,4 +32,8 @@ def catalog():
 
 def read_skill(name):
     description, instructions, digest = _load(name)
-    return {"name": name, "description": description, "instructions": instructions, "sha256": digest}
+    # 技能自带的脚本（绝对路径）：技能只说明做法，不授予工具权限
+    folder = files(__package__).joinpath(name)
+    scripts = {path.stem: str(path) for path in sorted(folder.iterdir()) if path.name.endswith(".py")}
+    return {"name": name, "description": description, "instructions": instructions,
+            "sha256": digest, "scripts": scripts}

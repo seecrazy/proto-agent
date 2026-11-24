@@ -72,7 +72,8 @@ def _package_scripts(folder, markers):
 
 def inspect_build(workspace, cwd=""):
     report = workspace.command_environment(_PROGRAMS)
-    report.update(cwd=cwd or ".", project_state="directory_unavailable", inputs=[], next=[], scan_complete=True)
+    report.update(cwd=cwd or ".", project_state="directory_unavailable", inputs=[], next=[], hints=[],
+                  scan_complete=True)
     try:
         folder = workspace._abs(cwd).resolve()
         if not folder.is_dir():
@@ -115,6 +116,10 @@ def inspect_build(workspace, cwd=""):
         report["inputs"].append({"kind": "swift-package", "path": "Package.swift"})
         add_check("swift", "build")
         add_check("swift", "test")
+        if not xcode:
+            # M82：Swift 包能编译不等于拿到 iPhone App；交付门要的是 .xcodeproj 的模拟器回执
+            report["hints"].append("工位只有 Swift Package、没有 Xcode 工程：iOS 应用交付需要 .xcodeproj——"
+                                   "read_skill ios-app-project 按说明生成")
     if markers & _PYTHON:
         report["inputs"].append({"kind": "python", "paths": sorted(markers & _PYTHON)})
         interpreter = next((name for name in ("python3", "python") if programs[name]), None)

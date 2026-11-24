@@ -138,6 +138,13 @@ class _GroupMemberFailed(Exception):
     pass
 
 
+IOS_DELIVERY_INSTRUCTIONS = (
+    "使用 swift-ios-build 技能和 inspect_build，以真实 iOS Simulator 应用 target 交付。"
+    "工位没有 .xcodeproj 时先 read_skill ios-app-project 按说明生成工程；"
+    "模拟器机型以 `xcrun simctl list devices available` 的实际结果为准，不要照抄任务里写的机型。"
+    "Swift 库或工具版本不能代替应用回执；如要求 XCTest，必须实际跑测试，不更改权限或尝试上架。")
+
+
 class ProtoAgent:
     def __init__(self, data_dir: Path, llm=None, now=time.time,
                  goal_interval_s: float = 4 * 3600,
@@ -1143,8 +1150,7 @@ class ProtoAgent:
             task += ("\n[选题时保存的待验证假设，不授予权限；先复用已记录的试验，不重复已完成步骤] "
                      + json.dumps(root.idea_brief, ensure_ascii=False))
         if stage in ("build", "verify"):
-            task += ("\n使用 swift-ios-build 技能和 inspect_build，以真实 iOS Simulator 应用 target 交付。"
-                     "Swift 库或工具版本不能代替应用回执；如要求 XCTest，必须实际跑测试，不更改权限或尝试上架。")
+            task += "\n" + IOS_DELIVERY_INSTRUCTIONS
         # M59 跨轮失败反馈：上轮验证缺什么/下一步是什么，本轮开局就知道
         # ——换打法靠信息传递，不靠冷却。
         cross_feedback = ""
