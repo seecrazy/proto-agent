@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import uuid
@@ -22,6 +23,7 @@ from proto.exec.engineering import (engineering_topic, inspect_build, missing_ch
 from proto.exec.exploration import bind_explorer, investigate
 from proto.exec.subagent import bind_subagent
 from proto.exec.plan_evidence import EvidenceError, OutputEvidence
+from proto.exec.observations import command_view
 from proto.exec.router import Task, TaskResult, VARIANT_ID
 from proto.exec.sessions import SESSION_SCHEMA_VERSION, TERMINAL_STATES
 from proto.exec.work_context import (actor_input_budget, decision_input, size, target_args,
@@ -186,6 +188,13 @@ class AgenticLoop:
     def _save(self):
         self._agent.sessions.save(self._session)
 
+    def _command_base(self, arguments) -> str:
+        """命令 cwd 的绝对路径：输出里的绝对路径按它裁成工位相对路径。"""
+        cwd = str((arguments or {}).get("cwd") or "")
+        if not cwd or os.path.isabs(cwd):
+            return os.path.realpath(cwd) if cwd else ""
+        return os.path.realpath(Path(self._agent.code_workspace.root) / cwd)
+
     def _observe(self, result):
         session = self._session
         pending = session["pending_call"]
@@ -200,7 +209,13 @@ class AgenticLoop:
                                      "ok": False, "ts": time.time()})
         else:
             observation = result.step_results[-1] if result.step_results else ""
-            excerpt = _clip(self._agent.tools, tool, observation)
+            if tool in ("run_command", "run_python") and isinstance(observation, dict):
+                # M82：命令结果诊断优先（退出码→错误摘要→输出尾部）。字典字符串把
+                # stdout 放在最前，压缩裁尾后模型只剩构建横幅，编译错误全部丢失。
+                excerpt = command_view(observation, self._agent.tools.obs_limit(tool),
+                                       base=self._command_base(pending["args"]))
+            else:
+                excerpt = _clip(self._agent.tools, tool, observation)
             call_summary = target_args(pending["args"])
             path = written_file(tool, pending["args"], observation)
             session["observations"].append(f"{tool}({call_summary}) → {excerpt}")
