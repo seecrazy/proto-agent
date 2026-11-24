@@ -2,6 +2,14 @@
 
 > 当前完整方案统一阅读 [DESIGN.md](DESIGN.md)。本文件只记录里程碑、实现状态与验证证据，不作为第二份设计。
 
+## M84 — 「结果未知，待核对」：谁来核对、怎么核对（2026-11-24，主人问「待谁核对」）
+
+- **背景**：主人在 run 执行中途重启控制台（21:40），该 run 进入 needs_reconciliation / interrupted_without_final_receipt，界面显示「结果未知，待核对」——谁核对、怎么核对没有任何说明，也没有自动化。这是完全自主目标的又一个结构性缺口（D7 记录过）。
+- **立场**：效果有本地真相源的步骤由 PROTO 自己核对；只有对外部世界有不可逆影响的动作才留给主人。
+- **修复**（提交 af22a67，tests/test_m84_reconciliation.py）：中断的 pending 是 write_file/edit_file（workspace_write）时从磁盘判定效果——write 看文件存在且内容一致；edit 三态（new 在=已生效、old 在=未执行、都不在=说不清）。可判定 → 会话写「恢复核对」说明、清 pending、置回可安全续跑形态，run 以 interrupted_requeued 续跑；命令与对外动作没有本地真相源，仍留给主人（失败关闭不变）。m71 的 unknown 相位迁移为自动核对续跑。
+- **怎么核对（留给主人的那部分）**：控制台 run 面板看 timeline（中断在哪一步、什么工具、参数）；工作区看实际文件；然后 `POST /api/runs/{id}/reconcile`——`{confirmed:true, continue_safe:true}` 继续原任务，`{confirmed:true}` 关闭让后继 run 接手（需带 generation）。
+- **生产实例**：21:40 被重启打断的 run，中断步是沙盒内 `xcodebuild test`（命令，无本地真相源）——核对后以 owner_closed_unknown_effect 关闭，后继 run 立即接管继续交付目标。
+
 ## M83 — 「模型或额度受阻」根治（2026-11-24，主人问责「为什么总出现」）
 
 - **定量诊断**（执行日志，当日）：专家 2h45m 在干活、**2h35m 在等模型（占 48%）**。等待按结尾原因分：model_retry_wait 2h04m、safe_resume_model 20m、retry_exhausted 10m。逐层拆开是四件事，其中三件在 PROTO 自己这边：
