@@ -46,6 +46,7 @@ from proto.metacog.scheduler import MetacogScheduler
 from proto.metacog.strategies import StrategyLibrary
 from proto.state.agent_state import AgentState, StateManager
 from proto.state.desires import DesireDynamics
+from proto.llm.decision import extra_decisions
 from proto.llm.breaker import CircuitBreaker, GROUP_FAILOVER_REASONS, describe_model_failure
 from proto.llm.client import LLMError, ModelPressureWait
 from proto.llm.errors import ModelRequestStopped
@@ -804,6 +805,7 @@ class ProtoAgent:
                 else:
                     reply = client.complete(system, user)
             usage = getattr(client, "last_usage", None)
+            dropped = extra_decisions(reply) if decision else 0      # 模型一步多交的决策数（已丢掉）
             amounts = [usage.get(unit, 0) for unit in ("input_tokens", "output_tokens")] if isinstance(usage, dict) else []
             total = (sum(amounts) if amounts and all(type(amount) is int and 0 <= amount <= 10**11 for amount in amounts)
                      else 0)
@@ -845,7 +847,7 @@ class ProtoAgent:
         breaker.record_success(permit=permit)
         self.activity_event("model_returned", **activity)
         attempt_event("model_returned", tokens=total, duration_ms=round((time.monotonic() - started) * 1000),
-                      streamed=streamed)
+                      streamed=streamed, extra_calls=dropped)
         if ticket is not None:
             fleet_budget.settle(ticket.id, tokens=total)
         self.kernel.pools.finish_model(request_id, tokens=total, elapsed=time.monotonic() - started)

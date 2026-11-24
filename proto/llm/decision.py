@@ -101,6 +101,15 @@ def parse_decision(raw, *, strict=False):
         raise ValueError("decision_nesting_exceeded") from None
 
 
+def extra_decisions(raw):
+    """决策信封里被丢掉的多余决策数（模型一步交了多个时由 read_decision 写入）。"""
+    try:
+        value = int(json.loads(raw).get("_extra_calls", 0)) if isinstance(raw, str) else 0
+    except (ValueError, TypeError, AttributeError):
+        return 0
+    return max(0, min(value, 50))
+
+
 def decision_json(decision):
     result = json.dumps(validate_decision(decision), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     if len(result.encode("utf-8")) > _MAX_DECISION_BYTES:

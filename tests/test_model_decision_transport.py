@@ -132,7 +132,9 @@ def test_native_stream_assembles_one_decision_and_reports_usage(wire, client_typ
     (openai_decision(WRITE)[:-1], "model_stream_interrupted"),
     ([openai_tool('{"tool":', name=DECISION_NAME), openai_delta({}, "tool_calls"), sse("[DONE]")],
      "model_invalid_response"),
-    ([openai_tool('{}', name=DECISION_NAME), openai_tool('{}', index=1), sse("[DONE]")], "model_invalid_response"),
+    # 多交的那个决策（index=1）被丢掉；第一个的参数 {} 本身不是合法决策，所以仍然无效
+    ([openai_tool('{}', name=DECISION_NAME), openai_tool('{}', index=1), openai_delta({}, "tool_calls"),
+      sse("[DONE]")], "model_invalid_response"),
     ([openai_delta({}, "length"), sse("[DONE]")], "model_output_truncated"),
     ([sse({"error": {"type": "rate_limit_error", "message": "private"}})], "model_rate_limited"),
     ([sse({"error": {"type": "invalid_request_error", "code": "context_length_exceeded"}})], "model_context_limit"),

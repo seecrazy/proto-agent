@@ -825,3 +825,87 @@ def test_note_misplaced_inside_args_is_lifted_instead_of_wasting_a_step(tmp_path
     rows = [row for row in result["trace"] if row["tool"] == "read_file"]
     assert len(rows) == 1 and rows[0]["note"] == "看看内容"
     assert not [text for text in session_of(agent, result)["observations"] if text.startswith("参数错误")]
+
+
+# ---- 模型一步交多个决策：执行第一个，不把整条回复作废 --------------------------
+# 生产实证（2026-11-24 19:37 起 detail 可查）：model_invalid_response 全部是
+# multiple_tool_calls / invalid_tool_call——模型在一条回复里交了两个决策。原实现把
+# 整条回复判无效，连前面已完整生成的大文件写入也一起丢，白等 70–100 秒再重试。
+
+from tests.test_model_decision_transport import (  # noqa: E402
+    DONE, WRITE, anthropic_decision, openai_decision, openai_delta, openai_tool, sse, wire)
+from proto.llm.client import AnthropicCompatClient, OpenAICompatClient  # noqa: E402
+from proto.llm.decision import DECISION_NAME, parse_decision  # noqa: E402
+from proto.llm.errors import ModelResponseError  # noqa: E402
+
+
+def openai_with_extra(decision):
+    first = openai_decision(decision)
+    return first[:3] + [openai_tool(json.dumps(DONE), index=1, name=DECISION_NAME, identifier="second")] + first[3:]
+
+
+def openai_pair_in_one_frame(decision):
+    first = openai_decision(decision)
+    both = openai_delta({"tool_calls": [{"index": 1, "id": "second", "function": {
+        "name": DECISION_NAME, "arguments": json.dumps(DONE)}}]})
+    return first[:3] + [both] + first[3:]
+
+
+def anthropic_with_extra(decision):
+    first = anthropic_decision(decision)
+    second = [sse({"type": "content_block_start", "index": 2, "content_block": {
+        "type": "tool_use", "id": "second", "name": DECISION_NAME, "input": {}}}),
+        sse({"type": "content_block_delta", "index": 2, "delta": {
+            "type": "input_json_delta", "partial_json": json.dumps(DONE)}}),
+        sse({"type": "content_block_stop", "index": 2})]
+    return first[:5] + second + first[5:]
+
+
+@pytest.mark.parametrize("client_type,frames", [
+    (OpenAICompatClient, openai_with_extra), (OpenAICompatClient, openai_pair_in_one_frame),
+    (AnthropicCompatClient, anthropic_with_extra)])
+def test_extra_decisions_in_a_stream_are_dropped_and_the_first_kept(wire, client_type, frames):
+    wire.replies.append(frames(WRITE))
+    client = client_type(wire.url, "test-key", execution_mode="native")
+    raw = client.complete_decision(LOOP_SYSTEM, "task", first_event=lambda _: None, cancelled=lambda: "")
+    decision = parse_decision(raw)
+    assert decision["tool"] == "write_file" and decision["args"] == WRITE["args"]
+    assert decision["_extra_calls"] == 1                 # 告诉循环：还有 1 个决策被丢掉了
+
+
+@pytest.mark.parametrize("client_type,payload", [
+    (OpenAICompatClient, {"choices": [{"message": {"tool_calls": [
+        {"id": "a", "type": "function", "function": {"name": DECISION_NAME, "arguments": json.dumps(WRITE)}},
+        {"id": "b", "type": "function", "function": {"name": DECISION_NAME, "arguments": json.dumps(DONE)}}]},
+        "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 3, "completion_tokens": 4}}),
+    (AnthropicCompatClient, {"stop_reason": "tool_use", "content": [
+        {"type": "tool_use", "id": "a", "name": DECISION_NAME, "input": WRITE},
+        {"type": "tool_use", "id": "b", "name": DECISION_NAME, "input": DONE}],
+        "usage": {"input_tokens": 3, "output_tokens": 4}})])
+def test_extra_decisions_in_a_json_reply_are_dropped_too(wire, client_type, payload):
+    wire.replies.append(("application/json", [json.dumps(payload).encode()]))
+    client = client_type(wire.url, "test-key", execution_mode="native")
+    decision = parse_decision(client.complete_decision(LOOP_SYSTEM, "task", first_event=lambda _: None,
+                                                       cancelled=lambda: ""))
+    assert decision["tool"] == "write_file" and decision["_extra_calls"] == 1
+
+
+def test_nested_tool_block_is_still_a_protocol_error(wire):
+    # 第二个工具块在第一个还没结束时就开场：这是真正的协议错乱，不能当「多交了一个决策」
+    frames = anthropic_decision(WRITE)
+    nested = sse({"type": "content_block_start", "index": 2, "content_block": {
+        "type": "tool_use", "id": "second", "name": DECISION_NAME, "input": {}}})
+    wire.replies.append(frames[:3] + [nested] + frames[3:])
+    client = AnthropicCompatClient(wire.url, "test-key", execution_mode="native")
+    with pytest.raises(ModelResponseError, match="model_invalid_response"):
+        client.complete_decision(LOOP_SYSTEM, "task", first_event=lambda _: None, cancelled=lambda: "")
+
+
+def test_loop_runs_the_first_of_several_decisions_and_tells_the_model(tmp_path):
+    model = ScriptedEngineer([dict(WRITE, _extra_calls=2), {"done": True, "summary": "写了"}])
+    agent = ProtoAgent(tmp_path, llm=model, goal_interval_s=0)
+    result = AgenticLoop(agent, max_steps=4).run("把产品名称写进 Report.md", "Report.md 已写入")
+    assert (agent.code_workspace.root / "Report.md").exists()
+    notes = [text for text in session_of(agent, result)["observations"] if "提交了 3 个决策" in text]
+    assert len(notes) == 1 and "只执行了第一个" in notes[0]
+    assert result["trace"][0]["args"] == WRITE["args"]        # 标记不混进工具参数

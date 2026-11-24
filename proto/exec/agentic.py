@@ -31,6 +31,7 @@ from proto.exec.work_context import (COMMAND_TOOLS, actor_input_budget, decision
                                      tool_receipt, written_file)
 from proto.llm.breaker import TRANSIENT_MODEL_REASONS, model_wait_reason
 from proto.llm.client import ModelPressureWait
+from proto.llm.decision import extra_decisions as _extra_decisions
 from proto.llm.decision import parse_decision as _parse_decision
 from proto.exec.runcontext import current_run, track_session
 from proto.system.execution_log import record_execution
@@ -677,8 +678,13 @@ class AgenticLoop:
                     retry_at = exc.retry_at if isinstance(exc, ModelPressureWait) else None
                     return _finish(self._model_stalled(failure, retry_at=retry_at))
                 session["next_step"] = step + 1
+                dropped = _extra_decisions(raw)
                 session["pending_decision"] = {"step": step, "raw": raw if isinstance(raw, str) else ""}
                 session["events"].append({"kind": "decision", **session["pending_decision"]})
+                if dropped:
+                    session["observations"].append(
+                        f"上一次回复里提交了 {dropped + 1} 个决策，只执行了第一个。每一步只提交一个决策，"
+                        "其余的之后逐步提交。")
                 self._save()
             else:
                 raw = saved["raw"]
@@ -687,6 +693,8 @@ class AgenticLoop:
                 return _finish(self._stop("cancelled", reason))
             try:
                 decision = _parse_decision(raw)
+                if isinstance(decision, dict):
+                    decision.pop("_extra_calls", None)      # 只是信封上的标记，不是工具参数
             except (TypeError, ValueError) as exc:
                 session["pending_decision"] = None
                 observations.append(f"决策格式错误：{exc}；请返回合法工具对象或 done=true。")

@@ -26,7 +26,7 @@ _IDENTIFIERS = frozenset({"agent_id", "run_id", "call_id", "profile_id", "role",
                           "detail"})
 _NUMBERS = frozenset({"attempt", "duration_ms", "http_status", "retry_at", "generation",
                      "estimated_input_tokens", "tokens", "model_retries", "restart_attempts", "exit_code",
-                     "hits_before", "hits_after"})
+                     "hits_before", "hits_after", "extra_calls"})
 _FLAGS = frozenset({"foreground", "grouped", "failover_eligible", "resumed", "decision", "streamed"})
 _REASONS = frozenset({
     "model_stream_interrupted", "model_invalid_response", "model_invalid_decision", "model_output_truncated",

@@ -50,6 +50,12 @@ class _Decision:
         self.block_closed = False
         self.finish = None
         self.usage = {}
+        # 模型一步交了多个决策时，第一个照常执行，其余只记数（见 extra_calls）
+        self._extras = set()
+
+    @property
+    def extra_calls(self):
+        return len(self._extras)
 
     def _usage(self, usage):
         if not isinstance(usage, dict):
@@ -91,12 +97,15 @@ class _Decision:
             self._text(delta.get("content"))
             calls = delta.get("tool_calls")
             if calls is not None:
-                if not isinstance(calls, list) or len(calls) > 1:
-                    raise ValueError("multiple_tool_calls")
-                for call in calls:
+                if not isinstance(calls, list):
+                    raise ValueError("invalid_tool_calls")
+                for position, call in enumerate(calls):
                     span = _mapping(call)
-                    if span.get("index", 0) != 0 or span.get("type", "function") != "function":
-                        raise ValueError("invalid_tool_call")
+                    # 非流式回包里的 tool_calls 不带 index，按列表位置区分
+                    index = span.get("index", position if complete else 0)
+                    if index != 0 or span.get("type", "function") != "function":
+                        self._extras.add(("call", str(index)))
+                        continue
                     identity = span.get("id")
                     if identity is not None and (not isinstance(identity, str) or (
                             self.call_id is not None and self.call_id != identity)):
@@ -122,12 +131,20 @@ class _Decision:
     def _anthropic_block(self, block, index, *, complete=False):
         item = _mapping(block)
         if item.get("type") == "tool_use":
-            if self.call_index is not None or type(index) is not int or index < 0:
+            if self.call_index is None:
+                if type(index) is not int or index < 0:
+                    raise ValueError("invalid_tool_call")
+                self.call_index = index
+                self.name = item.get("name")
+                self.input = _mapping(item.get("input", {}))
+                self.block_closed = complete
+            elif self.block_closed and index != self.call_index:
+                # 第一个工具块已经闭合，又开了一个：模型一步交了第二个决策。
+                # 此前整条回复判无效——连前面已完整生成的大文件写入也一起丢，
+                # 白等几十秒再重试（生产上 model_invalid_response 全是这个）。
+                self._extras.add(("block", index))
+            else:
                 raise ValueError("multiple_tool_calls")
-            self.call_index = index
-            self.name = item.get("name")
-            self.input = _mapping(item.get("input", {}))
-            self.block_closed = complete
         elif item.get("type") == "text":
             self._text(item.get("text"))
 
@@ -162,7 +179,11 @@ class _Decision:
                 self._text(delta.get("text"))
             elif delta.get("type") == "input_json_delta":
                 args = delta.get("partial_json")
-                if self.call_index is None or index != self.call_index or self.block_closed or self.input or not isinstance(args, str):
+                if not isinstance(args, str):
+                    raise ValueError("invalid_argument_delta")
+                if ("block", index) in self._extras:
+                    return True                      # 多余那个决策的参数增量：收下不看
+                if self.call_index is None or index != self.call_index or self.block_closed or self.input:
                     raise ValueError("invalid_argument_delta")
                 self.arguments.append(args)
         elif kind == "content_block_stop" and self.call_index is not None and index == self.call_index:
@@ -314,6 +335,8 @@ def read_decision(response, style, *, started, timeout, first_event, cancelled):
             raise ModelResponseError("model_invalid_response", "headers")
         result = decision.result()
         reader.check(force_cancel=True)
+        if decision.extra_calls:
+            result = decision_json(dict(json.loads(result), _extra_calls=decision.extra_calls))
         return result, decision.usage if len(decision.usage) == 2 else None
     except (ValueError, TypeError, RecursionError) as exc:
         # 协议哪条假设被打破要能查到：stage 只说了「在哪一步」，detail 说「是什么」
