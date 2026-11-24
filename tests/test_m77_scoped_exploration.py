@@ -240,10 +240,12 @@ def test_investigator_rejects_write_tool_escape_and_source_echo(tmp_path):
 
 def test_decision_input_compacts_history_without_provider_usage():
     old_source = "OLD-SOURCE-BODY-" * 900
-    # M82：最近读过的两个文件保留正文；old.py 之后又读了两个文件，所以被折叠成指针。
+    # M82：最近读过的 4 个文件保留正文；old.py 之后又读了 4 个文件，所以被折叠成指针。
     observations = [f"read_file({{'path': 'old.py', 'offset': 0}}) → {old_source}",
                     'read_file({"path": "recent1.py", "offset": 0}) → RECENT-ONE',
                     'read_files({"paths": ["recent2.py"]}) → RECENT-TWO',
+                    'read_files({"paths": ["recent3.py"]}) → RECENT-THREE',
+                    'read_files({"paths": ["recent4.py"]}) → RECENT-FOUR',
                     "grep({'pattern': 'needle'}) → needle"]
     trace = [{"tool": "explore_code", "args": {"question": "auth"},
               "result": {"status": "ok", "summary": "认证在 auth.py。",

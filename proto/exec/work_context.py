@@ -10,15 +10,17 @@ MAX_ACTOR_BYTES = 128 * 1024
 MAX_HISTORY_BYTES = 12 * 1024
 # M82：压缩后保留多少历史。原值 4 KiB 只留最近 2 条观察，模型「跑构建能看到
 # 报错、读文件却看不到正文」，生产上 23 步零写入。诊断优先整形后，同样的
-# 预算足够同时放下错误摘要和最近读过的两个文件。
-COMPACT_HISTORY_BYTES = 12 * 1024
+# 预算足够同时放下错误摘要和最近读过的几个文件。只留 2 个文件时实测出现
+# 轮换：模型需要同时看 3 个文件才能改第 4 个，读缺的那个就挤掉另一个，于是
+# 13 步都在循环重读（生产第一片）。
+COMPACT_HISTORY_BYTES = 16 * 1024
 TIGHT_HISTORY_BYTES = 3 * 1024
 MAX_ADVISORY_BYTES = 8 * 1024
 MAX_ITEM_BYTES = 6000
 KEEP_FILE_BYTES = 6000
 KEEP_COMMAND_BYTES = 3000
 KEEP_OTHER_BYTES = 800
-RECENT_FILES = 2
+RECENT_FILES = 4
 COMPACT_WINDOW = 60
 READ_TOOLS = ("read_file", "read_files")
 WRITE_TOOLS = ("write_file", "edit_file")

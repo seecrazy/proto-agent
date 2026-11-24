@@ -415,7 +415,11 @@ class CodeTools:
             return rejected("argv_too_long")
         name = Path(argv[0]).name
         if name not in self.COMMAND_ALLOWLIST:
-            return rejected("command_not_allowed", f"command_not_allowed:{name}")
+            # 生产第一片：模型两次想用 run_command 跑 grep 搜代码，白撞两步
+            return rejected("command_not_allowed",
+                            f"command_not_allowed:{name}——run_command 只能跑 "
+                            f"{' '.join(sorted(self.COMMAND_ALLOWLIST))}；搜代码用 grep 工具，"
+                            "列目录用 list_dir，读文件用 read_file")
         if name == "xcrun" and (len(argv) < 2
                                 or Path(argv[1]).name not in self.XCRUN_TOOLS):
             return rejected("xcrun_tool_not_allowed")

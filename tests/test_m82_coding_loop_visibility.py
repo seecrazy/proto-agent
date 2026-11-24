@@ -217,11 +217,11 @@ def test_compact_keeps_only_latest_read_of_same_file():
 
 
 def test_compact_folds_older_files_with_a_way_back():
-    observations = [read_obs("projects/wengu/one.swift", "ONE"),
-                    read_obs("projects/wengu/two.swift", "TWO"),
-                    read_obs("projects/wengu/three.swift", "THREE")]
+    observations = [read_obs(f"projects/wengu/{name}.swift", name.upper())
+                    for name in ("one", "two", "three", "four", "five")]
     text = compacted(observations)
-    assert "ONE line" not in text and "TWO line 1" in text and "THREE line 1" in text
+    assert "ONE line" not in text                                   # 第 5 个文件折叠成指针
+    assert all(f"{name} line 1" in text for name in ("TWO", "THREE", "FOUR", "FIVE"))   # 最近 4 个文件同时在视野里
     folded = [line for line in text.splitlines() if "one.swift" in line]
     assert folded and "正文已折叠" in folded[0] and "read_file(" in folded[0] and "offset" in folded[0]
 
@@ -245,10 +245,20 @@ def test_compact_stays_within_budget_with_many_steps():
     assert wc.size(tight) <= wc.TIGHT_HISTORY_BYTES and " line 1 " not in tight
 
 
+def test_compact_keeps_three_files_the_model_needs_at_once():
+    # 生产第一片：模型要同时看 Models、SM2Engine、WenguApp 才能改 WenguApp；
+    # 只留 2 个文件时读缺的那个就挤掉另一个，13 步都在循环重读。
+    observations = [read_obs("p/Models.swift", "MODELS", 30), read_obs("p/SM2Engine.swift", "ENGINE", 40),
+                    read_obs("p/WenguApp.swift", "APP", 60), build_obs("WenguApp.swift:20:13: error: boom")]
+    text = compacted(observations)
+    assert all(marker in text for marker in ("MODELS line 1", "ENGINE line 1", "APP line 1"))
+    assert "WenguApp.swift:20:13: error:" in text
+
+
 def test_budgets_match_spec(monkeypatch):
     monkeypatch.delenv("PROTO_ACTOR_INPUT_TOKENS", raising=False)
     assert wc.MAX_HISTORY_BYTES == 12 * 1024
-    assert wc.COMPACT_HISTORY_BYTES == 12 * 1024
+    assert wc.COMPACT_HISTORY_BYTES == 16 * 1024
     assert wc.TIGHT_HISTORY_BYTES == 3 * 1024
     assert wc.actor_input_budget() == 65536
     monkeypatch.setenv("PROTO_ACTOR_INPUT_TOKENS", "999999999")
@@ -256,13 +266,12 @@ def test_budgets_match_spec(monkeypatch):
 
 
 def test_decision_input_compacts_once_history_exceeds_the_raw_ceiling():
-    observations = [read_obs("projects/wengu/old.swift", "OLD", 400),
-                    read_obs("projects/wengu/mid.swift", "MID"),
-                    read_obs("projects/wengu/Sources/Wengu/Models.swift", "MODELS", 30),
-                    build_obs("Sources/Wengu/Models.swift:7:6: error: 'Unique' is only available in iOS 18 or newer")]
+    observations = [read_obs("projects/wengu/old.swift", "OLD", 400)] + [
+        read_obs(f"projects/wengu/{name}.swift", name.upper()) for name in ("a", "b", "c", "d")]
+    observations.append(build_obs("Sources/Wengu/Models.swift:7:6: error: 'Unique' is only available in iOS 18 or newer"))
     assert sum(wc.size(text) + 8 for text in observations) > wc.MAX_HISTORY_BYTES
     output = wc.decision_input("系统", "固定规则：不许静默裁剪。", "辅助信息" * 300, observations, [], 65536)
-    assert "OLD line" not in output and "MODELS line 1" in output
+    assert "OLD line" not in output and "D line 1" in output and "A line 1" in output
     assert "Models.swift:7:6: error:" in output and "固定规则" in output and "辅助信息" in output
     assert wc.size("系统" + output) <= 65536
 
@@ -768,3 +777,23 @@ def test_execution_log_accepts_the_new_reason_and_detail():
 
     assert execution_reason("shell_syntax_not_supported") == "shell_syntax_not_supported"
     assert "detail" in _IDENTIFIERS
+
+
+def test_disallowed_command_points_at_the_right_tool(tmp_path):
+    tools = CodeTools(tmp_path)
+    rejected = tools.run_command(["grep", "-rn", "struct ", "."], cwd="")
+    assert rejected["reason"] == "command_not_allowed" and rejected["exit"] == -1
+    assert "grep 工具" in rejected["stderr"] and "list_dir" in rejected["stderr"]
+
+
+def test_failure_detail_never_trips_over_http_error():
+    from urllib.error import HTTPError
+    from proto.runtime.agent import _failure_detail
+
+    denied = HTTPError("https://example.invalid", 403, "private", {}, None)
+    assert _failure_detail(denied) == ""                # HTTPError 的 __getattr__ 对未知属性抛 KeyError
+    broken = ValueError("invalid_argument_delta")
+    assert _failure_detail(broken) == ""
+    tagged = RuntimeError("x")
+    tagged.detail = "RuntimeError-x"
+    assert _failure_detail(tagged) == "RuntimeError-x"
