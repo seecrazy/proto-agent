@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Generate a deterministic Xcode project: one iOS app target plus an optional unit-test target.
+"""Generate a deterministic Xcode project: one iOS app target plus optional
+unit-test and UI-test targets.
 
 Usage: python3 make_xcodeproj.py project.json
 
@@ -180,6 +181,25 @@ def _collect(root, entries, extensions, label):
     return sorted(set(found), key=lambda item: item.relative_to(root).as_posix())
 
 
+def _load_test_part(root, spec, key, name, bundle):
+    """tests 与 ui_tests 共用一份校验：命名/标识与 App 不同、来源只收 Swift。"""
+    part = spec.get(key)
+    if part is None:
+        return None
+    if not isinstance(part, dict):
+        raise SpecError("%s must be an object with name, bundle_id and sources" % key)
+    tname, tbundle = part.get("name", ""), part.get("bundle_id", "")
+    if not isinstance(tname, str) or not NAME.fullmatch(tname) or tname == name:
+        raise SpecError("%s.name must differ from name and use only letters, digits or underscores" % key)
+    if not isinstance(tbundle, str) or not BUNDLE.fullmatch(tbundle) or tbundle == bundle:
+        raise SpecError("%s.bundle_id must look like com.example.app.tests and differ from bundle_id" % key)
+    sources = _collect(root, part.get("sources"), {".swift"}, key + ".sources")
+    if not sources:
+        raise SpecError("%s.sources listed no Swift files" % key)
+    return {"name": tname, "bundle_id": tbundle, "sources": sources,
+            "settings": _per_mode(key + ".settings", part.get("settings"))}
+
+
 def load_spec(path, root):
     try:
         spec = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -209,36 +229,40 @@ def load_spec(path, root):
         if not isinstance(key, str) or not INFO_KEY.fullmatch(key):
             raise SpecError("info keys may use only letters, digits or underscores: %r" % (key,))
         _setting(info[key])
-    tests = spec.get("tests")
-    test_sources = []
-    if tests is not None:
-        if not isinstance(tests, dict):
-            raise SpecError("tests must be an object with name, bundle_id and sources")
-        test_name, test_bundle = tests.get("name", ""), tests.get("bundle_id", "")
-        if not isinstance(test_name, str) or not NAME.fullmatch(test_name) or test_name == name:
-            raise SpecError("tests.name must differ from name and use only letters, digits or underscores")
-        if not isinstance(test_bundle, str) or not BUNDLE.fullmatch(test_bundle) or test_bundle == bundle:
-            raise SpecError("tests.bundle_id must look like com.example.app.tests and differ from bundle_id")
-        test_sources = _collect(root, tests.get("sources"), {".swift"}, "tests.sources")
-        if not test_sources:
-            raise SpecError("tests.sources listed no Swift files")
+    tests = _load_test_part(root, spec, "tests", name, bundle)
+    ui_tests = _load_test_part(root, spec, "ui_tests", name, bundle)
+    if tests and ui_tests:
+        for field in ("name", "bundle_id"):
+            if tests[field] == ui_tests[field]:
+                raise SpecError("ui_tests.%s must differ from tests.%s" % (field, field))
     return {"name": name, "bundle_id": bundle, "target": str(target), "swift": str(swift),
             "family": str(family), "sources": sources, "resources": resources, "info": info,
             "settings": _per_mode("settings", spec.get("settings")),
-            "tests": {"name": tests["name"], "bundle_id": tests["bundle_id"],
-                      "settings": _per_mode("tests.settings", tests.get("settings"))} if tests is not None else None,
-            "test_sources": test_sources}
+            "tests": tests, "ui_tests": ui_tests}
+
+
+# 单元测试注入 App 进程（TEST_HOST/BUNDLE_LOADER）；UI 测试独立跑、由 TEST_TARGET_NAME
+# 指回被测 App——XCUITest 的点按走查只认后一种 target。
+TEST_TARGET_KINDS = (
+    ("tests", "com.apple.product-type.bundle.unit-test"),
+    ("ui_tests", "com.apple.product-type.bundle.ui-testing"),
+)
+
+
+def _test_extra_settings(key, app_name):
+    host = "$(BUILT_PRODUCTS_DIR)/%s.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/%s" % (app_name, app_name)
+    if key == "tests":
+        return {"BUNDLE_LOADER": _Raw("$(TEST_HOST)"), "TEST_HOST": _Raw(host)}
+    return {"TEST_TARGET_NAME": _Raw(app_name)}
 
 
 def build(spec, root):
-    name, tests_spec = spec["name"], spec["tests"]
+    name = spec["name"]
     doc = _Doc()
     project = _ident("PBXProject", name)
     main, products = _ident("PBXGroup", "main"), _ident("PBXGroup", "products")
     app = _ident("PBXNativeTarget", name)
-    tests = _ident("PBXNativeTarget", tests_spec["name"]) if tests_spec else None
     app_product = _ident("PBXFileReference", "product:" + name)
-    test_product = _ident("PBXFileReference", "product:" + tests_spec["name"]) if tests_spec else None
     order = {products: "~"}      # group children sort by path; Products stays last
 
     doc.add(main, "", {"isa": "PBXGroup", "children": [_Ref(products)], "sourceTree": _Raw("<group>")})
@@ -248,11 +272,18 @@ def build(spec, root):
         "isa": "PBXFileReference", "explicitFileType": _Raw("wrapper.cfbundle"), "includeInIndex": 0,
         "path": _Raw(name + ".app"), "sourceTree": _Raw("BUILT_PRODUCTS_DIR")})
     doc.objects[products]["children"].append(_Ref(app_product))
-    if test_product:
-        doc.add(test_product, tests_spec["name"] + ".xctest", {
+
+    test_targets = []      # (key, part, product_type) 按清单顺序：单测在前、UI 测试在后
+    for key, product_type in TEST_TARGET_KINDS:
+        part = spec.get(key)
+        if not part:
+            continue
+        product = _ident("PBXFileReference", "product:" + part["name"])
+        doc.add(product, part["name"] + ".xctest", {
             "isa": "PBXFileReference", "explicitFileType": _Raw("wrapper.cfbundle"), "includeInIndex": 0,
-            "path": _Raw(tests_spec["name"] + ".xctest"), "sourceTree": _Raw("BUILT_PRODUCTS_DIR")})
-        doc.objects[products]["children"].append(_Ref(test_product))
+            "path": _Raw(part["name"] + ".xctest"), "sourceTree": _Raw("BUILT_PRODUCTS_DIR")})
+        doc.objects[products]["children"].append(_Ref(product))
+        test_targets.append((key, part, product_type, _ident("PBXNativeTarget", part["name"]), product))
 
     groups = {}
 
@@ -304,7 +335,6 @@ def build(spec, root):
 
     app_sources = [build_file(path, add_source(path)) for path in spec["sources"]]
     app_resources = [resource_file(path, add_resource(path)) for path in spec["resources"]]
-    test_sources = [build_file(path, add_source(path)) for path in spec["test_sources"]]
 
     def phase(kind, target, tag, files):
         ident = _ident(kind, "%s:%s" % (target, tag))
@@ -349,29 +379,30 @@ def build(spec, root):
         "productReference": _Ref(app_product), "productType": _Raw("com.apple.product-type.application")})
 
     targets, attributes = [_Ref(app)], {app: {"CreatedOnToolsVersion": _Raw("15.0")}}
-    if tests:
-        host = "$(BUILT_PRODUCTS_DIR)/%s.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/%s" % (name, name)
-        test_settings = dict(device, BUNDLE_LOADER=_Raw("$(TEST_HOST)"),
-                             PRODUCT_BUNDLE_IDENTIFIER=_Raw(tests_spec["bundle_id"]), TEST_HOST=_Raw(host))
-        proxy = _ident("PBXContainerItemProxy", "%s->%s" % (tests_spec["name"], name))
+    for key, part, product_type, tident, product in test_targets:
+        tname = part["name"]
+        settings = dict(device, PRODUCT_BUNDLE_IDENTIFIER=_Raw(part["bundle_id"]),
+                        **_test_extra_settings(key, name))
+        proxy = _ident("PBXContainerItemProxy", "%s->%s" % (tname, name))
         doc.add(proxy, "PBXContainerItemProxy", {
             "isa": "PBXContainerItemProxy", "containerPortal": _Ref(project), "proxyType": 1,
             "remoteGlobalIDString": app, "remoteInfo": _Raw(name)})
-        dependency = _ident("PBXTargetDependency", "%s->%s" % (tests_spec["name"], name))
+        dependency = _ident("PBXTargetDependency", "%s->%s" % (tname, name))
         doc.add(dependency, "PBXTargetDependency", {
             "isa": "PBXTargetDependency", "target": _Ref(app), "targetProxy": _Ref(proxy)})
-        test_list = configuration_list(tests_spec["name"], "PBXNativeTarget", tests_spec["name"], configurations(
-            tests_spec["name"], test_settings, tests_spec["settings"]))
-        test_phases = [phase("PBXSourcesBuildPhase", tests_spec["name"], "Sources", test_sources),
-                       phase("PBXFrameworksBuildPhase", tests_spec["name"], "Frameworks", []),
-                       phase("PBXResourcesBuildPhase", tests_spec["name"], "Resources", [])]
-        doc.add(tests, tests_spec["name"], {
+        sources = [build_file(path, add_source(path)) for path in part["sources"]]
+        test_list = configuration_list(tname, "PBXNativeTarget", tname, configurations(
+            tname, settings, part["settings"]))
+        test_phases = [phase("PBXSourcesBuildPhase", tname, "Sources", sources),
+                       phase("PBXFrameworksBuildPhase", tname, "Frameworks", []),
+                       phase("PBXResourcesBuildPhase", tname, "Resources", [])]
+        doc.add(tident, tname, {
             "isa": "PBXNativeTarget", "buildConfigurationList": test_list, "buildPhases": test_phases,
-            "buildRules": [], "dependencies": [_Ref(dependency)], "name": _Raw(tests_spec["name"]),
-            "productName": _Raw(tests_spec["name"]), "productReference": _Ref(test_product),
-            "productType": _Raw("com.apple.product-type.bundle.unit-test")})
-        targets.append(_Ref(tests))
-        attributes[tests] = {"CreatedOnToolsVersion": _Raw("15.0"), "TestTargetID": _Ref(app)}
+            "buildRules": [], "dependencies": [_Ref(dependency)], "name": _Raw(tname),
+            "productName": _Raw(tname), "productReference": _Ref(product),
+            "productType": _Raw(product_type)})
+        targets.append(_Ref(tident))
+        attributes[tident] = {"CreatedOnToolsVersion": _Raw("15.0"), "TestTargetID": _Ref(app)}
 
     for fields in doc.objects.values():
         if fields["isa"] == "PBXGroup":
@@ -390,10 +421,10 @@ def build(spec, root):
         "hasScannedForEncodings": 0, "knownRegions": [_Raw("en"), _Raw("Base")], "mainGroup": _Ref(main),
         "productRefGroup": _Ref(products), "projectDirPath": _Raw(""), "projectRoot": _Raw(""),
         "targets": targets})
-    return doc, project, app, tests
+    return doc, project, app, [entry[3] for entry in test_targets]
 
 
-def scheme(spec, doc, app, tests):
+def scheme(spec, doc, app, test_targets):
     def reference(target, product):
         return ('            <BuildableReference\n               BuildableIdentifier = "primary"\n'
                 '               BlueprintIdentifier = "%s"\n               BuildableName = "%s"\n'
@@ -410,16 +441,17 @@ def scheme(spec, doc, app, tests):
 
     app_ref = reference(app, spec["name"] + ".app")
     entries = entry("YES", app_ref)
+    test_refs = [reference(target, doc.comments[target] + ".xctest") for target in test_targets]
+    entries += "".join(entry("NO", test_ref) for test_ref in test_refs)
     test_action = ""
-    if tests:
-        test_ref = reference(tests, spec["tests"]["name"] + ".xctest")
-        entries += entry("NO", test_ref)
+    if test_refs:
+        testables = "".join('         <TestableReference skipped = "NO">\n%s         </TestableReference>\n'
+                            % test_ref for test_ref in test_refs)
         test_action = ('   <TestAction\n      buildConfiguration = "Debug"\n'
                        '      selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"\n'
                        '      selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"\n'
-                       '      shouldUseLaunchSchemeArgsEnv = "YES">\n      <Testables>\n'
-                       '         <TestableReference skipped = "NO">\n%s         </TestableReference>\n'
-                       '      </Testables>\n   </TestAction>\n' % test_ref)
+                       '      shouldUseLaunchSchemeArgsEnv = "YES">\n      <Testables>\n%s'
+                       '      </Testables>\n   </TestAction>\n' % testables)
     debugger = ('      selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"\n'
                 '      selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"\n')
     return (
@@ -446,14 +478,17 @@ def generate(manifest, root):
     if not manifest.is_absolute():
         manifest = root / manifest          # 清单路径相对工位，不依赖进程的当前目录
     spec = load_spec(manifest, root)
-    doc, project, app, tests = build(spec, root)
+    doc, project, app, test_targets = build(spec, root)
     folder = root / (spec["name"] + ".xcodeproj")
     schemes = folder / "xcshareddata" / "xcschemes"
     schemes.mkdir(parents=True, exist_ok=True)
     (folder / "project.pbxproj").write_text(doc.render(project), encoding="utf-8")
-    (schemes / (spec["name"] + ".xcscheme")).write_text(scheme(spec, doc, app, tests), encoding="utf-8")
+    (schemes / (spec["name"] + ".xcscheme")).write_text(
+        scheme(spec, doc, app, test_targets), encoding="utf-8")
     return {"project": folder.name, "scheme": spec["name"], "app_sources": len(spec["sources"]),
-            "test_sources": len(spec["test_sources"]), "resources": len(spec["resources"]),
+            "test_sources": len(spec["tests"]["sources"]) if spec["tests"] else 0,
+            "ui_test_sources": len(spec["ui_tests"]["sources"]) if spec["ui_tests"] else 0,
+            "resources": len(spec["resources"]),
             "next": "xcodebuild -project %s -scheme %s -destination \"generic/platform=iOS Simulator\" "
                     "-derivedDataPath .proto-build-01 CODE_SIGNING_ALLOWED=NO build"
                     % (folder.name, spec["name"])}

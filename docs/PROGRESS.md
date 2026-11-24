@@ -2,6 +2,15 @@
 
 > 当前完整方案统一阅读 [DESIGN.md](DESIGN.md)。本文件只记录里程碑、实现状态与验证证据，不作为第二份设计。
 
+## M85 — UI 测试 target 与读重放（2026-11-24 22:21，主人报卡点「连续两个工作片无实质变化，已暂停」）
+
+- **诊断**：交付门这次暂停是对的——XCTest 目标（0e9f3070d014）第 4/5 轮各 16-17 步、`read_skill`×7-8、`read_files`×3、**零落盘**（不是模型受阻；那条「调用模型受阻」日志属于 21 点模型中断时代的旧目标）。根因两层：① `make_xcodeproj.py` 只能生成 app + 单元测试两种 target，验收③「UI 测试代码证明主流程」**结构上不可达**——专家反复翻技能文档是在找一个不存在的口子；② 重放机制只覆盖命令类工具，同一技能/文件重读每次都真实执行并整段塞回上下文。顺带核实：22:21 暂停后 M81 自动恢复按设计在 15 分钟（22:36:59）自动续跑，无需主人干预；22:12:58 的 `owner_closed_unknown_effect` 证明 M84 的「关闭待核对」按钮已在生产被主人真实使用。
+- **修复**：
+  1. **UI 测试 target**（`make_xcodeproj.py`）：清单新增可选 `ui_tests`（name/bundle_id/sources，与 `tests` 同规校验、三方互异）→ 生成 `com.apple.product-type.bundle.ui-testing` target（`TEST_TARGET_NAME` 指回 App、依赖 App、进 scheme Test 动作）；单测 target 的 `TEST_HOST`/`BUNDLE_LOADER` 注入语义保持不变。生成器内部把两种测试 target 归一为同一构造路径，标识仍按名派生（重复生成字节一致）。SKILL.md 明确：模拟器内点按走查必须走 XCUITest（`XCUIApplication().launch()` + `tap()`，`xcodebuild test` 自己装 App 启动执行），单元测试 target 做不了 UI 点按，simctl install/launch 不是需要主人代劳的事。
+  2. **读重放**（`proto/exec/agentic.py`）：`REPLAY_SAFE_READS`（read_file/read_files/read_skill/list_dir/grep/search_symbols/explore_code）加入重放——同参且此后只有读取时返回原轨迹行，观察明确「内容不会因重读而变化，把已读到的信息用起来去产出」；黑板/舰队/公司上下文反映外部世界，源级测试锁死永不进入该集合。
+- **测试**：tests/test_ios_app_project.py（ui_tests 生成/字节稳定/参数校验/xcodebuild -list 列出 target）+ tests/test_m85_loop_economics.py（重读重放/写入后重跑/外部态工具不重放+集合源级锁死）。
+- **部署**：待全量测试通过后随下一次生产重启生效。
+
 ## M84 — 「结果未知，待核对」：谁来核对、怎么核对（2026-11-24，主人问「待谁核对」）
 
 - **背景**：主人在 run 执行中途重启控制台（21:40），该 run 进入 needs_reconciliation / interrupted_without_final_receipt，界面显示「结果未知，待核对」——谁核对、怎么核对没有任何说明，也没有自动化。这是完全自主目标的又一个结构性缺口（D7 记录过）。

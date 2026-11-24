@@ -49,6 +49,20 @@ def make_app(root):
                       "sources": ["Tests/WenguTests"]}}
 
 
+def with_ui_tests(root, spec):
+    """M85：验收里的「UI 测试代码证明主流程」此前结构上不可达——只有 app+单元测试
+    两种 target。加 UI 测试 target（XCUITest）后模拟器内点按走查才生成得了。"""
+    (root / "UITests/WenguUITests").mkdir(parents=True, exist_ok=True)
+    (root / "UITests/WenguUITests/SmokeUITests.swift").write_text(
+        "import XCTest\n\nfinal class SmokeUITests: XCTestCase {\n"
+        "    func testLaunch() {\n"
+        "        let app = XCUIApplication()\n        app.launch()\n"
+        "        XCTAssertTrue(app.exists)\n    }\n}\n", encoding="utf-8")
+    spec["ui_tests"] = {"name": "WenguUITests", "bundle_id": "com.sanshi.wengu.uitests",
+                        "sources": ["UITests/WenguUITests"]}
+    return spec
+
+
 def generate(generator, root, spec, name="project.json"):
     (root / name).write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
     return generator.generate(name, root)
@@ -131,12 +145,46 @@ def test_quotes_paths_with_spaces_and_non_ascii(tmp_path, generator):
     ({"tests": {"name": "WenguTests", "bundle_id": "a.b.tests", "sources": ["Notes.md"]}}, "does not take"),
     ({"resources": ["Sources/Wengu/Models.swift"]}, "does not take"),
     ({"sources": "Sources/Wengu"}, "array of paths"),
+    ({"ui_tests": {"name": "WenguTests", "bundle_id": "a.b.uitests", "sources": ["UITests/WenguUITests"]}},
+     "ui_tests.name"),
+    ({"ui_tests": {"name": "WenguUITests", "bundle_id": "com.sanshi.wengu", "sources": ["UITests/WenguUITests"]}},
+     "ui_tests.bundle_id"),
+    ({"ui_tests": {"name": "WenguUITests", "bundle_id": "a.b.uitests", "sources": ["Notes.md"]}}, "does not take"),
 ])
 def test_spec_rejects_bad_inputs(tmp_path, generator, change, message):
-    spec = make_app(tmp_path)
+    spec = with_ui_tests(tmp_path, make_app(tmp_path)) if "ui_tests" in change else make_app(tmp_path)
     spec.update(change)
     with pytest.raises(generator.SpecError, match=message):
         generate(generator, tmp_path, spec)
+
+
+def test_ui_test_target_is_generated_and_stable(tmp_path, generator):
+    generate(generator, tmp_path, with_ui_tests(tmp_path, make_app(tmp_path)))
+    pbx = tmp_path / "Wengu.xcodeproj/project.pbxproj"
+    xscheme = tmp_path / "Wengu.xcodeproj/xcshareddata/xcschemes/Wengu.xcscheme"
+    before = (pbx.read_bytes(), xscheme.read_bytes())
+    summary = generate(generator, tmp_path, with_ui_tests(tmp_path, make_app(tmp_path)))
+    assert (pbx.read_bytes(), xscheme.read_bytes()) == before          # 重复生成字节一致
+    assert summary["ui_test_sources"] == 1 and summary["test_sources"] == 1
+    text = pbx.read_text(encoding="utf-8")
+    assert "com.apple.product-type.bundle.ui-testing" in text
+    assert "WenguUITests.xctest" in text and "com.sanshi.wengu.uitests" in text
+    assert "TEST_TARGET_NAME = Wengu;" in text                          # UI 测试指回被测 App
+    assert text.count("PBXTargetDependency") >= 2                        # 两个测试 target 都依赖 App
+    assert "TEST_HOST" in text                                           # 单元测试注入式宿主仍在
+    lint(pbx)
+    scheme_text = xscheme.read_text(encoding="utf-8")
+    assert scheme_text.count("TestableReference skipped = \"NO\"") == 2   # 单测 + UI 测试都进 Test 动作
+    assert "WenguTests.xctest" in scheme_text and "WenguUITests.xctest" in scheme_text
+
+
+@pytest.mark.skipif(not shutil.which("xcodebuild"), reason="需要 Xcode")
+def test_xcodebuild_lists_ui_test_target(tmp_path, generator):
+    generate(generator, tmp_path, with_ui_tests(tmp_path, make_app(tmp_path)))
+    listing = subprocess.run(["xcodebuild", "-list", "-project", "Wengu.xcodeproj"], cwd=tmp_path,
+                             capture_output=True, text=True, timeout=180)
+    assert listing.returncode == 0, listing.stdout + listing.stderr
+    assert "WenguUITests" in listing.stdout and "WenguTests" in listing.stdout
 
 
 def test_main_reports_spec_errors_with_exit_code_2(tmp_path, generator, capsys, monkeypatch):

@@ -37,9 +37,13 @@ from proto.exec.runcontext import current_run, track_session
 from proto.system.execution_log import record_execution
 from proto.work.delivery import ios_build_result, ios_build_start, snapshot, valid_ios_evidence
 
+# M85：可重放的只读工具＝文件背书（两次调用之间没有写入/命令，文件态不变）。
+# blackboard/fleet/company 反映外部世界，重放会说谎，绝不进这个集合。
+REPLAY_SAFE_READS = ("read_file", "read_files", "read_skill", "list_dir",
+                     "grep", "search_symbols", "explore_code")
+
 PLAN_PROMPT = (
-    "为下面的任务用一句话制定执行计划（先做什么再做什么，不超过 30 字）。只输出计划本身。"
-)
+    "为下面的任务用一句话制定执行计划（先做什么再做什么，不超过 30 字）。只输出计划本身。")
 
 
 LOOP_SYSTEM = (
@@ -231,11 +235,22 @@ class AgenticLoop:
         return ""
 
     def _repeated_verification(self, tool, arguments, *, ios_required=False):
-        """只读步之间重复同一验证命令：文件没变，结果不会变。返回可重放的轨迹行。
+        """只读步之间重复同一验证命令或同一读取：文件没变，结果不会变。返回可重放的轨迹行。
 
         任何非只读步骤（写入、别的命令）都会让结果可能变化，照常执行；超时的
-        结果与没有结构化回执的旧记录不重放；交付取证命令要求全新的构建目录。"""
-        if tool not in COMMAND_TOOLS or ios_required:
+        结果与没有结构化回执的旧记录不重放；交付取证命令要求全新的构建目录。
+        M85：重放扩到文件背书的读取（read_skill/read_file/…）——生产实证专家
+        一片里把同一技能重读 7 次、零落盘；黑板/舰队状态反映外部世界，不重放。"""
+        if ios_required:
+            return None
+        if tool in COMMAND_TOOLS:
+            def usable(row):
+                outcome = row.get("outcome")
+                return row.get("ok") and isinstance(outcome, dict) and outcome.get("timeout") is False
+        elif tool in REPLAY_SAFE_READS:
+            def usable(row):
+                return row.get("ok")
+        else:
             return None
         trace = self._session["trace"]
         read_only = self._agent.tools.read_only_tools()
@@ -244,8 +259,7 @@ class AgenticLoop:
             if row.get("tool") == tool and row.get("args") == arguments:
                 if row.get("replay"):
                     continue
-                outcome = row.get("outcome")
-                if clean and row.get("ok") and isinstance(outcome, dict) and outcome.get("timeout") is False:
+                if clean and usable(row):
                     return row
                 return None
             if row.get("tool") not in read_only:
@@ -256,10 +270,12 @@ class AgenticLoop:
         session = self._session
         pending = session["pending_call"]
         tool = pending["tool"]
+        tail = ("要改变结果就先修改文件。" if tool in COMMAND_TOOLS
+                else "内容不会因重读而变化，把已读到的信息用起来去产出。")
         session["observations"].append(
             f"{tool}({target_args(pending['args'])}) → 与第 {row['step'] + 1} 步结果相同"
             "（此后只做过读取，没有文件修改；重跑不会改变结果，所以没有真实执行）。"
-            "要改变结果就先修改文件。\n" + str(row.get("result") or ""))
+            f"{tail}\n" + str(row.get("result") or ""))
         session["trace"].append(dict(row, step=pending["step"], ts=time.time(), replay=True,
                                      note=(pending.get("note") or "")[:60]))
         session["explore_run"] += 1

@@ -114,14 +114,15 @@ def activity_browser():
     run_kinds = re.search(r"const RUN_KINDS = .*?;", html, re.S).group()
     harness = r'''
 const assert = require("assert");
-const ids = ["agent-select", "live-work", "live-status", "live-detail", "live-events",
+const ids = ["agent-select", "live-work", "live-status", "live-actions", "live-detail", "live-events",
   "run-chain", "chain-head", "chain-actions", "chain-steps",
   "act-state", "activity-now", "activity-detail", "activity-sync", "activity-goals",
   "activity-files", "activity-inventory-status"];
 function element() {
-  return {textContent: "", innerHTML: "", children: [], dataset: {},
+  return {textContent: "", innerHTML: "", children: [], dataset: {}, style: {},
     replaceChildren(...children) { this.children = children; this.innerHTML = this.textContent = ""; },
-    append(...children) { this.children.push(...children); }, querySelectorAll: () => []};
+    append(...children) { this.children.push(...children); },
+    appendChild(...children) { this.append(...children); }, querySelectorAll: () => []};
 }
 const elements = Object.fromEntries(ids.map(id => [id, element()]));
 const get = id => elements[id];

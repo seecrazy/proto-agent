@@ -1386,8 +1386,10 @@ function livePresentation({run, current, model, autonomy, blocked}) {
 }
 function renderLiveActions(run) {
   /* 待核对/待继续不只是状态，也是主人的动作点——按钮长在状态旁边，
-     不藏在「概览 · 运行记录」列表里（可发现性不足等于没有）。 */
+     不藏在「概览 · 运行记录」列表里（可发现性不足等于没有）。
+     容器缺失时只丢动作按钮，绝不让整个实时面板的渲染断掉。 */
   const box = document.getElementById("live-actions");
+  if (!box) return;
   if (run?.status !== "needs_reconciliation") {
     if (box.style.display !== "none") { box.style.display = "none"; box.replaceChildren(); }
     return;
