@@ -17,7 +17,7 @@
   8. **测试套件不再出公网**：三个心跳用例随 GitHub 延迟变红（核查时看到的那 1 个失败就是它）。
 - **真实模型试跑**（Wengu 副本、生产同款 glm-5.3、每片 24 步）：b1 第 6 次调用 `model_invalid_response`；b2 5 次写入、错误 13→3；b3 11 步错误 13→3（余下是没写的视图）。每一轮暴露的问题都已修并回归。
 - **生产验证**（17:24 部署、解锁目标）：部署后连续 4 片都有实质进展（`stalled` 始终为 0，没有再阻塞）——`swift build` 从 13 个错误到 0；新写 `Views.swift`、`StatsView.swift`；第 4 片自己读了 `ios-app-project`、写出 `project.json`、生成 `Wengu.xcodeproj`，并在沙盒内经 `xcodebuild` 构建出 `Debug-iphonesimulator/Wengu.app`、写下 README。这是一周以来第一次拿到模拟器应用包。期间按生产时间线又修三处：诊断路径按真实绝对前缀裁剪、视野保留 4 个文件（2 个时模型循环重读 13 步）、超长写入给出拆分办法（曾原样重交 7 次）。
-- **测试**：新增 `tests/test_m82_coding_loop_visibility.py` 与 `tests/test_ios_app_project.py`；部署前全量 **1407 passed + 5 skipped**（核查时为 1345 passed + 1 failed）。`PROTO_TEST_XCODE=1` 时生成的工程在 PROTO 沙盒内经真实 `run_command` 构建出 `.app`。
+- **测试**：新增 `tests/test_m82_coding_loop_visibility.py` 与 `tests/test_ios_app_project.py`；最终全量 **1415 passed + 5 skipped**（部署前为 1407；核查时为 1345 passed + 1 failed）。`PROTO_TEST_XCODE=1` 时生成的工程在 PROTO 沙盒内经真实 `run_command` 构建出 `.app`。
 - **还没做到**：XCTest 尚未在模拟器上跑通；没有模拟器截图与功能走查；验收还没判过；旧的并行目录 `Wengu/` 还在工位里。遗留与成因未明的项见 [DEBT](DEBT.md) 的 D27–D29。
 
 ## M81 — 完全自主三缺口闭合（2026-11-24，主人问责后补交）
