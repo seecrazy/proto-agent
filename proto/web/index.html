@@ -518,6 +518,7 @@
     <details id="live-work" open>
       <summary><span class="live-title">后台 · 实时活动</span><span id="live-status" role="status">同步中…</span></summary>
       <div id="live-detail">模型等待、工具和文件证据会显示在这里。</div>
+      <div id="live-actions" class="btns" style="display:none"></div>
       <ol id="live-events" aria-label="最近的后台执行事件"></ol>
       <details id="run-chain">
         <summary>执行链 · 它每一步在做什么、为什么</summary>
@@ -1383,6 +1384,39 @@ function livePresentation({run, current, model, autonomy, blocked}) {
   if (model.state === "offline") return waiting("无模型", LIVE_REASONS.model_not_configured);
   return {state: "idle", badge: "空闲", summary: "暂无执行、排队或挂起的后台任务"};
 }
+function renderLiveActions(run) {
+  /* 待核对/待继续不只是状态，也是主人的动作点——按钮长在状态旁边，
+     不藏在「概览 · 运行记录」列表里（可发现性不足等于没有）。 */
+  const box = document.getElementById("live-actions");
+  if (run?.status !== "needs_reconciliation") {
+    if (box.style.display !== "none") { box.style.display = "none"; box.replaceChildren(); }
+    return;
+  }
+  box.style.display = "";
+  const canContinue = SAFE_CONTINUATION_REASONS.includes(run.reason) && !run.cancel_requested;
+  box.replaceChildren();
+  const hint = document.createElement("span");
+  hint.style.cssText = "font-size:11px;color:var(--dim);align-self:center;overflow-wrap:anywhere";
+  hint.textContent = canContinue
+    ? "断点已保留：继续原任务，或放弃由新任务接手。"
+    : "中断的那一步见下方执行链。核对后关闭，由新任务接手；已产生的文件不会撤销。";
+  box.appendChild(hint);
+  if (canContinue) {
+    const keep = document.createElement("button");
+    keep.type = "button"; keep.className = "primary"; keep.textContent = "继续原任务";
+    keep.onclick = () => changeRun(run, "reconcile", {confirmed: true, continue_safe: true});
+    box.appendChild(keep);
+  }
+  const close = document.createElement("button");
+  close.type = "button"; close.className = "danger";
+  close.textContent = canContinue ? "放弃原任务" : "关闭待核对";
+  close.onclick = async () => {
+    if (!confirm(canContinue ? "放弃这个断点？已产生的文件或效果不会撤销。"
+      : "确认你已检查外部状态？关闭不会重跑，也不会撤销已发生的效果。")) return;
+    await changeRun(run, "reconcile", {confirmed: true});
+  };
+  box.appendChild(close);
+}
 function renderLiveStatus({state, badge, summary}, description = "") {
   document.getElementById("live-work").dataset.state = state;
   document.getElementById("act-state").className = state === "running" ? "badge"
@@ -1410,6 +1444,7 @@ function renderLiveWork(data, selected) {
     pastReason && `此前轮次（${new Date(last.updated_at * 1000).toLocaleString("zh-CN")}）：${pastReason}`,
   ].filter(Boolean).join(" ｜ ");
   renderLiveStatus(livePresentation(data), description);
+  renderLiveActions(run);
   refreshRunChain(selected, run?.id || last?.id, data);
   const events = data.events.slice(-12).reverse();
   const key = `${selected}:${events.map(e => `${e.seq}@${e.at}`).join(",")}`;
@@ -1436,6 +1471,7 @@ function showLiveSyncFailure() {
   updateLiveSync(false);
 }
 function resetLiveWork(selected, message = selected ? "同步中…" : "舰队暂无 Agent，点「＋Agent」创建。") {
+  renderLiveActions(null);
   liveVersion++;
   liveRead?.abort();
   liveRead = null;

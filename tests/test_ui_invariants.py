@@ -94,3 +94,21 @@ def test_no_orphan_refresh_functions():
     for fn in defs:
         refs = len(_re.findall(rf"\b{fn}\b", SCRIPT)) - 1
         assert refs >= 1, f"{fn} 是孤儿刷新函数（无任何调用点，卡片会永久加载中）"
+
+
+def test_live_panel_carries_reconciliation_actions():
+    """M84：待核对/待继续的动作按钮必须长在实时活动面板里，不能只藏在运行记录列表。
+
+    可发现性不足等于没有——主人看到「结果未知，待核对」的地方就要能就地处理，
+    不需要去另一个面板找，更不需要调接口。"""
+    assert 'id="live-actions"' in HTML
+    assert "function renderLiveActions(run)" in SCRIPT
+    assert 'renderLiveActions(run);' in SCRIPT and "renderLiveActions(null);" in SCRIPT
+    gated = re.search(r"function renderLiveActions\(run\) \{.*?\n\}", SCRIPT, re.S)
+    assert gated, "renderLiveActions 定义缺失"
+    body = gated.group(0)
+    assert 'run?.status !== "needs_reconciliation"' in body          # 只在待核对时出现
+    assert 'changeRun(run, "reconcile", {confirmed: true, continue_safe: true})' in body
+    assert '"reconcile", {confirmed: true}' in body                    # 关闭路径
+    assert "SAFE_CONTINUATION_REASONS.includes(run.reason)" in body    # 继续只在安全断点时给
+    assert "confirm(" in body                                          # 关闭要二次确认
