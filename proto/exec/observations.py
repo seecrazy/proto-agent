@@ -55,6 +55,8 @@ def command_view(result, limit: int = 4000, *, base: str = "") -> str:
         if combined.strip():
             # 有摘要时尾部只留补充信息（链接器报错、说明行），不重复诊断正文
             parts.append("─ 输出尾部 ─\n" + _tail(combined, TAIL_BYTES // 2 if found else TAIL_BYTES))
+    if isinstance(result.get("hint"), str) and result["hint"]:
+        parts.append("─ 怎么改 ─\n" + result["hint"])
     body = "\n".join(parts)
     return _clip(head + body, limit) if body else head.rstrip("\n")
 

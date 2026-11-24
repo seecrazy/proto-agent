@@ -403,9 +403,10 @@ class CodeTools:
     def run_command(self, argv: List[str], cwd: str = "",
                     timeout_s: int = 120) -> Dict:
         """在项目工作区运行白名单验证命令（无 shell）。"""
-        def rejected(reason, detail=None, backend=""):
+        def rejected(reason, detail=None, backend="", hint=""):
+            # stderr 保持机器可读的原因码；给模型看的出路放在 hint（命令观察会带上）
             return {"exit": -1, "stdout": "", "stderr": detail or reason,
-                    "timeout": False, "backend": backend, "reason": reason}
+                    "timeout": False, "backend": backend, "reason": reason, "hint": hint}
 
         if not isinstance(argv, list) or not (1 <= len(argv) <= 32):
             return rejected("invalid_argv")
@@ -416,19 +417,18 @@ class CodeTools:
         name = Path(argv[0]).name
         if name not in self.COMMAND_ALLOWLIST:
             # 生产第一片：模型两次想用 run_command 跑 grep 搜代码，白撞两步
-            return rejected("command_not_allowed",
-                            f"command_not_allowed:{name}——run_command 只能跑 "
-                            f"{' '.join(sorted(self.COMMAND_ALLOWLIST))}；搜代码用 grep 工具，"
-                            "列目录用 list_dir，读文件用 read_file")
+            return rejected("command_not_allowed", f"command_not_allowed:{name}",
+                            hint=f"run_command 只能跑 {' '.join(sorted(self.COMMAND_ALLOWLIST))}；"
+                                 "搜代码用 grep 工具，列目录用 list_dir，读文件用 read_file")
         if name == "xcrun" and (len(argv) < 2
                                 or Path(argv[1]).name not in self.XCRUN_TOOLS):
             return rejected("xcrun_tool_not_allowed")
 
         def shell_rejected(detail):
-            return rejected("shell_syntax_not_supported",
-                            "shell_syntax_not_supported: run_command 直接执行程序，不经过 shell——"
-                            + detail + "；stdout 和 stderr 都会自动返回，不需要重定向。"
-                            "多步操作拆成多次调用，或写一个 python3 脚本再运行它。")
+            return rejected("shell_syntax_not_supported", "shell_syntax_not_supported",
+                            hint="run_command 直接执行程序，不经过 shell——" + detail
+                                 + "；stdout 和 stderr 都会自动返回，不需要重定向。"
+                                 "多步操作拆成多次调用，或写一个 python3 脚本再运行它。")
 
         for item in argv[1:]:
             if _SHELL_REDIRECTION.match(item) or _SHELL_OPERATOR.fullmatch(item):

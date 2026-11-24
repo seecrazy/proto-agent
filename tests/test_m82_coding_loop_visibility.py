@@ -648,9 +648,12 @@ def test_run_command_rejects_shell_syntax_with_a_way_forward(tmp_path):
     (tmp_path / "p" / "Notes.swift").write_text("let a = 1\n")
     redirect = tools.run_command(["swift", "build", "2>&1"], cwd="p")
     assert redirect["exit"] == -1 and redirect["reason"] == "shell_syntax_not_supported"
-    assert "不经过 shell" in redirect["stderr"] and "stdout" in redirect["stderr"]
+    assert redirect["stderr"] == "shell_syntax_not_supported"          # stderr 仍是机器可读的原因码
+    assert "不经过 shell" in redirect["hint"] and "stdout" in redirect["hint"]
+    view = obs.command_view(redirect)
+    assert "─ 怎么改 ─" in view and "不经过 shell" in view
     glob = tools.run_command(["xcrun", "swiftc", "-typecheck", "Sources/Wengu/*.swift"], cwd="p")
-    assert glob["reason"] == "shell_syntax_not_supported" and "通配符" in glob["stderr"]
+    assert glob["reason"] == "shell_syntax_not_supported" and "通配符" in glob["hint"]
     for argv in (["xcodebuild", "-list", "|", "head"], ["python3", "script.py", ">", "out.txt"],
                  ["swift", "build", "&&", "swift", "test"]):
         assert tools.run_command(argv, cwd="p")["reason"] == "shell_syntax_not_supported", argv
@@ -783,7 +786,9 @@ def test_disallowed_command_points_at_the_right_tool(tmp_path):
     tools = CodeTools(tmp_path)
     rejected = tools.run_command(["grep", "-rn", "struct ", "."], cwd="")
     assert rejected["reason"] == "command_not_allowed" and rejected["exit"] == -1
-    assert "grep 工具" in rejected["stderr"] and "list_dir" in rejected["stderr"]
+    assert rejected["stderr"] == "command_not_allowed:grep"
+    assert "grep 工具" in rejected["hint"] and "list_dir" in rejected["hint"]
+    assert "grep 工具" in obs.command_view(rejected)
 
 
 def test_failure_detail_never_trips_over_http_error():
