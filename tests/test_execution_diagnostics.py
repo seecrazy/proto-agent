@@ -100,10 +100,15 @@ def test_real_read_timeout_uses_backup_and_logs_actual_attempts(tmp_path, monkey
 
 
 @pytest.mark.parametrize("client_type", [OpenAICompatClient, AnthropicCompatClient])
-def test_http_error_uses_status_and_retry_header_without_reading_error_body(tmp_path, monkeypatch, client_type):
+def test_http_error_reads_a_bounded_body_only_to_classify_and_never_logs_it(tmp_path, monkeypatch, client_type):
+    """M83 起会读最多 64 KiB 的错误正文，只为分辨「额度用尽」与「瞬时限流」；
+    读不到照样按状态码与 Retry-After 处理，正文里的任何文字都不外传。"""
     class UnreadableError(io.BytesIO):
-        def read(self, *_args):
-            raise AssertionError("must not read an error body")
+        requested = []
+
+        def read(self, *args):
+            self.requested.append(args)
+            raise OSError("body unavailable")
 
     body = UnreadableError(b"private error body")
 
@@ -118,9 +123,10 @@ def test_http_error_uses_status_and_retry_header_without_reading_error_body(tmp_
         with pytest.raises(ModelPressureWait) as blocked:
             complete(agent)
         assert blocked.value.retry_at == 112
-        assert body.closed
+        assert body.closed and 0 < body.requested[0][0] <= 65536
     failure = next(row for row in rows(tmp_path) if row["event"] == "model_failed")
     assert (failure["http_status"], failure["reason"], failure["retry_at"]) == (429, "model_rate_limited", 112)
+    assert failure.get("provider_code") is None          # 没有业务码就不写这个字段
     assert "private" not in (tmp_path / LOG_NAME).read_text(encoding="utf-8")
 
     body = UnreadableError(b"private error body")

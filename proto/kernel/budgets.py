@@ -72,6 +72,20 @@ def _checked_amounts(amounts: Dict[str, float]) -> Dict[str, float]:
     return checked
 
 
+# 日预算默认值按 24 步工程循环的实际食量标定（M83）：一步约 7k token，一片 24 步 ≈ 17 万 token。
+# 旧默认是聊天助手的量级——真实计费（M48）之后跑一片就报「额度不足」，主人每天都得手动充值。
+DEFAULT_POOLS: Dict[str, Dict[str, float]] = {
+    "global": {"tokens": 20_000_000.0, "wallclock_s": 86400.0, "calls": 60_000.0},
+    "owner_tasks": {"tokens": 8_000_000.0},
+    "self_initiated": {"tokens": 2_000_000.0},
+}
+LEGACY_DEFAULT_POOLS: Dict[str, Dict[str, float]] = {
+    "global": {"tokens": 200000.0, "wallclock_s": 86400.0, "calls": 2000.0},
+    "owner_tasks": {"tokens": 160000.0},
+    "self_initiated": {"tokens": 40000.0},
+}
+
+
 @dataclass
 class BudgetDecision:
     granted: bool
@@ -114,6 +128,8 @@ class BudgetPools:
                                 self._config[name].update(_checked_amounts({unit: amount}))
                             except ValueError:
                                 continue
+        self.legacy_upgraded = False
+        boosts = self._adopt_new_defaults()
         self._remaining = {name: dict(units)
                            for name, units in self._config.items()}
         saved_date = raw.get("cycle_date")
@@ -128,9 +144,30 @@ class BudgetPools:
                     except (TypeError, ValueError, OverflowError):
                         continue
                     if math.isfinite(value):
-                        units[unit] = min(value, self._config[name][unit])
+                        # 升级默认值时把新出的额度补进今天的余量；今天已经花掉的不退
+                        units[unit] = min(value + boosts.get((name, unit), 0.0), self._config[name][unit])
             self._cycle_date = saved_date
             self.breaker_tripped = bool(raw.get("breaker_tripped", False))
+        if boosts:
+            self.legacy_upgraded = True
+            self._save()
+
+    def _adopt_new_defaults(self) -> Dict[tuple, float]:
+        """存档上限仍是 M83 之前的默认值（主人从没改过）：一次性升到新默认。
+        任何一池被主人改过（或 proto.env 配过）就原样保留——那是他的决定。"""
+        for name, units in LEGACY_DEFAULT_POOLS.items():
+            if name not in self._config:
+                return {}
+            for unit, value in units.items():
+                if abs(self._config[name].get(unit, -1.0) - value) > 0.5:
+                    return {}
+        boosts = {}
+        for name, units in DEFAULT_POOLS.items():
+            for unit, cap in units.items():
+                if unit in self._config[name] and cap > self._config[name][unit]:
+                    boosts[(name, unit)] = cap - self._config[name][unit]
+                    self._config[name][unit] = cap
+        return boosts
 
     def _save(self) -> None:
         if self._store is not None:

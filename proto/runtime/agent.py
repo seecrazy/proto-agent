@@ -87,11 +87,7 @@ SYSTEM_PROMPT = (
     "主动阈值高时不要抢话。不要复述状态本身。"
 )
 
-DEFAULT_POOLS = {
-    "global": {"tokens": 200000.0, "wallclock_s": 86400.0, "calls": 2000.0},
-    "owner_tasks": {"tokens": 160000.0},
-    "self_initiated": {"tokens": 40000.0},
-}
+from proto.kernel.budgets import DEFAULT_POOLS  # noqa: E402  日预算默认值（M83 按工程循环食量标定）
 
 
 def pools_config() -> dict:
@@ -174,6 +170,7 @@ class ProtoAgent:
         self._fleet_status_fn = fleet_status   # M47: manager 注入的舰队快照
         self.data_dir = Path(data_dir)
         self._local_model_pressure = ModelPressure(CoordinationDB(self.data_dir))
+        self._quota_reported = set()
         self.fleet_id = self.data_dir.resolve().name
         self._fleet_name = None
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -737,14 +734,32 @@ class ProtoAgent:
             except _GroupMemberFailed:
                 sent_failures += 1
             except ModelPressureWait as exc:
-                if exc.reason not in ("model_route_busy", "model_rate_limited", "circuit_breaker_open"):
+                if exc.reason not in ("model_route_busy", "model_rate_limited", "model_quota_exhausted",
+                                      "circuit_breaker_open"):
                     raise
+                # 被隔离的接入不发请求、也不占「已发送失败」的名额：健康成员排在死接入后面也能轮到
                 candidate_event("model_candidate_skipped", reason=exc.reason, retry_at=exc.retry_at)
         state = self._group_model_status(name, bindings, pressure)
         reason = "model_group_unavailable"
         if not sent_failures and state["reason"] == "model_route_busy":
             reason = "model_route_busy"
+        if all(self._binding_status(member, member_breaker, pressure, grouped=True).get("reason")
+               == "model_quota_exhausted" for member, member_breaker in bindings):
+            reason = "model_quota_exhausted"       # 整组额度用尽：等下去不会好，任务该停下来找主人
         raise ModelPressureWait(reason, state["retry_at"] if state["waiting"] else None)
+
+    def _report_quota(self, client, retry_at):
+        """接入额度用尽只说一次。主人需要知道的是哪个接入、什么时候恢复，而不是反复看到「受阻」。"""
+        name = getattr(client, "profile_name", None) or (client.describe() if client is not None else "当前模型")
+        key = (name, round(float(retry_at or 0)))
+        if key in self._quota_reported:
+            return
+        self._quota_reported.add(key)
+        when = (time.strftime("%m-%d %H:%M", time.localtime(retry_at)) if retry_at else "供应方未说明的时间")
+        self._inbox.append(
+            f"〔接入额度用尽〕「{name}」已达到用量上限，{when} 才恢复——这不是瞬时限流，等下去不会好。"
+            "在此之前不会再用它，模型组里其他健康的接入照常工作；可以给它充值、换成别的接入，"
+            "或把它从模型组里移出。")
 
     def _breaker_error(self, breaker, grouped):
         if not grouped:
@@ -821,6 +836,12 @@ class ProtoAgent:
             elif route and incident == "model_rate_limited":
                 limited = pressure.limited(route, exc, origin=origin)
                 breaker.record_success(permit=permit)
+            elif route and incident == "model_quota_exhausted":
+                # 额度用尽不是这个接入「不稳」，不进熔断；只把它隔离到重置时刻
+                limited = pressure.quarantine(
+                    route, exc.retry_at if isinstance(exc, ModelPressureWait) else None, origin=origin)
+                breaker.record_success(permit=permit)
+                self._report_quota(client if grouped else None, limited.retry_at)
             else:
                 breaker.record_failure(incident, permit=permit,
                                        immediate=(can_failover or bool(route and incident in (
@@ -829,12 +850,14 @@ class ProtoAgent:
             attempt_event("model_failed", reason=incident, http_status=failure.http_status,
                           exception_type=failure.exception_type, failover_eligible=can_failover,
                           duration_ms=round((time.monotonic() - started) * 1000), stage=failure.stage, streamed=streamed,
-                          retry_at=limited.retry_at if limited else None, detail=_failure_detail(exc))
+                          retry_at=limited.retry_at if limited else None, detail=_failure_detail(exc),
+                          provider_code=failure.provider_code)
             if ticket is not None:
                 fleet_budget.settle(ticket.id)
             self.kernel.pools.finish_model(request_id, elapsed=time.monotonic() - started)
             if limited is not None:
-                self.spine.append("model_rate_limited", {"retry_at": limited.retry_at})
+                self.spine.append("model_rate_limited" if limited.reason == "model_rate_limited"
+                                  else "model_quota_exhausted", {"retry_at": limited.retry_at})
             if (breaker.state == "open"
                     and not self.spine.find(lambda d: d["event_type"] == "llm_breaker_trip")):
                 self.spine.append("llm_breaker_trip",
@@ -847,7 +870,8 @@ class ProtoAgent:
         breaker.record_success(permit=permit)
         self.activity_event("model_returned", **activity)
         attempt_event("model_returned", tokens=total, duration_ms=round((time.monotonic() - started) * 1000),
-                      streamed=streamed, extra_calls=dropped)
+                      streamed=streamed, extra_calls=dropped,
+                      cache_read_tokens=(usage.get("cache_read", 0) if isinstance(usage, dict) else 0))
         if ticket is not None:
             fleet_budget.settle(ticket.id, tokens=total)
         self.kernel.pools.finish_model(request_id, tokens=total, elapsed=time.monotonic() - started)

@@ -50,6 +50,7 @@ class _Decision:
         self.block_closed = False
         self.finish = None
         self.usage = {}
+        self.cache_read = 0
         # 模型一步交了多个决策时，第一个照常执行，其余只记数（见 extra_calls）
         self._extras = set()
 
@@ -65,6 +66,11 @@ class _Decision:
             value = usage.get(source)
             if type(value) is int and 0 <= value <= 10**11:
                 self.usage[key] = value
+        cached = usage.get("cache_read_input_tokens")
+        if type(cached) is not int and isinstance(usage.get("prompt_tokens_details"), dict):
+            cached = usage["prompt_tokens_details"].get("cached_tokens")
+        if type(cached) is int and 0 <= cached <= 10**11:
+            self.cache_read = cached          # 命中供应方前缀缓存的输入 token（诊断用，不计费口径不变）
 
     def _text(self, value):
         if value is not None:
@@ -337,7 +343,11 @@ def read_decision(response, style, *, started, timeout, first_event, cancelled):
         reader.check(force_cancel=True)
         if decision.extra_calls:
             result = decision_json(dict(json.loads(result), _extra_calls=decision.extra_calls))
-        return result, decision.usage if len(decision.usage) == 2 else None
+        if len(decision.usage) == 2:
+            if decision.cache_read:
+                decision.usage["cache_read"] = decision.cache_read
+            return result, decision.usage
+        return result, None
     except (ValueError, TypeError, RecursionError) as exc:
         # 协议哪条假设被打破要能查到：stage 只说了「在哪一步」，detail 说「是什么」
         error = ModelResponseError("model_invalid_response", "decision" if decision.finish else reader.stage)

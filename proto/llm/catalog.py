@@ -377,7 +377,9 @@ class ModelCatalog:
         fingerprint = hashlib.sha256(json.dumps(
             {key: profile.get(key) for key in ("api_style", "base_url", "model", "api_key", "execution_mode")},
             sort_keys=True).encode("utf-8")).hexdigest()
-        origin = "origin:" + pressure_key(profile["base_url"], "")
+        # 同源 = 同主机同凭据（ADR 0011「服务来源和凭据标识」）。此前只按主机：六个接入都在
+        # open.bigmodel.cn，主接入一限流，另外几个账号的健康接入全部陪绑，「自动切换」形同虚设。
+        origin = "origin:" + pressure_key(profile["base_url"], profile["api_key"])
         return _PinnedClient(client, (profile["id"], fingerprint), name=profile["name"], origin=origin,
                              profile_id=profile["id"])
 

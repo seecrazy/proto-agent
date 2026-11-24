@@ -243,11 +243,12 @@ def test_retry_respects_budgets_and_cancellation(tmp_path, provider, scope, monk
 
 
 def test_busy_group_origin_skips_alias_without_charging(tmp_path, provider):
+    # M83：同源 = 同主机同凭据。别的主机凭据（另外的账号）不再陪绑，见 test_m83_model_blocking。
     fleet, agent, _ = configured(tmp_path, profile("primary", "https://same.invalid/one", api_key="key-one"),
-        profile("alias", "https://same.invalid:443/two", api_key="key-two"), "other")
+        profile("alias", "https://same.invalid:443/two", api_key="key-one"), "other")
     primary, alias, other = agent.llm.plan().members
     pressure = fleet.runs.model_pressure
-    assert primary.pressure_key != alias.pressure_key and primary.pressure_origin == alias.pressure_origin
+    assert primary.pressure_key == alias.pressure_key and primary.pressure_origin == alias.pressure_origin
     with pressure.admit(primary.pressure_key, origin=primary.pressure_origin):
         assert complete(agent, foreground=True) == "other"
         with pressure.admit(other.pressure_key, origin=other.pressure_origin):
@@ -258,8 +259,9 @@ def test_busy_group_origin_skips_alias_without_charging(tmp_path, provider):
 
 
 def test_origin_cooldowns_survive_agent_role_and_restart_and_choose_earliest(tmp_path, provider):
+    # M83：同一个账号的别名一起冷却；换一把钥匙（另外的账号）不算同源，见 test_m83_model_blocking
     fleet, first, _ = configured(tmp_path, profile("primary", "https://same.invalid/one", api_key="key-one"),
-        profile("alias", "https://same.invalid:443/two", api_key="key-two"), "other")
+        profile("alias", "https://same.invalid:443/two", api_key="key-one"), "other")
     second = fleet.get(fleet.create("分析师")["id"])
     clock = [time.time()]
     fleet.runs.model_pressure.now = lambda: clock[0]

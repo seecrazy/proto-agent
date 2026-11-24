@@ -21,6 +21,16 @@ class ModelFailure:
     exception_type: str
     http_status: Optional[int] = None
     stage: Optional[str] = None
+    provider_code: Optional[str] = None      # 供应方的业务错误码（只记码，不记消息）
+
+
+def _attached(error, name):
+    """异常实例上由我们附加的属性。不能对 HTTPError 用 getattr：它的 __getattr__
+    对未知属性抛 KeyError 而不是 AttributeError。"""
+    try:
+        return vars(error).get(name)
+    except TypeError:
+        return None
 
 
 def describe_model_failure(error):
@@ -28,35 +38,37 @@ def describe_model_failure(error):
     seen = set()
     network = None
     exception_type = type(error).__name__
+    provider_code = None
     while pending:
         error = pending.pop()
         if id(error) in seen:
             continue
         seen.add(id(error))
         exception_type = type(error).__name__
+        provider_code = _attached(error, "provider_code") or provider_code
         if isinstance(error, ModelPressureWait):
-            return ModelFailure(error.reason, exception_type)
+            return ModelFailure(error.reason, exception_type, provider_code=provider_code)
         if isinstance(error, ModelRequestStopped):
-            return ModelFailure(str(error), exception_type)
+            return ModelFailure(str(error), exception_type, provider_code=provider_code)
         if isinstance(error, ModelResponseError):
-            return ModelFailure(error.reason, exception_type, error.http_status, error.stage)
+            return ModelFailure(error.reason, exception_type, error.http_status, error.stage, provider_code)
         if isinstance(error, HTTPError):
             reason = {401: "model_unauthorized", 403: "model_forbidden", 404: "model_not_found",
                       429: "model_rate_limited"}.get(error.code, "model_http_error")
             if 500 <= error.code < 600:
                 reason = "model_server_error"
-            return ModelFailure(reason, exception_type, error.code, "headers")
+            return ModelFailure(reason, exception_type, error.code, "headers", provider_code)
         if isinstance(error, NETWORK_TIMEOUTS):
-            return ModelFailure("model_timeout", exception_type)
+            return ModelFailure("model_timeout", exception_type, provider_code=provider_code)
         if isinstance(error, ConnectionError):
-            return ModelFailure("model_unreachable", exception_type)
+            return ModelFailure("model_unreachable", exception_type, provider_code=provider_code)
         if error.__cause__ is not None:
             pending.append(error.__cause__)
         if isinstance(error, URLError):
-            network = ModelFailure("model_unreachable", exception_type)
+            network = ModelFailure("model_unreachable", exception_type, provider_code=provider_code)
             if isinstance(error.reason, BaseException):
                 pending.append(error.reason)
-    return network or ModelFailure("model_request_failed", exception_type)
+    return network or ModelFailure("model_request_failed", exception_type, provider_code=provider_code)
 
 
 def model_failure(error):
@@ -66,10 +78,16 @@ def model_failure(error):
 TRANSIENT_MODEL_REASONS = frozenset({
     "circuit_breaker_open", "model_timeout", "model_unreachable", "model_rate_limited", "model_server_error",
     "model_group_unavailable", "model_stream_interrupted", "model_invalid_response",
+    # 输出超上限后循环已切到小步决策（compact_decisions），马上重试即可；此前被归为不可重试，
+    # 任务停下来等 10 分钟自动恢复，界面显示「模型或额度受阻」（2026-11-24 生产实证 3 次）
+    "model_output_truncated",
 })
 GROUP_FAILOVER_REASONS = frozenset({
     "model_timeout", "model_unreachable", "model_rate_limited", "model_server_error",
     "model_unauthorized", "model_not_found", "model_stream_interrupted", "model_invalid_response",
+    # 这个接入的额度用完了，换下一个接入是正当的；但它不是瞬时限流，不进 TRANSIENT——
+    # 全组都用尽时任务停下来等主人，而不是带着几天后的重试时刻悄悄排队
+    "model_quota_exhausted",
 })
 
 

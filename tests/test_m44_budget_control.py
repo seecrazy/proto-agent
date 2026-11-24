@@ -36,8 +36,8 @@ class TestPoolsConfig:
         a = ProtoAgent(data_dir=tmp_path / "ag")
         assert a.kernel.pools._config["self_initiated"]["tokens"] == 1234
         assert a.kernel.pools.remaining_all()["self_initiated"]["tokens"] == 1234
-        # 默认字典不被污染
-        assert DEFAULT_POOLS["self_initiated"]["tokens"] == 40000.0
+        # 默认字典不被污染（M83 起默认值按 24 步工程循环的食量标定，旧值是 40000）
+        assert DEFAULT_POOLS["self_initiated"]["tokens"] == 2_000_000.0
 
 
 class TestBudgetViewCaps:

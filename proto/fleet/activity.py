@@ -28,6 +28,7 @@ REASONS = {
     "model_provider_error": "接入返回未识别的业务错误",
     "model_server_error": "模型端暂时不可用",
     "model_not_found": "模型接入找不到（404）", "model_group_unavailable": "模型组暂不可用",
+    "model_quota_exhausted": "接入额度已用尽（每周/每月上限或余额，不是瞬时限流）",
     "model_route_busy": "同一模型接入正在服务另一条请求",
     "circuit_breaker_open": "模型暂在熔断冷却", "run_cancelled": "主人已请求取消",
     "fleet_paused": "Agent 已暂停", "muted": "Agent 已静音",
@@ -71,6 +72,40 @@ def _reason(raw):
             return "model_rate_limited"
         return "model_request_failed"
     return "verification" if "verifi" in reason else ""
+
+
+def _amount(cap):
+    if cap >= 100_000_000:
+        return f"{cap / 100_000_000:g} 亿"
+    if cap >= 10_000:
+        return f"{cap / 10_000:g} 万"
+    return f"{cap:g}"
+
+
+def budget_detail(agent, raw):
+    """「额度不足」要说清是哪一格：PROTO 自己的日预算（哪一池、哪种单位、上限多少、怎么解除），
+    还是舰队的总额——它不是模型套餐的额度，等是等不来的。"""
+    if raw not in ("budget_exhausted", "fleet_budget_exhausted") and not str(raw).startswith(
+            ("budget_exhausted:", "fleet_budget_exhausted:")):
+        return ""
+    names = {"global": "全局", "owner_tasks": "主人任务", "self_initiated": "自主"}
+    units = {"tokens": "token", "calls": "调用次数", "wallclock_s": "运行时长"}
+    empty = []
+    try:
+        pools = agent.kernel.pools
+        remaining = pools.remaining_all()
+        for pool, caps in pools._config.items():
+            for unit, cap in caps.items():
+                left = remaining.get(pool, {}).get(unit)
+                if cap > 0 and left is not None and left < max(1.0, cap * 0.01):
+                    empty.append(f"{names.get(pool, pool)}的{units.get(unit, unit)}已用完（上限 {_amount(cap)}）")
+    except Exception:
+        pass
+    if str(raw).startswith("fleet_budget"):
+        return "舰队的模型总额度已用完：在控制台「额度」里上调，或等次日重置。"
+    if not empty:
+        return ""
+    return "；".join(empty) + "。这是 PROTO 自己设的日预算上限，不是模型套餐：点顶栏「额度」上调上限或充值，次日 0 点也会自动重置。"
 
 
 def _line(value, limit):
@@ -140,7 +175,8 @@ class RunActivity:
         return {"run": run, "last_run": previous, "current": current, "events": events,
                 "goal": _line(marker.get("goal"), 80), "step": marker.get("step") or 0,
                 "max_steps": marker.get("max_steps") or 0, "model": agent.model_status(),
-                "autonomy": _reason(agent.autonomy_blocker())}
+                "autonomy": _reason(agent.autonomy_blocker()),
+                "budget_detail": budget_detail(agent, agent.autonomy_blocker())}
 
 
 def activity_reply(snapshot, *, detailed=False):
@@ -177,6 +213,12 @@ def activity_reply(snapshot, *, detailed=False):
             text += "同一模型接入正在处理另一条请求。"
         elif model["reason"] == "model_rate_limited":
             text += "供应商限流，此接入按冷却截止等待，不会重复发送。"
+            if model.get("retry_at"):
+                text += "预计 %s 再试。" % time.strftime("%m-%d %H:%M", time.localtime(model["retry_at"]))
+        elif model["reason"] == "model_quota_exhausted":
+            text += "接入额度已用尽，等下去不会好：需要充值、更换接入，或把它移出模型组。"
+            if model.get("retry_at"):
+                text += "供应方说的恢复时间是 %s。" % time.strftime("%m-%d %H:%M", time.localtime(model["retry_at"]))
         else:
             text += "模型处于熔断冷却或正在做恢复试探。"
             cause = REASONS.get(model["reason"])
@@ -184,6 +226,8 @@ def activity_reply(snapshot, *, detailed=False):
                 text += f"接入目前受阻：{cause}。"
     if snapshot["autonomy"]:
         text += REASONS[snapshot["autonomy"]] + "。"
+        if snapshot.get("budget_detail"):
+            text += snapshot["budget_detail"]
     paths = list(dict.fromkeys(event["path"] for event in reversed(snapshot["events"]) if event["path"]))[:3]
     if paths:
         text += "最近写入：" + "、".join(paths) + "（写入不等于验收）。"

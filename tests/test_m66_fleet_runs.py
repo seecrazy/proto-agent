@@ -60,7 +60,9 @@ def enqueue(fleet, agent, text):
 
 
 def waited(fleet, run, expected):
-    result = fleet.runs.wait(run["id"], timeout=4.0)
+    # 等事件不是测速度：全量套件与生产负载同跑时 4 秒不够（D23 同族抖动），
+    # 放宽到 10 秒不弱化任何断言
+    result = fleet.runs.wait(run["id"], timeout=10.0)
     assert result["status"] == expected, result
     return result
 
