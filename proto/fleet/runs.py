@@ -59,6 +59,41 @@ def _run_event(event, run, **fields):
                      generation=run["generation"], **fields)
 
 
+def workspace_effect_verdict(code_workspace, pending):
+    """中断的那一步是工作区内的写文件时，效果可以从磁盘直接核对。
+
+    返回 "landed"（已生效）/ "not_landed"（未执行）/ None（说不清，留给主人）。
+    只认 write_file/edit_file 且 category 是 workspace_write——命令与对外动作的
+    效果没有本地真相源，不自动判定。"""
+    if not isinstance(pending, dict) or pending.get("category") != "workspace_write":
+        return None
+    tool = pending.get("tool")
+    args = pending.get("args") or {}
+    path = args.get("path")
+    if tool not in ("write_file", "edit_file") or not isinstance(path, str) or not path:
+        return None
+    try:
+        target = code_workspace.root / path
+        if tool == "write_file":
+            content = args.get("content")
+            if not isinstance(content, str):
+                return None
+            if not target.exists():
+                return "not_landed"
+            return "landed" if target.read_text(encoding="utf-8", errors="replace") == content else None
+        old_text, new_text = args.get("old"), args.get("new")
+        if not isinstance(old_text, str) or not isinstance(new_text, str):
+            return None
+        if not target.exists():
+            return "not_landed"
+        current = target.read_text(encoding="utf-8", errors="replace")
+        if new_text in current:
+            return "landed"
+        return "not_landed" if old_text in current else None
+    except (OSError, ValueError):
+        return None
+
+
 def _record(row, *, summary=False):
     if row is None:
         return None
@@ -775,8 +810,18 @@ class RunCoordinator:
                 status, reason = "needs_reconciliation", "safe_resume_limit"
                 result = self._resume_result(run)
         else:
-            status, reason = "needs_reconciliation", "interrupted_without_final_receipt"
-            result = {"status": status, "reason": reason}
+            reconciled = self._reconcile_workspace_effect(run, agent)
+            if reconciled is not None:
+                attempts = (run["result"] or {}).get("restart_attempts", 0)
+                if startup and attempts < _MAX_RESTART_RESUMES:
+                    status, reason = "queued", "interrupted_requeued"
+                    result = dict(self._resume_result(run, restart_attempts=attempts + 1), reconciled=reconciled)
+                else:
+                    status, reason = "needs_reconciliation", "safe_resume_limit"
+                    result = self._resume_result(run)
+            else:
+                status, reason = "needs_reconciliation", "interrupted_without_final_receipt"
+                result = {"status": status, "reason": reason}
         committed = None
         with self.database.connect(write=True) as connection:
             latest = self._get_locked(connection, run["id"])
@@ -789,6 +834,40 @@ class RunCoordinator:
                 committed = self._save_result(connection, latest, status, reason, dict(result, recovered=True), waiting)
         if committed is not None:
             _run_event("run_recovered", run, **committed)
+
+    def _reconcile_workspace_effect(self, run, agent):
+        """M84：效果可从磁盘核对的写步骤，由 PROTO 自己核对，不再等人。
+
+        返回核对说明（并已把会话恢复到可安全续跑的形态）或 None（说不清）。
+        「结果未知，待核对」此前一律留给主人——但进程死在 write_file 中途时，
+        文件在不在、内容对不对就是真相；真正需要人的是命令与对外动作。"""
+        if agent is None or run["work_id"] or not run["session_id"]:
+            return None
+        try:
+            session = agent.sessions.lookup(run["session_id"])
+            pending = (session or {}).get("pending_call")
+            verdict = workspace_effect_verdict(agent.code_workspace, pending)
+            if verdict is None or session is None:
+                return None
+            path = pending["args"].get("path")
+            if verdict == "landed":
+                note = (f"〔恢复核对〕进程中断时正在写 {path}；已核对磁盘，写入已落盘——"
+                        "该步计为完成，从下一步继续。")
+            else:
+                note = (f"〔恢复核对〕进程中断时正要写 {path}；已核对磁盘，写入未落盘——"
+                        "该步未执行，需要时重新写入。")
+            session["pending_call"] = None
+            session["pending_decision"] = None
+            session["observations"] = list(session.get("observations") or []) + [note]
+            if session.get("status") not in ("running", "resuming", "waiting_model"):
+                session["status"] = "resuming"
+            agent.sessions.save(session)
+            _run_event("run_reconciled", run, verdict=verdict, tool=pending.get("tool"))
+            return note
+        except Exception as exc:
+            _run_event("runtime_error", run, stage="reconcile_workspace", exception_type=type(exc).__name__)
+            logging.exception("Cannot reconcile interrupted Run: %s", run["id"])
+            return None
 
     def recover(self):
         self.budget.recover()

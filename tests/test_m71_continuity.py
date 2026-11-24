@@ -145,14 +145,13 @@ def test_process_death_resumes_same_autonomous_run_without_replaying_tools(tmp_p
             assert saved["session_id"] == session["id"]
             assert counter.read_text(encoding="utf-8") == "写入\n"
             if phase == "unknown":
-                assert saved["status"] == "needs_reconciliation"
-                assert agent.goal_tree.get(goal_id).status == "active"
-                assert goal_id in agent.sessions.pending_goal_ids()
-                with pytest.raises(CoordinationError, match="unsafe_resume_checkpoint"):
-                    restarted.runs.continue_reconciliation(run_id, saved["generation"])
-                restarted.runs.close_reconciliation(run_id, saved["generation"])
-                assert goal_id not in agent.sessions.pending_goal_ids()
-                assert agent.sessions.lookup(session["id"])["pending_call"] == session["pending_call"]
+                # M84：死在 write_file 之后、回执持久化之前——效果从磁盘可核对
+                #（Report.md 已落盘），PROTO 自己核对并续跑，不再留给主人。
+                assert saved["status"] == "succeeded", saved
+                assert agent.goal_tree.get(goal_id).status == "done"
+                resumed = agent.sessions.lookup(session["id"])
+                assert any("写入已落盘" in text for text in resumed["observations"])
+                assert resumed["trace"] == []          # 步骤回执没来得及写；效果以磁盘为准
             else:
                 assert saved["status"] == "succeeded", saved
                 assert saved["result"]["proposal"]["verified"] is True
@@ -163,7 +162,7 @@ def test_process_death_resumes_same_autonomous_run_without_replaying_tools(tmp_p
                             if entry["kind"] == "decision"}) == 2
                 if phase != "verified":
                     assert "已写入 Report.md" in model.actor_inputs[0][1]
-            assert len(model.actor_inputs) == (0 if phase in ("unknown", "verified") else 1)
+            assert len(model.actor_inputs) == (0 if phase == "verified" else 1)
         finally:
             restarted.runs.stop()
 
