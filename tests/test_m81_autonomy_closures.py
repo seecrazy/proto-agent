@@ -101,6 +101,12 @@ class TestAutoRecoverRuns:
             connection.execute("UPDATE runs SET cancel_requested=1 WHERE id=?", (run["id"],))
         assert fleet.runs.auto_recover() == []
 
+    def test_safe_resume_model_also_recovers(self, fleet):
+        run = self._exhausted(fleet)
+        with fleet.runs.database.connect(write=True) as connection:
+            connection.execute("UPDATE runs SET reason='safe_resume_model' WHERE id=?", (run["id"],))
+        assert run["id"] in fleet.runs.auto_recover()
+
     def test_unknown_effect_reason_untouched(self, fleet):
         agent = fleet.get(fleet.current_id())
         run = fleet.runs.enqueue(agent.fleet_id, "tick", {})

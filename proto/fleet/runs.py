@@ -311,7 +311,8 @@ class RunCoordinator:
                 SELECT id, agent_id, generation, updated_at,
                        coalesce(json_extract(result, '$.auto_recovers'), 0) AS auto_recovers
                 FROM runs WHERE status = 'needs_reconciliation'
-                AND reason = 'model_retry_exhausted' AND updated_at <= ?
+                AND reason IN ('model_retry_exhausted', 'safe_resume_model')
+                AND updated_at <= ?
                 AND auto_recovers < ?
             """, (deadline, AUTO_RECOVER_MAX)).fetchall()
         recovered = []
@@ -325,7 +326,8 @@ class RunCoordinator:
                     continue
                 with self.database.connect(write=True) as connection:
                     run = self._get_locked(connection, row["id"])
-                    if run["status"] != "needs_reconciliation" or run["reason"] != "model_retry_exhausted":
+                    if (run["status"] != "needs_reconciliation"
+                            or run["reason"] not in ("model_retry_exhausted", "safe_resume_model")):
                         continue
                     if not (run["reason"] in _SAFE_RESUME_REASONS and self._safe_session(run, agent)):
                         continue
