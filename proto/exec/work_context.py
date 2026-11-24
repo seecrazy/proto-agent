@@ -3,16 +3,34 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 
 MAX_ACTOR_BYTES = 128 * 1024
 MAX_HISTORY_BYTES = 12 * 1024
+# M82：压缩后保留多少历史。原值 4 KiB 只留最近 2 条观察，模型「跑构建能看到
+# 报错、读文件却看不到正文」，生产上 23 步零写入。诊断优先整形后，同样的
+# 预算足够同时放下错误摘要和最近读过的两个文件。
+COMPACT_HISTORY_BYTES = 12 * 1024
+TIGHT_HISTORY_BYTES = 3 * 1024
 MAX_ADVISORY_BYTES = 8 * 1024
+MAX_ITEM_BYTES = 6000
+KEEP_FILE_BYTES = 6000
+KEEP_COMMAND_BYTES = 3000
+KEEP_OTHER_BYTES = 800
+RECENT_FILES = 2
+COMPACT_WINDOW = 60
+READ_TOOLS = ("read_file", "read_files")
+WRITE_TOOLS = ("write_file", "edit_file")
+COMMAND_TOOLS = ("run_command", "run_python")
+_CALL = re.compile(r"^([a-z_]+)\((.*)\) → ", re.S)
+_PATH = re.compile(r'"path":\s*"((?:[^"\\]|\\.)*)"')
+_PATHS = re.compile(r'"paths":\s*(\[[^\]]*\])')
 
 
 def actor_input_budget():
     try:
-        return max(0, min(MAX_ACTOR_BYTES, int(os.environ.get("PROTO_ACTOR_INPUT_TOKENS", "32768"))))
+        return max(0, min(MAX_ACTOR_BYTES, int(os.environ.get("PROTO_ACTOR_INPUT_TOKENS", "65536"))))
     except ValueError:
         return 0
 
@@ -101,12 +119,12 @@ def render_history(observations, trace, budget=MAX_HISTORY_BYTES):
     facts = "\n".join(reversed(receipts)) + "\n" if receipts else ""
     budget -= size(facts)
     picked = []
-    for index, observation in reversed(list(enumerate(observations[-12:], max(0, len(observations) - 12)))):
+    for index, observation in reversed(list(enumerate(observations))):
         label = f"{index + 1}. "
         available = budget - size(label) - 1
         if available < 64:
             break
-        row = label + clipped(observation, min(4500, available)) + "\n"
+        row = label + clipped(observation, min(MAX_ITEM_BYTES, available)) + "\n"
         picked.append(row)
         budget -= size(row)
     omitted = "较早观察已省略，可按需重新读取证据。\n"
@@ -114,7 +132,23 @@ def render_history(observations, trace, budget=MAX_HISTORY_BYTES):
     return header + facts + tail + "".join(reversed(picked))
 
 
+def observation_target(text):
+    """观察文本 `tool({...}) → 结果` 里的工具名与它作用的路径（批量读用路径列表作身份）。"""
+    match = _CALL.match(text)
+    if not match:
+        return "", ""
+    tool, args = match.group(1), match.group(2)
+    found = _PATH.search(args) or _PATHS.search(args)
+    return tool, (found.group(1) if found else "")
+
+
+def _fold(text, note):
+    return text.split(" → ", 1)[0] + " → " + note
+
+
 def _compact_observations(observations, trace, tight):
+    """从最新观察向前保留，直到预算用尽：命令结果与最近读过的文件留正文，
+    过期或较早的读取折叠成「怎么取回」的指针。返回仍按时间顺序。"""
     pointers = []
     for item in reversed(trace):
         if item.get("tool") in ("read_file", "read_files", "grep", "search_symbols", "explore_code"):
@@ -124,12 +158,42 @@ def _compact_observations(observations, trace, tight):
                 if len(pointers) == (2 if tight else 4):
                     break
     summary = f"历史摘要：共 {len(observations)} 条观察。较早正文不重发；按需回读：" + "；".join(reversed(pointers))
-    recent = []
-    for text in observations[-(1 if tight else 2):]:
-        if text.startswith(("read_file(", "read_files(")) and size(text) > 900:
-            text = text.partition(" → ")[0] + " → 大段正文已折叠，按路径/偏移回读。"
-        recent.append(clipped(text, 480 if tight else 1400))
-    return [summary, *recent]
+    budget = TIGHT_HISTORY_BYTES if tight else COMPACT_HISTORY_BYTES
+    kept, used, recent, written = [], size(summary) + 8, [], set()
+    for text in reversed(observations[-COMPACT_WINDOW:]):
+        tool, path = observation_target(text)
+        head = text.split(" → ", 1)[0]
+        if tool in WRITE_TOOLS and path:
+            written.add(path)
+        if tool in READ_TOOLS:
+            if tight:
+                candidate = _fold(text, "正文已折叠（上下文吃紧）。需要时 read_file 分页读取所需行。")
+            elif any(item and item in head for item in written):
+                candidate = _fold(text, "内容已过期：此后该文件被修改过。要改它就先重新 read_file 读取相关行。")
+            elif path in recent:
+                candidate = _fold(text, "同一文件已有更新的读取，旧正文不重发。")
+            elif len(recent) < RECENT_FILES:
+                recent.append(path)
+                candidate = text
+                if size(candidate) > KEEP_FILE_BYTES:
+                    # 给截断说明留出余量，免得它在后续按单项上限裁剪时被切掉
+                    candidate = clipped(candidate, KEEP_FILE_BYTES - 256) \
+                        + "\n…（正文在此截断；后面的行用 read_file 的 offset/limit 读取）"
+            else:
+                candidate = _fold(text, "正文已折叠（只保留最近读过的文件）。要改它：改之前的上一步用 "
+                                        "read_file(path, offset, limit≤80) 读取所需行。")
+        elif tool in COMMAND_TOOLS:
+            candidate = clipped(text, 1200 if tight else KEEP_COMMAND_BYTES)
+        elif tool:
+            candidate = clipped(text, 300 if tight else KEEP_OTHER_BYTES)
+        else:
+            candidate = clipped(text, 400)
+        cost = size(candidate) + 1
+        if kept and used + cost > budget:
+            break
+        kept.append(candidate)
+        used += cost
+    return [summary, *reversed(kept)]
 
 
 def decision_input(system, fixed, advisory, observations, trace, budget, *, tight=False):
@@ -142,6 +206,7 @@ def decision_input(system, fixed, advisory, observations, trace, budget, *, tigh
                 mandatory + raw_history + min(size(advisory), MAX_ADVISORY_BYTES) >= budget * 4 // 5)
     compact = tight or pressure
     history = render_history(_compact_observations(observations, trace, tight) if compact and observations else observations,
-                             trace, min(available, 1200 if tight else 4096 if compact else MAX_HISTORY_BYTES))
+                             trace, min(available, TIGHT_HISTORY_BYTES if tight else
+                                        COMPACT_HISTORY_BYTES if compact else MAX_HISTORY_BYTES))
     advice = clipped(advisory, min(available - size(history), 0 if tight else MAX_ADVISORY_BYTES))
     return fixed + advice + history

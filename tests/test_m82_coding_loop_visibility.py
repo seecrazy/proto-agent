@@ -153,3 +153,111 @@ def test_agent_observation_uses_shaped_command_view(tmp_path, monkeypatch):
     assert "退出码 1（nonzero_exit）" in note
     assert "boom" in note
     assert "{'exit'" not in note
+
+
+# ---- Task 2：压缩策略按类别保留 -------------------------------------------
+
+from proto.exec import work_context as wc  # noqa: E402
+
+BUILD_ARGS = '{"cwd": "projects/wengu", "程序": "swift"}'
+
+
+def read_obs(path, marker, lines=60):
+    body = "\n".join(f"{n}\t{marker} line {n} public var value{n}: Int = {n}" for n in range(1, lines + 1))
+    return f'read_file({{"path": "{path}", "offset": 0, "limit": {lines}}}) → {body}\n〔共 {lines} 行，已读第 1-{lines} 行〕'
+
+
+def build_obs(*errors):
+    digest = "\n".join(errors)
+    return (f'run_command({BUILD_ARGS}) → 退出码 1（nonzero_exit）\n─ 错误摘要 {len(errors)} 条 ─\n'
+            f"{digest}\n─ 输出尾部 ─\nerror: Build failed\n")
+
+
+def compacted(observations, tight=False):
+    return "\n".join(wc._compact_observations(observations, [], tight))
+
+
+def test_compact_keeps_recent_file_bodies_and_errors():
+    observations = [
+        read_obs("projects/wengu/Sources/Wengu/Models.swift", "MODELS", 30),
+        read_obs("projects/wengu/Sources/Wengu/WenguApp.swift", "APP"),
+        build_obs("Sources/Wengu/Models.swift:7:6: error: 'Unique' is only available in iOS 18 or newer",
+                  "Sources/Wengu/WenguApp.swift:20:13: error: cannot find 'DeckListView' in scope"),
+    ]
+    original = list(observations)
+    text = compacted(observations)
+    assert "MODELS line 1" in text and "APP line 1" in text       # 两个最近读过的文件正文可见
+    assert "Models.swift:7:6: error:" in text and "DeckListView" in text
+    assert text.index("MODELS line 1") < text.index("APP line 1") < text.index("错误摘要")   # 仍按时间顺序
+    assert text.startswith("历史摘要")
+    assert observations == original                                 # 原观察不被改写
+
+
+def test_compact_marks_stale_reads_after_write():
+    observations = [read_obs("projects/wengu/a.swift", "ALINE", 20),
+                    'edit_file({"path": "projects/wengu/a.swift"}) → 1',
+                    build_obs("a.swift:3:1: error: boom")]
+    text = compacted(observations)
+    assert "ALINE" not in text                                      # 过期正文不再给
+    assert "a.swift" in text and "已过期" in text
+    assert "a.swift:3:1: error:" in text
+
+
+def test_compact_keeps_only_latest_read_of_same_file():
+    observations = [read_obs("projects/wengu/a.swift", "OLD"),
+                    'read_files({"paths": ["projects/wengu/b.swift"]}) → ### b\nB BODY',
+                    read_obs("projects/wengu/a.swift", "NEW")]
+    text = compacted(observations)
+    assert "NEW line 1" in text and "OLD line" not in text
+    assert "B BODY" in text
+
+
+def test_compact_folds_older_files_with_a_way_back():
+    observations = [read_obs("projects/wengu/one.swift", "ONE"),
+                    read_obs("projects/wengu/two.swift", "TWO"),
+                    read_obs("projects/wengu/three.swift", "THREE")]
+    text = compacted(observations)
+    assert "ONE line" not in text and "TWO line 1" in text and "THREE line 1" in text
+    folded = [line for line in text.splitlines() if "one.swift" in line]
+    assert folded and "正文已折叠" in folded[0] and "read_file(" in folded[0] and "offset" in folded[0]
+
+
+def test_compact_truncates_long_recent_file_and_says_so():
+    observations = [read_obs("projects/wengu/big.swift", "BIG", 400)]
+    text = compacted(observations)
+    assert "BIG line 1" in text and "BIG line 399" not in text
+    assert "截断" in text and "offset" in text
+
+
+def test_compact_stays_within_budget_with_many_steps():
+    observations = []
+    for index in range(12):
+        observations += [read_obs(f"projects/wengu/f{index}.swift", f"F{index}"),
+                         build_obs(f"f{index}.swift:1:1: error: number {index}")]
+    text = compacted(observations)
+    assert wc.size(text) <= wc.COMPACT_HISTORY_BYTES
+    assert "f11.swift:1:1: error:" in text                    # 最新一条验证结果一定在
+    tight = compacted(observations, tight=True)
+    assert wc.size(tight) <= wc.TIGHT_HISTORY_BYTES and " line 1 " not in tight
+
+
+def test_budgets_match_spec(monkeypatch):
+    monkeypatch.delenv("PROTO_ACTOR_INPUT_TOKENS", raising=False)
+    assert wc.MAX_HISTORY_BYTES == 12 * 1024
+    assert wc.COMPACT_HISTORY_BYTES == 12 * 1024
+    assert wc.TIGHT_HISTORY_BYTES == 3 * 1024
+    assert wc.actor_input_budget() == 65536
+    monkeypatch.setenv("PROTO_ACTOR_INPUT_TOKENS", "999999999")
+    assert wc.actor_input_budget() == wc.MAX_ACTOR_BYTES
+
+
+def test_decision_input_compacts_once_history_exceeds_the_raw_ceiling():
+    observations = [read_obs("projects/wengu/old.swift", "OLD", 400),
+                    read_obs("projects/wengu/mid.swift", "MID"),
+                    read_obs("projects/wengu/Sources/Wengu/Models.swift", "MODELS", 30),
+                    build_obs("Sources/Wengu/Models.swift:7:6: error: 'Unique' is only available in iOS 18 or newer")]
+    assert sum(wc.size(text) + 8 for text in observations) > wc.MAX_HISTORY_BYTES
+    output = wc.decision_input("系统", "固定规则：不许静默裁剪。", "辅助信息" * 300, observations, [], 65536)
+    assert "OLD line" not in output and "MODELS line 1" in output
+    assert "Models.swift:7:6: error:" in output and "固定规则" in output and "辅助信息" in output
+    assert wc.size("系统" + output) <= 65536

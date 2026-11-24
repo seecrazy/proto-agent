@@ -240,7 +240,10 @@ def test_investigator_rejects_write_tool_escape_and_source_echo(tmp_path):
 
 def test_decision_input_compacts_history_without_provider_usage():
     old_source = "OLD-SOURCE-BODY-" * 900
+    # M82：最近读过的两个文件保留正文；old.py 之后又读了两个文件，所以被折叠成指针。
     observations = [f"read_file({{'path': 'old.py', 'offset': 0}}) → {old_source}",
+                    'read_file({"path": "recent1.py", "offset": 0}) → RECENT-ONE',
+                    'read_files({"paths": ["recent2.py"]}) → RECENT-TWO',
                     "grep({'pattern': 'needle'}) → needle"]
     trace = [{"tool": "explore_code", "args": {"question": "auth"},
               "result": {"status": "ok", "summary": "认证在 auth.py。",
@@ -249,11 +252,22 @@ def test_decision_input_compacts_history_without_provider_usage():
              {"tool": "grep", "args": {"pattern": "needle"}, "result": "needle"}]
     output = decision_input("系统指令", "固定规则：不许静默裁剪。", "辅助信息" * 100,
                             observations, trace, 32768)
-    assert "OLD-SOURCE-BODY" not in output
+    assert "OLD-SOURCE-BODY" not in output and "RECENT-ONE" in output and "RECENT-TWO" in output
     assert "old.py" in output and "固定规则" in output
     assert "认证在 auth.py" in output and "auth.py:3-9" in output
     assert size("系统指令" + output) <= 32768
     assert observations[0].startswith("read_file(")
+
+
+def test_most_recent_file_read_keeps_a_bounded_body():
+    # M82 的核心修复：修错误时模型要能看见刚读过的文件，否则只能凭想象整文件重写。
+    source = "RECENT-SOURCE-BODY-" * 900
+    observations = [f"read_file({{'path': 'recent.py', 'offset': 0}}) → {source}",
+                    "grep({'pattern': 'needle'}) → needle"]
+    output = decision_input("系统指令", "固定规则：不许静默裁剪。", "", observations, [], 65536)
+    assert "RECENT-SOURCE-BODY" in output and "正文在此截断" in output
+    assert output.count("RECENT-SOURCE-BODY") < 900
+    assert size("系统指令" + output) <= 65536
 
 
 def test_tight_context_drops_advisory_and_large_recent_body():
