@@ -6,6 +6,7 @@
 """
 import json
 import shutil
+import socket
 from pathlib import Path
 
 import pytest
@@ -470,3 +471,172 @@ def test_outline_block_is_bounded_and_absent_without_sources(tmp_path):
     other.code_workspace.write_file("projects/manual/README.md", "# 手册")
     AgenticLoop(other, max_steps=2).run("看看文档", "", project_dir="projects/manual")
     assert "[工位接口轮廓]" not in docs.actor_inputs[0]
+
+
+# ---- Task 5：沙盒放行与 xcodebuild 旗标 -------------------------------------
+
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
+import uuid  # noqa: E402
+
+MACOS_SANDBOX = pytest.mark.skipif(
+    not shutil.which("sandbox-exec") or not shutil.which("xcodebuild") or not shutil.which("python3"),
+    reason="需要 macOS 沙盒、Xcode 与 python3")
+PROFILE_RULES = (
+    '(allow file-write* (regex #"^/private/var/tmp/com\\.apple\\.launchd\\.[^/]+/"))',
+    "(allow network-outbound (remote unix-socket))",
+    '(allow file-write* file-ioctl (literal "/dev/ptmx"))',
+    '(allow file-read* file-write* file-ioctl (regex #"^/dev/ttys[0-9]+$"))',
+)
+XCODEBUILD = ["xcodebuild", "-project", "Wengu.xcodeproj", "-scheme", "Wengu", "-destination",
+              "generic/platform=iOS Simulator", "-derivedDataPath", ".proto-build-01"]
+FLAG = "OTHER_SWIFT_FLAGS=-Xfrontend -disable-sandbox"
+
+
+def fake_runner(monkeypatch, tmp_path, backend="sandbox-exec"):
+    monkeypatch.setenv("PROTO_EXEC_BACKEND", backend)
+    (tmp_path / "p").mkdir(exist_ok=True)
+    tools = CodeTools(tmp_path)
+    monkeypatch.setattr(CodeTools, "_sandbox_exec_profile", lambda self, tmp: "(version 1)\n(allow default)\n")
+    seen = {}
+
+    def run(cmd, **kwargs):
+        seen["cmd"], seen["timeout"] = cmd, kwargs.get("timeout")
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"** BUILD SUCCEEDED **", stderr=b"")
+
+    monkeypatch.setattr("proto.tools.codetools.subprocess.run", run)
+    return tools, seen
+
+
+@MACOS_SANDBOX
+def test_xcodebuild_gets_macro_sandbox_flag_under_sandbox_exec(tmp_path, monkeypatch):
+    tools, seen = fake_runner(monkeypatch, tmp_path)
+    result = tools.run_command(XCODEBUILD + ["build"], cwd="p")
+    assert seen["cmd"][-1] == FLAG and result["command"][-1] == FLAG
+    mixed = tools.run_command(XCODEBUILD + ["OTHER_SWIFT_FLAGS=-Onone", "test"], cwd="p")
+    assert mixed["command"][-2:] == ["OTHER_SWIFT_FLAGS=-Onone -Xfrontend -disable-sandbox", "test"]
+    kept = tools.run_command(XCODEBUILD + ["OTHER_SWIFT_FLAGS=-Xfrontend -disable-sandbox", "build"], cwd="p")
+    assert kept["command"].count(FLAG) == 1 and kept["command"][-2] == FLAG
+    via_xcrun = tools.run_command(["xcrun", "xcodebuild"] + XCODEBUILD[1:] + ["test"], cwd="p")
+    assert via_xcrun["command"][:2] == ["xcrun", "xcodebuild"] and via_xcrun["command"][-1] == FLAG
+
+
+@MACOS_SANDBOX
+def test_xcodebuild_list_and_other_backends_stay_untouched(tmp_path, monkeypatch):
+    tools, seen = fake_runner(monkeypatch, tmp_path)
+    listed = tools.run_command(XCODEBUILD[:3] + ["-list"], cwd="p")
+    assert FLAG not in listed["command"] and seen["cmd"][-1] == "-list"
+    shown = tools.run_command(["xcodebuild", "-showsdks"], cwd="p")
+    assert FLAG not in shown["command"]
+    tools, _ = fake_runner(monkeypatch, tmp_path, backend="subprocess")
+    plain = tools.run_command(XCODEBUILD + ["build"], cwd="p")
+    assert FLAG not in plain["command"] and plain["backend"] == "subprocess"
+
+
+@MACOS_SANDBOX
+def test_xcodebuild_test_gets_a_cold_start_timeout(tmp_path, monkeypatch):
+    tools, seen = fake_runner(monkeypatch, tmp_path)
+    tools.run_command(XCODEBUILD + ["test"], cwd="p")
+    assert seen["timeout"] == 900                    # 冷启动模拟器首次测试约 8 分钟才就绪
+    tools.run_command(XCODEBUILD + ["build"], cwd="p")
+    assert seen["timeout"] == 120                    # 普通构建默认不变
+    tools.run_command(XCODEBUILD + ["build"], cwd="p", timeout_s=999)
+    assert seen["timeout"] == 300                    # 非测试动作上限 300 秒
+    tools.run_command(["swift", "build"], cwd="p", timeout_s=999)
+    assert seen["timeout"] == 300
+    tools.run_command(XCODEBUILD + ["test"], cwd="p", timeout_s=100)
+    assert seen["timeout"] == 100                    # 显式给的更短时间照办
+
+
+def test_sandbox_profile_adds_only_local_ipc_rules():
+    tools = CodeTools(Path(tempfile.mkdtemp()))
+    profile = tools._sandbox_exec_profile("/tmp/proto-profile-probe")
+    assert "(deny file-write*)" in profile and "(deny network*)" in profile
+    for rule in PROFILE_RULES:
+        assert rule in profile
+    assert "(allow network*)" not in profile and "remote ip" not in profile
+
+
+@MACOS_SANDBOX
+def test_sandbox_still_denies_outside_writes_and_tcp(tmp_path):
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setenv("PROTO_EXEC_BACKEND", "sandbox-exec")
+        tools = CodeTools(tmp_path)
+        # pytest 的临时目录本身就在 Darwin 用户临时目录里（沙盒放行），要拿它外面的路径验拒绝
+        outside = Path("/tmp") / f"proto-outside-{uuid.uuid4().hex}"
+        outside.mkdir()
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        code = (
+            "import json, os, pty, socket\n"
+            "out = {}\n"
+            "try:\n"
+            "    pty.openpty(); out['pty'] = 'ok'\n"
+            "except OSError as exc:\n"
+            "    out['pty'] = repr(exc)\n"
+            "try:\n"
+            "    open(os.path.join(%r, 'x.txt'), 'w').write('x'); out['outside'] = 'wrote'\n"
+            "except OSError as exc:\n"
+            "    out['outside'] = type(exc).__name__\n"
+            "try:\n"
+            "    socket.create_connection(('127.0.0.1', %d), timeout=3).close(); out['tcp'] = 'connected'\n"
+            "except OSError as exc:\n"
+            "    out['tcp'] = type(exc).__name__\n"
+            "print(json.dumps(out))\n" % (str(outside), listener.getsockname()[1]))
+        result = tools.run_command(["python3", "-c", code], cwd="")
+        report = json.loads(result["stdout"])
+        assert report == {"pty": "ok", "outside": "PermissionError", "tcp": "PermissionError"}, result
+    finally:
+        listener.close()
+        monkey.undo()
+        shutil.rmtree(outside, ignore_errors=True)
+
+
+# ---- 原始输出裁剪不丢错误行；shell 语法直接拒并给出路（真实模型首跑发现） -------
+
+def test_clip_output_keeps_error_lines_from_the_middle():
+    noise = "compiling module part number one\n" * 300
+    text = ("HEAD-BANNER\n" + noise + "src/a.swift:7:6: error: boom here\n  7 | let x = \\\n"
+            + noise + "TAIL-END\n")
+    clipped = CodeTools._clip_output(text, head=200, tail=200)
+    assert "HEAD-BANNER" in clipped and "TAIL-END" in clipped
+    assert "src/a.swift:7:6: error: boom here" in clipped and "let x" in clipped
+    assert len(clipped) < len(text) // 3
+    assert CodeTools._clip_output("short output\n") == "short output\n"
+
+
+@MACOS_SANDBOX
+def test_run_command_report_keeps_errors_hidden_by_a_long_tail(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTO_EXEC_BACKEND", "sandbox-exec")
+    tools = CodeTools(tmp_path)
+    script = (
+        "import sys\n"
+        "print('building...')\n"
+        "for i in range(400): sys.stderr.write('note line %d about nothing at all\\n' % i)\n"
+        "sys.stderr.write('src/a.swift:7:6: error: cannot find foo in scope\\n  7 | let x = foo\\n')\n"
+        "for i in range(400): sys.stderr.write('more note %d about nothing at all\\n' % i)\n"
+        "sys.stderr.write('error: Build failed\\n')\n"
+        "sys.exit(1)\n")
+    view = obs.command_view(tools.run_command(["python3", "-c", script], cwd=""))
+    assert "错误摘要 1 条" in view and "src/a.swift:7:6: error: cannot find foo in scope" in view
+
+
+@pytest.mark.skipif(not shutil.which("swift") or not shutil.which("xcrun"), reason="需要 Xcode 工具链")
+def test_run_command_rejects_shell_syntax_with_a_way_forward(tmp_path):
+    tools = CodeTools(tmp_path)
+    (tmp_path / "p").mkdir()
+    (tmp_path / "p" / "Notes.swift").write_text("let a = 1\n")
+    redirect = tools.run_command(["swift", "build", "2>&1"], cwd="p")
+    assert redirect["exit"] == -1 and redirect["reason"] == "shell_syntax_not_supported"
+    assert "不经过 shell" in redirect["stderr"] and "stdout" in redirect["stderr"]
+    glob = tools.run_command(["xcrun", "swiftc", "-typecheck", "Sources/Wengu/*.swift"], cwd="p")
+    assert glob["reason"] == "shell_syntax_not_supported" and "通配符" in glob["stderr"]
+    for argv in (["xcodebuild", "-list", "|", "head"], ["python3", "script.py", ">", "out.txt"],
+                 ["swift", "build", "&&", "swift", "test"]):
+        assert tools.run_command(argv, cwd="p")["reason"] == "shell_syntax_not_supported", argv
+    # 代码里的比较符、正则里的 *、真实存在的路径都不算 shell 语法
+    for argv in (["python3", "-c", "print(1 > 0)"], ["swift", "test", "--filter", "WenguTests.Suite"],
+                 ["xcrun", "swiftc", "-typecheck", "p/Notes.swift"]):
+        assert tools.run_command(argv, cwd="")["reason"] != "shell_syntax_not_supported", argv

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List
 
 from proto.tools.code_index import CodeIndex
+from proto.tools.diagnostics import diagnostics
 from proto.exec.contracts import builtin_parameters
 from proto.exec.engineering import ISOLATED, inspect_build
 from proto.exec.exploration import explore_code
@@ -46,6 +47,36 @@ def _limit_resources():
         resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
     except Exception:
         pass
+
+
+# M82：iOS 模拟器测试通道用到的本机 IPC 原语。都是进程间通信，不是 TCP/IP，
+# 也不扩大工作区与临时目录之外的持久写入。
+#   launchd 会话目录：testmanagerd 的 unix 域套接字在这里；
+#   unix socket 出站：xcodebuild 与 testmanagerd 通信；
+#   伪终端：启动测试宿主 App 时分配。
+LOCAL_IPC_RULES = (
+    '(allow file-write* (regex #"^/private/var/tmp/com\.apple\.launchd\.[^/]+/"))',
+    "(allow network-outbound (remote unix-socket))",
+    '(allow file-write* file-ioctl (literal "/dev/ptmx"))',
+    '(allow file-read* file-write* file-ioctl (regex #"^/dev/ttys[0-9]+$"))',
+)
+XCODE_ACTIONS = {"build", "test", "build-for-testing", "test-without-building", "archive", "analyze"}
+XCODE_TEST_ACTIONS = {"test", "test-without-building"}
+XCODE_INFO_FLAGS = {"-list", "-showsdks", "-version", "-showBuildSettings"}
+XCODEBUILD_TEST_TIMEOUT_S = 900
+MACRO_SANDBOX_FLAG = "-Xfrontend -disable-sandbox"
+# run_command 不经过 shell：这些写法不会按模型预想的方式生效，直接拒掉并给出路
+_SHELL_REDIRECTION = re.compile(r"^\d*[<>]")
+_SHELL_OPERATOR = re.compile(r"^(?:\||\|\||&&|;|&|`|\$\()$")
+_SHELL_GLOB = re.compile(r"(?:^|/)[*?]")
+
+
+def _xcodebuild_parts(argv):
+    """(program, rest)：把 `xcrun xcodebuild …` 归一成 xcodebuild。"""
+    name = Path(argv[0]).name
+    if name == "xcrun" and len(argv) > 1 and Path(argv[1]).name == "xcodebuild":
+        return "xcodebuild", argv[2:]
+    return name, argv[1:]
 
 
 def json_quote(value: str) -> str:
@@ -179,14 +210,20 @@ class CodeTools:
     @staticmethod
     def _clip_output(text: str, head: int = 1500, tail: int = 2000) -> str:
         """长输出头尾保留（M48）：测试/编译输出关键信息在头（命令）和
-        尾（报错栈），全砍头会丢失败原因。"""
+        尾（报错栈），全砍头会丢失败原因。
+
+        M82：被省略的中段里的错误行也留下。`swift test` 的 stderr 以一条数千
+        字符的「Failed frontend command」命令行收尾，真正的 file:line:col 报错
+        落在中段——只留头尾时模型一个编译错误都看不到。"""
         if not text or len(text) <= head + tail + 100:
             return text
-        skipped = len(text) - head - tail
-        lines = text.count("\n")
-        return (text[:head]
-                + f"\n…（中间省略约 {skipped} 字符/{lines} 行）\n"
-                + text[-tail:])
+        middle = text[head:-tail]
+        kept = diagnostics(middle, limit=10, budget=1600)
+        kept_size = sum(len(item) + 1 for item in kept)
+        skipped = len(middle) - kept_size
+        note = (f"\n…（中间省略约 {skipped} 字符；其中的错误行保留如下）…\n" if kept
+                else f"\n…（中间省略约 {skipped} 字符/{middle.count(chr(10))} 行）\n")
+        return text[:head] + note + ("".join(item + "\n" for item in kept)) + text[-tail:]
 
     def _read_full(self, path: str) -> str:
         target = self._abs(path)
@@ -293,6 +330,7 @@ class CodeTools:
             f"{write_rules}\n"
             f"{protected_denials}\n"
             "(deny network*)\n"
+            f"{''.join(rule + chr(10) for rule in LOCAL_IPC_RULES)}"
         )
 
     def run_python(self, code: str, timeout_s: int = 60) -> Dict:
@@ -358,10 +396,30 @@ class CodeTools:
         if name == "xcrun" and (len(argv) < 2
                                 or Path(argv[1]).name not in self.XCRUN_TOOLS):
             return rejected("xcrun_tool_not_allowed")
+
+        def shell_rejected(detail):
+            return rejected("shell_syntax_not_supported",
+                            "shell_syntax_not_supported: run_command 直接执行程序，不经过 shell——"
+                            + detail + "；stdout 和 stderr 都会自动返回，不需要重定向。"
+                            "多步操作拆成多次调用，或写一个 python3 脚本再运行它。")
+
+        for item in argv[1:]:
+            if _SHELL_REDIRECTION.match(item) or _SHELL_OPERATOR.fullmatch(item):
+                return shell_rejected("重定向、管道、&&、; 这些写法不会生效（%r）" % item)
+            if _SHELL_GLOB.search(item) and not (self.root / str(cwd or "") / item).exists():
+                return shell_rejected("通配符不会被展开（%r），请写出具体文件路径" % item)
+        program, rest = _xcodebuild_parts(argv)
+        testing = (program == "xcodebuild" and bool(XCODE_TEST_ACTIONS & set(rest))
+                   and not (XCODE_INFO_FLAGS & set(rest)))
         try:
-            timeout_s = max(1, min(300, int(timeout_s)))
+            timeout_s = int(timeout_s)
         except (TypeError, ValueError):
             return rejected("invalid_timeout")
+        if testing and timeout_s == 120:
+            # 冷启动的模拟器首次测试约 8 分钟后才就绪（2026-11-24 实测 481 秒），
+            # 默认时长必然超时；显式给了别的时长就照办
+            timeout_s = XCODEBUILD_TEST_TIMEOUT_S
+        timeout_s = max(1, min(XCODEBUILD_TEST_TIMEOUT_S if testing else 300, timeout_s))
         try:
             directory = self._abs(cwd)
             if not directory.is_dir():
@@ -402,8 +460,22 @@ class CodeTools:
             if name == "swiftc":
                 return [argv[0], "-Xfrontend", "-disable-sandbox"] + argv[1:]
             return argv
+        def _patch_xcodebuild_flag(argv):
+            # xcodebuild 自己生成 swift-frontend 调用，宏插件同样会再套一层
+            # sandbox-exec（嵌套必败）；构建设置把禁用旗标传给每个前端进程
+            if backend != "sandbox-exec" or not (program == "xcodebuild" and (XCODE_ACTIONS & set(rest))
+                                                 and not (XCODE_INFO_FLAGS & set(rest))):
+                return argv
+            index = next((position for position, item in enumerate(argv)
+                          if item.startswith("OTHER_SWIFT_FLAGS=")), None)
+            if index is None:
+                return argv + ["OTHER_SWIFT_FLAGS=" + MACRO_SANDBOX_FLAG]
+            if MACRO_SANDBOX_FLAG in argv[index]:
+                return argv
+            return argv[:index] + [argv[index] + " " + MACRO_SANDBOX_FLAG] + argv[index + 1:]
         argv = _patch_sandbox_flag(argv)
         argv = _patch_swiftc_flag(argv)
+        argv = _patch_xcodebuild_flag(argv)
         args = {"backend": backend, "command": [name] + argv[1:]}
         with tempfile.TemporaryDirectory(prefix="proto-cmd-") as tmp:
             env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
