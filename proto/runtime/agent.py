@@ -145,6 +145,19 @@ IOS_DELIVERY_INSTRUCTIONS = (
     "Swift 库或工具版本不能代替应用回执；如要求 XCTest，必须实际跑测试，不更改权限或尝试上架。")
 
 
+def _failure_detail(exc):
+    """异常上由我们附加的 detail（见 decision_stream.read_decision）。
+
+    不能对 HTTPError 用 getattr：它继承了临时文件包装器的 __getattr__，对未知
+    属性抛的是 KeyError 而不是 AttributeError，会在失败处理路径里再炸一次。
+    """
+    try:
+        detail = vars(exc).get("detail")
+    except TypeError:
+        return ""
+    return detail if isinstance(detail, str) else ""
+
+
 class ProtoAgent:
     def __init__(self, data_dir: Path, llm=None, now=time.time,
                  goal_interval_s: float = 4 * 3600,
@@ -698,7 +711,7 @@ class ProtoAgent:
                         grouped=bool(group), profile_id=profile_id,
                         retry_at=exc.retry_at if isinstance(exc, ModelPressureWait) else None,
                         stage=failure.stage, duration_ms=round((time.monotonic() - started) * 1000),
-                        detail=getattr(exc, "detail", ""))
+                        detail=_failure_detail(exc))
             raise
 
     def _complete_group(self, name, bindings, pressure, system, user, pool, model_event, *, decision, foreground):
@@ -814,7 +827,7 @@ class ProtoAgent:
             attempt_event("model_failed", reason=incident, http_status=failure.http_status,
                           exception_type=failure.exception_type, failover_eligible=can_failover,
                           duration_ms=round((time.monotonic() - started) * 1000), stage=failure.stage, streamed=streamed,
-                          retry_at=limited.retry_at if limited else None, detail=getattr(exc, "detail", ""))
+                          retry_at=limited.retry_at if limited else None, detail=_failure_detail(exc))
             if ticket is not None:
                 fleet_budget.settle(ticket.id)
             self.kernel.pools.finish_model(request_id, elapsed=time.monotonic() - started)
