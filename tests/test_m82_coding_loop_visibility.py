@@ -348,3 +348,125 @@ def test_eight_dry_steps_point_at_the_first_error(tmp_path, monkeypatch):
     agent, _, session = run_slice(tmp_path, monkeypatch, steps)
     pointer = [text for text in session["observations"] if "连续 8 步没有落盘" in text]
     assert len(pointer) == 1 and "src/a.swift:7:6" in pointer[0] and "edit_file" in pointer[0]
+
+
+# ---- Task 4：工位清单与接口轮廓 ---------------------------------------------
+
+from proto.exec import outline  # noqa: E402
+from proto.tools.codetools import CodeTools  # noqa: E402
+
+PROJECT = "projects/wengu"
+
+
+def seed_project(root, extra=""):
+    for path in ("Sources/Wengu/Models.swift", "Sources/Wengu/App.swift",
+                 "Tests/WenguTests/EngineTests.swift", "Package.swift",
+                 ".build/debug.swift", "Sources/Wengu/.hidden/x.swift"):
+        root.write_file(f"{PROJECT}/{path}", extra or "x")
+
+
+def test_list_dir_project_shows_nested_sources(tmp_path):
+    tools = CodeTools(tmp_path)
+    seed_project(tools)
+    listing = tools.list_dir(PROJECT)
+    assert "Sources/Wengu/Models.swift" in listing and "Sources/Wengu/App.swift" in listing
+    assert "Tests/WenguTests/EngineTests.swift" in listing and "Package.swift" in listing
+    assert ".build" not in listing and ".hidden" not in listing
+    root = tools.list_dir()
+    assert "projects/" in root and "projects/wengu/" in root and "wengu/Package.swift" in root
+    assert "Sources/" not in root                 # 根目录清单保持「目录 2 层 + 项目内文件 1 层」
+
+
+def test_prompt_block_lists_project_sources(tmp_path):
+    model = ScriptedEngineer([tool_step("read_file", path=f"{PROJECT}/Package.swift"), {"done": True, "summary": "看了"}])
+    agent = ProtoAgent(tmp_path, llm=model, goal_interval_s=0)
+    seed_project(agent.code_workspace)
+    result = AgenticLoop(agent, max_steps=4).run("把工程修到能编译", "swift build 退出 0", project_dir=PROJECT)
+    blocks = agent.sessions.lookup(result["session_id"])["prompt_blocks"]
+    listing = [block for block in blocks if "工位文件" in block][0]
+    assert "Sources/Wengu/Models.swift" in listing and "Tests/WenguTests/EngineTests.swift" in listing
+    assert "开工时" in listing
+
+
+SWIFT = '''import Foundation
+
+@Model
+public struct Deck: Identifiable {
+    public var id: UUID
+    public var name: String = ""
+    public init(name: String) { self.name = name }
+    public func rename(_ value: String) { name = value }
+}
+
+final class Engine {
+    static let shared = Engine()
+    func schedule(_ quality: Int, from date: Date) -> Int { quality }
+    struct State { var interval: Int }
+}
+
+extension Engine {
+    public func review() {}
+}
+'''
+
+
+def test_swift_outline_lists_types_and_members():
+    found = outline.swift_outline(SWIFT)
+    assert [header for header, _ in found] == [
+        "struct Deck", "class Engine", "struct State", "extension Engine"]
+    assert found[0][1] == ["var id: UUID", "var name: String", "init(name: String)",
+                           "func rename(_ value: String)"]
+    assert found[1][1][:2] == ["static let shared", "func schedule(_ quality: Int, from date: Date) -> Int"]
+    assert found[2][1] == ["var interval: Int"]
+    assert found[3][1] == ["func review()"]
+
+
+def test_outline_covers_python_and_javascript():
+    python = "import os\n\n\nclass Engine:\n    def schedule(self, quality: int) -> int:\n        return quality\n\n    def helper():\n        pass\n"
+    found = outline.python_outline(python)
+    assert found[0][0] == "class Engine"
+    assert found[0][1] == ["schedule(self, quality: int) -> int", "helper()"]     # 注解与返回类型都在
+    assert outline.code_outline(Path("a.js"), "export function run(a, b) { return a }\nconst limit = 3\nclass Foo {}\n") == [
+        ("function run", ["run(a, b)"]), ("const limit", ["limit"]), ("class Foo", [])]
+
+
+def outline_block(prompt):
+    """固定区里 [工位接口轮廓]…[/工位接口轮廓] 之间的文本。"""
+    return prompt.split("[工位接口轮廓]", 1)[1].split("[/工位接口轮廓]", 1)[0]
+
+
+def test_outline_block_follows_source_changes_and_stays_bounded(tmp_path):
+    first = "struct Card {\n    var front: String\n}\n"
+    second = "struct Card {\n    var front: String\n    func schedule() {}\n}\n"
+    model = ScriptedEngineer([
+        read_step(1),
+        tool_step("write_file", path=f"{PROJECT}/Sources/Wengu/Models.swift", content=second),
+        read_step(2),
+        {"done": True, "summary": "改好了"}])
+    agent = ProtoAgent(tmp_path, llm=model, goal_interval_s=0)
+    seed_project(agent.code_workspace)
+    agent.code_workspace.write_file(f"{PROJECT}/Sources/Wengu/Models.swift", first)
+    result = AgenticLoop(agent, max_steps=8).run("把工程修到能编译", "swift build 退出 0", project_dir=PROJECT)
+    inputs = model.actor_inputs
+    assert "struct Card" in outline_block(inputs[0])
+    assert "func schedule()" not in outline_block(inputs[0]) and "func schedule()" in outline_block(inputs[-1])
+    block = outline_block(inputs[-1])                         # 源码变了轮廓跟着变
+    assert "var front: String" in block and "Models.swift" in block
+    assert len(block.encode("utf-8")) <= 2400 + 80
+
+
+def test_outline_block_is_bounded_and_absent_without_sources(tmp_path):
+    many = "".join(f"struct Thing{index} {{\n    var value{index}: Int\n    func run{index}() {{}}\n}}\n\n"
+                   for index in range(200))
+    model = ScriptedEngineer([{"done": True, "summary": "只是看看"}])
+    agent = ProtoAgent(tmp_path, llm=model, goal_interval_s=0)
+    agent.code_workspace.write_file(f"{PROJECT}/Sources/Wengu/Big.swift", many)
+    agent.code_workspace.write_file(f"{PROJECT}/README.md", "# Wengu")
+    result = AgenticLoop(agent, max_steps=2).run("看看工程", "", project_dir=PROJECT)
+    block = outline_block(model.actor_inputs[0])
+    assert len(block.encode("utf-8")) <= 2400 + 80 and "轮廓已截断" in block and "Thing199" not in block
+    docs = ScriptedEngineer([{"done": True, "summary": "只是文档"}])
+    other = ProtoAgent(tmp_path / "docs", llm=docs, goal_interval_s=0)
+    other.code_workspace.write_file("projects/manual/README.md", "# 手册")
+    AgenticLoop(other, max_steps=2).run("看看文档", "", project_dir="projects/manual")
+    assert "[工位接口轮廓]" not in docs.actor_inputs[0]

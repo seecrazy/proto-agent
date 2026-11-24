@@ -49,7 +49,7 @@ def specs(code_tools) -> list:
             fn=lambda path="": code_tools.list_dir(path),
             category=ActionCategory.READ_DRAFT,
             description="列工作区目录",
-            read_only=True, background_io=True),
+            read_only=True, obs_limit=2000, background_io=True),
         ToolSpec(
             name="grep",
             fn=code_tools.grep,

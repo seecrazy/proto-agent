@@ -207,18 +207,21 @@ class CodeTools:
         return 1 if not replace_all else count
 
     def list_dir(self, path: str = "") -> str:
-        """列工作区目录（目录 2 层 + 项目内文件 1 层）。降本（M45）：
+        """列目录（相对被列目录：子目录 2 层 + 再往里的文件 1 层）。降本（M45）：
         跳过归档/内部目录、条目上限 40，超出提示用 grep 收窄——
-        大目录全量列出只会吃上下文；文件直达免去二次 list_dir。"""
+        大目录全量列出只会吃上下文；文件直达免去二次 list_dir。
+
+        M82：深度原按工作区根计算，列 projects/<工位> 时深度已是 2，子目录
+        整个被剪掉——模型看到的「工位现状」里一个源码文件都没有。"""
         base = self._abs(path) if path else self.root
         skip_dirs = {"_archived", ".work", "__pycache__"}
         entries = []
         truncated = False
         for current, dirs, files in os.walk(base):
             rel = Path(current).relative_to(self.root)
-            depth = len(rel.parts)
+            depth = len(Path(current).relative_to(base).parts)
             if depth >= 2:
-                dirs[:] = []          # 项目目录内不再下钻，但文件要列出
+                dirs[:] = []          # 再往里不再下钻，但文件要列出
             else:
                 dirs[:] = sorted(d for d in dirs if d not in skip_dirs
                                  and not d.startswith("."))

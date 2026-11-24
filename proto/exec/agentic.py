@@ -24,6 +24,7 @@ from proto.exec.exploration import bind_explorer, investigate
 from proto.exec.subagent import bind_subagent
 from proto.exec.plan_evidence import EvidenceError, OutputEvidence
 from proto.exec.observations import command_view, failure_key
+from proto.exec import outline
 from proto.exec.router import Task, TaskResult, VARIANT_ID
 from proto.exec.sessions import SESSION_SCHEMA_VERSION, TERMINAL_STATES
 from proto.exec.work_context import (COMMAND_TOOLS, actor_input_budget, decision_input, size, target_args,
@@ -485,7 +486,25 @@ class AgenticLoop:
             scope += (f"\n[主人批准的执行计划]\n{steps}\n"
                       f"必须新增或实质改变的相对输出：{json.dumps(outputs, ensure_ascii=False)}。"
                       "输出相对项目范围解析，工具 path 参数仍相对工作区，权限按原规则检查。")
-        return f"{scope}\n\n可用工具：\n{catalog}\n{self._agent.self_fact_prompt()}"
+        interfaces = self._outline_block()
+        return (f"{scope}\n\n可用工具：\n{catalog}\n{self._agent.self_fact_prompt()}"
+                + (f"\n[工位接口轮廓]\n{interfaces}[/工位接口轮廓]\n" if interfaces else ""))
+
+    def _outline_block(self):
+        """工位接口轮廓（M82）：按源码指纹缓存在会话里，文件没变就不重算。"""
+        session = self._session
+        try:
+            directory = session["context"].get("project_dir") or ""
+            workspace = self._agent.code_workspace
+            marks, files = outline.scan(workspace, directory)
+            cached = session.get("outline")
+            if not isinstance(cached, dict) or cached.get("marks") != marks:
+                cached = {"marks": marks,
+                          "text": outline.source_outline(workspace, directory, files=files)}
+                session["outline"] = cached
+            return cached["text"] if isinstance(cached["text"], str) else ""
+        except Exception:      # 轮廓只是辅助信息，任何异常都不能拖垮执行循环
+            return ""
 
     def _run(self, task_text: str, acceptance: str,
              feedback: str, journal, goal_id: str = "", project_dir: str = "", frozen_context=None,
@@ -843,7 +862,8 @@ class AgenticLoop:
         try:
             listing = self._agent.code_workspace.list_dir(session["context"]["project_dir"])
             if listing:
-                plan_block += f"\n工作区当前内容（直接用，别再重复列目录）：\n{listing[:400]}\n"
+                plan_block += ("\n工位文件（开工时的快照，直接用，别再重复列目录；"
+                               f"本轮新写的文件以写入回执为准）：\n{listing[:1400]}\n")
         except Exception:
             pass
         session["prompt_blocks"] = [state_block, lesson_block, resume_block, plan_block]
