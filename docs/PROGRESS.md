@@ -8,8 +8,8 @@
 - **修复**：
   1. **UI 测试 target**（`make_xcodeproj.py`）：清单新增可选 `ui_tests`（name/bundle_id/sources，与 `tests` 同规校验、三方互异）→ 生成 `com.apple.product-type.bundle.ui-testing` target（`TEST_TARGET_NAME` 指回 App、依赖 App、进 scheme Test 动作）；单测 target 的 `TEST_HOST`/`BUNDLE_LOADER` 注入语义保持不变。生成器内部把两种测试 target 归一为同一构造路径，标识仍按名派生（重复生成字节一致）。SKILL.md 明确：模拟器内点按走查必须走 XCUITest（`XCUIApplication().launch()` + `tap()`，`xcodebuild test` 自己装 App 启动执行），单元测试 target 做不了 UI 点按，simctl install/launch 不是需要主人代劳的事。
   2. **读重放**（`proto/exec/agentic.py`）：`REPLAY_SAFE_READS`（read_file/read_files/read_skill/list_dir/grep/search_symbols/explore_code）加入重放——同参且此后只有读取时返回原轨迹行，观察明确「内容不会因重读而变化，把已读到的信息用起来去产出」；黑板/舰队/公司上下文反映外部世界，源级测试锁死永不进入该集合。
-- **测试**：tests/test_ios_app_project.py（ui_tests 生成/字节稳定/参数校验/xcodebuild -list 列出 target）+ tests/test_m85_loop_economics.py（重读重放/写入后重跑/外部态工具不重放+集合源级锁死）。
-- **部署**：待全量测试通过后随下一次生产重启生效。
+- **测试**：tests/test_ios_app_project.py（ui_tests 生成/字节稳定/参数校验/xcodebuild -list 列出 target）+ tests/test_m85_loop_economics.py（重读重放/写入后重跑/外部态工具不重放+集合源级锁死）；全量 **1470 passed + 5 skipped（退出码 0）**。
+- **部署**：23:06 生产重启到 26ed40f（先暂停专家拦住新 run、等在跑 run 自然收尾再重启——故意制造待核对不可取；部署后专家已恢复）。
 
 ## M84 — 「结果未知，待核对」：谁来核对、怎么核对（2026-11-24，主人问「待谁核对」）
 
