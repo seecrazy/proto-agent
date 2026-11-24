@@ -5,7 +5,7 @@
 [![tests](https://img.shields.io/badge/tests-1304%20passed-brightgreen.svg)]()
 [![python](https://img.shields.io/badge/python-3.9%2B-blue.svg)]()
 [![deps](https://img.shields.io/badge/runtime%20deps-0-success.svg)]()
-[![version](https://img.shields.io/badge/version-0.35.0-orange.svg)]()
+[![version](https://img.shields.io/badge/version-0.36.0-orange.svg)]()
 
 PROTO 的长期目标是在同等资源与权限下完成通用 AI Agent 能做的有用工作，并让同一个 Agent 以持续的人设、记忆和目标与人相处、主动学习、思考、成长和交付。没有新指令也能行动，但不能自行扩权，产出以可复核的证据为准。框架用独立样例验证，不替 Agent 承做、调试或验收真实项目。当前实现至 M76，仍是**单机多 Agent 原型**。见[核心设计原则](docs/DESIGN.md#core-design-principles)。
 

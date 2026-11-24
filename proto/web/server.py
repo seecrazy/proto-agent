@@ -88,7 +88,7 @@ READ_ONLY_GETS = {
 
 
 class _Handler(BaseHTTPRequestHandler):
-    server_version = "ProtoWeb/0.33.0"
+    server_version = "ProtoWeb/0.36.0"
 
     def log_message(self, fmt, *args):
         pass

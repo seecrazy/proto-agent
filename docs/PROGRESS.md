@@ -2,6 +2,24 @@
 
 > 当前完整方案统一阅读 [DESIGN.md](DESIGN.md)。本文件只记录里程碑、实现状态与验证证据，不作为第二份设计。
 
+## M82 — 编码循环可见性与 iOS 交付可达性（2026-11-24，独立核查后整改）
+
+- **背景**：主人问「iPhone 专家自主交付成熟 App 的目标实现了吗」。新会话只读核查（14:30）的结论是没有：M80「监督者可离场」与 M81「三缺口闭合」部署后两小时内再次被证伪——专家 10:13→12:06 约 140 万 token、读 200 次命令 102 次、只写 10 次，13 条 run 全败，随后零进展阻塞、自动恢复配额耗尽、空等两个半小时；活动工程 3 个源文件 239 行，副本上 `swift build` 13 个编译错误；工作区没有任何 `.xcodeproj`。主人指令：打磨到目标达成。设计与证据见 [设计记录](specs/2026-11-24-coding-loop-visibility.md)，任务拆解见 [实施计划](plans/2026-11-24-m82-coding-loop-visibility.md)。
+- **根因（逐条有生产证据）**：① 压缩只留最近 2 条观察、读文件超过 900 字节即折叠——模型「跑构建能看到报错，读文件却看不到正文」；② 命令观察是字典字符串，stderr 以无关警告开头，裁剪后只剩构建横幅；③ `list_dir` 按工作区根算深度，列项目目录时子目录整个被剪掉；④ 同一 `swift build` 23 步里真实执行 7 次，判重键取横幅；⑤ 交付门要 `xcodebuild -project` 的模拟器 `.app`，系统里没有办法生成 `.xcodeproj`，验收里的机型本机也不存在；⑥ 沙盒挡住 xcodebuild（宏插件嵌套沙盒、testmanagerd 套接字、伪终端）。
+- **修复**：
+  1. **命令观察整形**（`proto/exec/observations.py`、`proto/tools/diagnostics.py`）：退出码 → 错误摘要（带源码摘录、工位相对路径）→ 输出尾部；`run_command` 从裁剪前的完整输出提取诊断。重定向、管道、通配符、超长写入、放错位置的 `note` 都在执行前说明怎么改。
+  2. **压缩按类别保留**：压缩预算 4→16 KiB、紧急 1.2→3 KiB、输入默认 32768→65536；最近 4 个文件的正文可见，改过的文件保留并标出，旧读取折叠成指针。
+  3. **重复验证不重跑**：只读步之间重放原结果；判重看诊断；连续 8 步未落盘时指向第一条错误。
+  4. **工位事实**：`list_dir` 深度相对被列目录；「工位文件」块 1400 字符；固定区附带接口轮廓（`proto/exec/outline.py`，2400 字节）。
+  5. **沙盒与 xcodebuild**：自动补 `OTHER_SWIFT_FLAGS=-Xfrontend -disable-sandbox`；放行 launchd 会话套接字目录、unix socket 出站、伪终端；`xcodebuild test` 默认超时 900 秒。工作区外写入与 TCP 仍被拒。
+  6. **新技能 `ios-app-project`**：自带 `make_xcodeproj.py`，一份 JSON 清单生成 `.xcodeproj` 与共享 scheme；`inspect_build` 与交付阶段提示接线。
+  7. **编辑反馈**：`edit_file` 的观察写明改了什么；逐字找不到时忽略首尾空白再找，并说明「已生效」或给出最接近的行。暂停通知区分「会自己恢复」与「需要你」。
+  8. **测试套件不再出公网**：三个心跳用例随 GitHub 延迟变红（核查时看到的那 1 个失败就是它）。
+- **真实模型试跑**（Wengu 副本、生产同款 glm-5.3、每片 24 步）：b1 第 6 次调用 `model_invalid_response`；b2 5 次写入、错误 13→3；b3 11 步错误 13→3（余下是没写的视图）。每一轮暴露的问题都已修并回归。
+- **生产验证**（17:24 部署、解锁目标）：部署后连续 4 片都有实质进展（`stalled` 始终为 0，没有再阻塞）——`swift build` 从 13 个错误到 0；新写 `Views.swift`、`StatsView.swift`；第 4 片自己读了 `ios-app-project`、写出 `project.json`、生成 `Wengu.xcodeproj`，并在沙盒内经 `xcodebuild` 构建出 `Debug-iphonesimulator/Wengu.app`、写下 README。这是一周以来第一次拿到模拟器应用包。期间按生产时间线又修三处：诊断路径按真实绝对前缀裁剪、视野保留 4 个文件（2 个时模型循环重读 13 步）、超长写入给出拆分办法（曾原样重交 7 次）。
+- **测试**：新增 `tests/test_m82_coding_loop_visibility.py` 与 `tests/test_ios_app_project.py`；部署前全量 **1407 passed + 5 skipped**（核查时为 1345 passed + 1 failed）。`PROTO_TEST_XCODE=1` 时生成的工程在 PROTO 沙盒内经真实 `run_command` 构建出 `.app`。
+- **还没做到**：XCTest 尚未在模拟器上跑通；没有模拟器截图与功能走查；验收还没判过；旧的并行目录 `Wengu/` 还在工位里。遗留与成因未明的项见 [DEBT](DEBT.md) 的 D27–D29。
+
 ## M81 — 完全自主三缺口闭合（2026-11-24，主人问责后补交）
 
 - **背景**：M80 收尾时主人问责"为什么没达到自主完成 App 的水平"。生产实证支撑问责：夜间 02:28 run 停在 needs_reconciliation/model_retry_exhausted **死等主人 5 小时零进展**（M80 声称的"可无人值守"被证伪）；交付阻塞同样只能主人 retry；D22 验收自指未机制化（入账≠兑现——直接堵死目标的问题不可推迟）。

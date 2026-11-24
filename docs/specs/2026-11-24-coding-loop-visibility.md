@@ -112,7 +112,7 @@ Sources/Wengu/Models.swift:30:16: error: A default value requires a fully qualif
   - 当前用户的 launchd 会话套接字目录 `/private/var/tmp/com.apple.launchd.*/`（testmanagerd 通道）；
   - `network-outbound` 到 unix socket；
   - 伪终端分配 `/dev/ptmx` 与 `/dev/ttysN`。
-- **模拟器就绪**：`xcrun simctl boot` 与 `bootstatus -b` 可在沙盒内执行；冷启动后的首次测试需要等模拟器稳定（具体等待规则由实验确定，见 §7）。
+- **模拟器就绪**：`xcrun simctl boot` 与 `bootstatus -b` 可在沙盒内执行。冷启动后的首次 `xcodebuild … test` 约 8 分钟才完成，所以该动作的默认超时放宽到 900 秒（上限 900 秒，显式更短照办），其余命令仍为 300 秒。
 - `inspect_build` 在「只有 `Package.swift`、没有 Xcode 工程」时提示先读 `ios-app-project` 技能；交付阶段的任务提示补上同一句，并说明模拟器名称以 `simctl list devices available` 为准。
 
 ### 5.7 阻塞通知
@@ -137,4 +137,6 @@ Sources/Wengu/Models.swift:30:16: error: A default value requires a fully qualif
 
 - 生成器产出的工程在沙盒外 `xcodebuild build` 通过；沙盒内补上 §5.6 的旗标与放行后构建通过（12 秒）并产出 `Debug-iphonesimulator/*.app`。
 - 沙盒内 `xcodebuild test` 在已运行一段时间的模拟器上通过（27 秒，`Executed 1 test, with 0 failures`）。
-- 沙盒内外，**冷启动后的首次** `xcodebuild test` 均挂起超过 280 秒：探针显示 SpringBoard 在启动后约 130 秒消失（模拟器重启）。等待规则待补。
+- 沙盒内外，**冷启动后的首次** `xcodebuild test` 都极慢：放开超时后实测 481 秒才 `TEST SUCCEEDED`，紧接着的第二次 57 秒、之后的 27 秒。`simctl bootstatus -b` 约 10 秒就报完成，不是就绪信号；先用 `simctl launch` 预热也不管用。成因未查清，登记为 D28；当前靠 900 秒默认超时兜底。
+- 真实模型试跑（Wengu 副本、glm-5.3）：b1 在第 6 次调用遇到 `model_invalid_response`；b2 24 步 5 次写入，错误 13→3；b3 11 步错误 13→3。b2 暴露了四件事并已修：`swift test` 的编译错误落在被裁掉的中段；`edit_file` 只回一个数字；改过的文件被整体折叠；逐字匹配对缩进零容忍。
+- 生产第一片（新代码）：前 10 步修好 `Models.swift`，后 13 步循环重读三个文件——视野只留 2 个文件时的轮换，改为 4 个。第二片：超长 `write_file` 原样重交 7 次，改为报出长度与拆分办法。第四片：专家自己生成 `Wengu.xcodeproj` 并在沙盒内构建出模拟器 `.app`。
