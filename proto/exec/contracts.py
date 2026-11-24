@@ -170,7 +170,9 @@ def validate(value, schema, location="args"):
             validate(item, schema.get("items", {}), f"{location}[{index}]")
     elif isinstance(value, str):
         if len(value) < schema.get("minLength", 0) or len(value) > schema.get("maxLength", math.inf):
-            raise ParameterError(f"{location} 文本长度超出契约")
+            # 报出实际长度与上限：模型不会数字符，光说「超出契约」它会原样再交一遍
+            raise ParameterError(f"{location} 文本长度超出契约：给了 {len(value)} 字符，"
+                                 f"上限 {schema.get('maxLength', '无')}、下限 {schema.get('minLength', 0)}")
     elif type(value) in (int, float):
         if value < schema.get("minimum", -math.inf) or value > schema.get("maximum", math.inf):
             raise ParameterError(f"{location} 数值超出契约")

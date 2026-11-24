@@ -196,6 +196,17 @@ class AgenticLoop:
             return os.path.realpath(cwd) if cwd else ""
         return os.path.realpath(Path(self._agent.code_workspace.root) / cwd)
 
+    @staticmethod
+    def _parameter_remedy(tool, exc):
+        """参数不合约时告诉模型下一步怎么做（生产第二片：超长 write_file 连撞 7 次）。"""
+        message = str(exc)
+        if tool == "write_file" and "content" in message and "文本长度" in message:
+            return ("拆成两步：先 write_file 写入前半部分（不超过上限），再用 edit_file 在文件末尾追加其余内容"
+                    "（old 用文件最后几行的原文）；或者把内容拆成多个文件，每个视图一个文件。")
+        if "未知参数" in message:
+            return "只传契约里列出的参数；note 属于决策本身（与 tool、args 平级），不要放进 args。"
+        return ""
+
     def _note_failure(self, key):
         session = self._session
         repeats = session.get("fail_repeat") or {}
@@ -762,7 +773,13 @@ class AgenticLoop:
                 observations.append(f"错误：未知工具 {tool!r}（从清单里选）")
                 continue
             try:
-                arguments = self._agent.tools.validate(tool, decision.get("args", {}))
+                raw_args = decision.get("args", {})
+                if isinstance(raw_args, dict) and "note" in raw_args and isinstance(raw_args["note"], str):
+                    # note 属于决策本身；模型常把它塞进 args，挪回去而不是白费一步
+                    decision["note"] = decision.get("note") or raw_args["note"][:60]
+                    raw_args = {key: value for key, value in raw_args.items() if key != "note"}
+                    decision["args"] = raw_args
+                arguments = self._agent.tools.validate(tool, raw_args)
                 if tool == "inspect_build":
                     arguments.setdefault("cwd", directory)
                     root = Path(session["context"]["workspace"])
@@ -784,7 +801,8 @@ class AgenticLoop:
                     self._save()
                     continue
             except (OSError, RuntimeError, ValueError) as exc:
-                observations.append(f"参数错误：{tool} {exc}。原动作未执行，修正后重试。")
+                observations.append(f"参数错误：{tool} {exc}。原动作未执行，修正后重试。"
+                                    + self._parameter_remedy(tool, exc))
                 continue
             marker = self._agent._current_op or {}
             marker.update(step=step + 1, tool=tool)

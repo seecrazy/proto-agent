@@ -797,3 +797,26 @@ def test_failure_detail_never_trips_over_http_error():
     tagged = RuntimeError("x")
     tagged.detail = "RuntimeError-x"
     assert _failure_detail(tagged) == "RuntimeError-x"
+
+
+# ---- 生产第二、三片：超长写入连撞 7 次、note 放错位置白费一步 ----------------------
+
+def test_oversized_write_is_told_how_to_split(tmp_path):
+    model = ScriptedEngineer([tool_step("write_file", path="Big.swift", content="x" * 7000),
+                              {"done": True, "summary": "没写成"}])
+    agent = ProtoAgent(tmp_path, llm=model, goal_interval_s=0)
+    result = AgenticLoop(agent, max_steps=4).run("写一个大文件", "")
+    notes = [text for text in session_of(agent, result)["observations"] if text.startswith("参数错误")]
+    assert notes and "7000" in notes[0] and "6000" in notes[0] and "edit_file" in notes[0]
+    assert not (agent.code_workspace.root / "Big.swift").exists()
+
+
+def test_note_misplaced_inside_args_is_lifted_instead_of_wasting_a_step(tmp_path):
+    model = ScriptedEngineer([{"tool": "read_file", "args": {"path": "a.txt", "note": "看看内容"},
+                               "category": "read_draft"}, {"done": True, "summary": "看完了"}])
+    agent = ProtoAgent(tmp_path, llm=model, goal_interval_s=0)
+    agent.code_workspace.write_file("a.txt", "hello\n")
+    result = AgenticLoop(agent, max_steps=4).run("读 a.txt", "")
+    rows = [row for row in result["trace"] if row["tool"] == "read_file"]
+    assert len(rows) == 1 and rows[0]["note"] == "看看内容"
+    assert not [text for text in session_of(agent, result)["observations"] if text.startswith("参数错误")]
