@@ -42,7 +42,8 @@ def strip_ansi(text) -> str:
 def clean(text, base: str = "") -> str:
     text = strip_ansi(text).replace("\r\n", "\n")
     for prefix in (base, os.path.realpath(base) if base else ""):
-        if prefix:
+        # 只裁绝对路径前缀：相对前缀会匹配到输出里绝对路径的中段，留下被截断的假路径
+        if prefix and os.path.isabs(prefix):
             text = text.replace(prefix.rstrip("/") + "/", "")
     return text
 

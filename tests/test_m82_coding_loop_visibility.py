@@ -716,3 +716,16 @@ def test_pauses_say_whether_they_self_recover_and_exhaustion_asks_the_owner(tmp_
     assert len(asks) == 1 and "projects/x" in asks[0] and "编译" in asks[0]
     assert len([message for message in agent._inbox if "交付暂停" in message]) == 1
     assert agent.delivery_state(node.id)["blocked"] is True
+
+
+@MACOS_SANDBOX
+def test_diagnostics_strip_an_absolute_base_even_for_a_relative_workspace(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PROTO_EXEC_BACKEND", "sandbox-exec")
+    tools = CodeTools(Path("ws"))                 # 舰队成员的工作区根是相对仓库的路径
+    (tmp_path / "ws/p/Sources").mkdir(parents=True)
+    script = ("import os, sys\n"
+              "sys.stderr.write(os.path.abspath('Sources/a.swift') + ':7:6: error: boom\\n')\n"
+              "sys.exit(1)\n")
+    joined = "\n".join(tools.run_command(["python3", "-c", script], cwd="p")["diagnostics"])
+    assert joined == "Sources/a.swift:7:6: error: boom"      # 裁成工位相对路径，而不是被截断的假绝对路径

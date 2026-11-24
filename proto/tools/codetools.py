@@ -229,7 +229,8 @@ class CodeTools:
                 "stdout": cls._clip_output(out_text),
                 "stderr": cls._clip_output(err_text, head=800, tail=1500),
                 # 真实编译错误常落在被裁掉的中段：从完整输出里取，不依赖头尾
-                "diagnostics": diagnostics(out_text + "\n" + err_text, base=str(directory)),
+                "diagnostics": diagnostics(out_text + "\n" + err_text,
+                                           base=os.path.realpath(str(directory))),
                 "timeout": timeout, "reason": reason, **extra}
 
     def _read_full(self, path: str) -> str:
