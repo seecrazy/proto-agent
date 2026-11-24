@@ -304,3 +304,35 @@ def test_tool_named_call_with_non_decision_arguments_stays_a_protocol_error(wire
     client = OpenAICompatClient(wire.url, "test-key", execution_mode="native")
     with pytest.raises(ModelResponseError, match="model_invalid_response"):
         client.complete_decision(LOOP_SYSTEM, "task", first_event=lambda _: None, cancelled=lambda: "")
+
+
+def test_stream_promise_of_a_tool_call_without_content_falls_back_to_text(wire):
+    # 剩余 invalid_response 的两个疑凶之一：finish=tool_use 但没有任何工具块。
+    # 模型有时把决策当正文输出——正文能解析成决策就照用。
+    from proto.llm.client import AnthropicCompatClient
+    from proto.llm.decision import parse_decision
+
+    arguments = json.dumps(WRITE, ensure_ascii=False)
+    frames = [sse({"type": "message_start", "message": {"usage": {"input_tokens": 3, "output_tokens": 4}}}),
+              sse({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+              sse({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": arguments}}),
+              sse({"type": "content_block_stop", "index": 0}),
+              sse({"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 4}}),
+              sse({"type": "message_stop"})]
+    wire.replies.append(frames)
+    client = AnthropicCompatClient(wire.url, "test-key", execution_mode="native")
+    decision = parse_decision(client.complete_decision(LOOP_SYSTEM, "task", first_event=lambda _: None,
+                                                       cancelled=lambda: ""))
+    assert decision["tool"] == "write_file" and decision["args"] == WRITE["args"]
+
+
+def test_execution_log_keeps_cjk_failure_detail(tmp_path):
+    import json as jsonlib
+
+    from proto.system.execution_log import execution_logging, record_execution
+
+    with execution_logging(tmp_path, "test"):
+        record_execution("model_failed", agent_id="a" * 12, detail="ValueError-决策必须是 JSON 对象；缺 tool 字段")
+    rows = [jsonlib.loads(line) for line in (tmp_path / ".runtime-logs" / "execution.jsonl").read_text(encoding="utf-8").splitlines()]
+    failed = [row for row in rows if row["event"] == "model_failed"]
+    assert failed and failed[-1]["detail"].startswith("ValueError-决策必须是")

@@ -67,6 +67,11 @@ def record_execution(event, **fields):
                 safe[name] = value
         elif name in _IDENTIFIERS and isinstance(value, str) and _IDENTIFIER.fullmatch(value):
             safe[name] = value
+        elif name == "detail" and isinstance(value, str) and value:
+            # detail 来自我们自己的异常消息（decision_stream 的协议校验），常含中文；
+            # 白名单会把它整个滤掉，导致 invalid_response 无从定位（2026-11-24 生产）。
+            # 只清洗控制字符与换行，截到 80 字符——不放进通用白名单，避免放开其他字段。
+            safe[name] = " ".join(value.split())[:80]
         elif name in _NUMBERS and (type(value) is int or (type(value) is float and math.isfinite(value))):
             safe[name] = value
         elif name in _FLAGS and type(value) is bool:

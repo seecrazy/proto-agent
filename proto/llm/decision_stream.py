@@ -228,6 +228,10 @@ class _Decision:
         if self.finish != tool_finish and self.finish not in text_finishes:
             raise ModelResponseError("model_stream_interrupted", "stream")
         if self.call_index is None:
+            if self.finish == tool_finish and "".join(self.text).strip():
+                # 流声明了工具调用却没给工具块，正文却像一份决策（模型偶尔无视
+                # tool_choice 把决策当正文输出）：正文能解析就照用，解析不出才报错
+                return decision_json(parse_decision("".join(self.text)))
             if self.finish == tool_finish:
                 raise ValueError("missing_tool_call")
             return decision_json(parse_decision("".join(self.text)))
