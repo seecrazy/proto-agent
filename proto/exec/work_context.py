@@ -166,22 +166,30 @@ def _compact_observations(observations, trace, tight):
         if tool in WRITE_TOOLS and path:
             written.add(path)
         if tool in READ_TOOLS:
+            keeps_body = False
             if tight:
                 candidate = _fold(text, "正文已折叠（上下文吃紧）。需要时 read_file 分页读取所需行。")
-            elif any(item and item in head for item in written):
-                candidate = _fold(text, "内容已过期：此后该文件被修改过。要改它就先重新 read_file 读取相关行。")
             elif path in recent:
                 candidate = _fold(text, "同一文件已有更新的读取，旧正文不重发。")
+            elif any(item and item in head for item in written):
+                # 真实模型第二轮：把改过的文件折叠掉后，模型看不到文件、也不知道
+                # 自己的修改已生效，对着同一处盲改了 6 次。没改到的部分仍然有效，
+                # 保留正文并明确标出；已被更新读取取代的旧版本才折叠。
+                body = text.split(" → ", 1)[1] if " → " in text else ""
+                candidate = head + (" → 〔此后该文件被修改过（见后面的写入回执）；修改处以磁盘为准，"
+                                    "要精确文本就重新 read_file〕\n" + body)
+                keeps_body = True
             elif len(recent) < RECENT_FILES:
                 recent.append(path)
                 candidate = text
-                if size(candidate) > KEEP_FILE_BYTES:
-                    # 给截断说明留出余量，免得它在后续按单项上限裁剪时被切掉
-                    candidate = clipped(candidate, KEEP_FILE_BYTES - 256) \
-                        + "\n…（正文在此截断；后面的行用 read_file 的 offset/limit 读取）"
+                keeps_body = True
             else:
                 candidate = _fold(text, "正文已折叠（只保留最近读过的文件）。要改它：改之前的上一步用 "
                                         "read_file(path, offset, limit≤80) 读取所需行。")
+            if keeps_body and size(candidate) > KEEP_FILE_BYTES:
+                # 给截断说明留出余量，免得它在后续按单项上限裁剪时被切掉
+                candidate = clipped(candidate, KEEP_FILE_BYTES - 256) \
+                    + "\n…（正文在此截断；后面的行用 read_file 的 offset/limit 读取）"
         elif tool in COMMAND_TOOLS:
             candidate = clipped(text, 1200 if tight else KEEP_COMMAND_BYTES)
         elif tool:

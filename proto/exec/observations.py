@@ -27,6 +27,12 @@ def _clip(text: str, limit: int) -> str:
     return data[:max(0, limit - 3)].decode("utf-8", errors="ignore") + "…"
 
 
+def _found(result, combined):
+    """优先用工具执行时从完整输出里提取的诊断；旧结果没有这个字段就现场提取。"""
+    found = result.get("diagnostics") if isinstance(result, dict) else None
+    return [str(item) for item in found] if isinstance(found, list) and found else diagnostics(combined)
+
+
 def command_view(result, limit: int = 4000, *, base: str = "") -> str:
     if not isinstance(result, dict) or "exit" not in result:
         return str(result)
@@ -43,7 +49,7 @@ def command_view(result, limit: int = 4000, *, base: str = "") -> str:
                                        if len(combined.encode("utf-8")) <= HEAD_BYTES + TAIL_BYTES
                                        else combined[:HEAD_BYTES] + "\n…（中间省略）\n" + _tail(combined, TAIL_BYTES)))
     else:
-        found = diagnostics(combined)
+        found = _found(result, combined)
         if found:
             parts.append(f"─ 错误摘要 {len(found)} 条 ─\n" + "\n".join(found))
         if combined.strip():
@@ -58,7 +64,7 @@ def failure_key(result, *, base: str = "") -> str:
     if not isinstance(result, dict):
         return ""
     stdout, stderr = str(result.get("stdout", "")), str(result.get("stderr", ""))
-    found = diagnostics(stdout + "\n" + stderr, base=base)
+    found = _found(result, stdout + "\n" + stderr)
     if found:
         return " ".join("\n".join(found).split())[:KEY_CHARS]
     # 没有可识别的诊断时取报错流的尾部：失败原因几乎总在末尾，开头是横幅与进度

@@ -7,6 +7,7 @@ run_python 走独立子进程（清洁环境/CPU 限制/超时，本地形态；
 """
 from __future__ import annotations
 
+import difflib
 import os
 import re
 import shutil
@@ -210,20 +211,26 @@ class CodeTools:
     @staticmethod
     def _clip_output(text: str, head: int = 1500, tail: int = 2000) -> str:
         """长输出头尾保留（M48）：测试/编译输出关键信息在头（命令）和
-        尾（报错栈），全砍头会丢失败原因。
-
-        M82：被省略的中段里的错误行也留下。`swift test` 的 stderr 以一条数千
-        字符的「Failed frontend command」命令行收尾，真正的 file:line:col 报错
-        落在中段——只留头尾时模型一个编译错误都看不到。"""
+        尾（报错栈），全砍头会丢失败原因。裁剪前先从完整输出提取诊断，
+        随返回值的 diagnostics 字段给出（M82）。"""
         if not text or len(text) <= head + tail + 100:
             return text
-        middle = text[head:-tail]
-        kept = diagnostics(middle, limit=10, budget=1600)
-        kept_size = sum(len(item) + 1 for item in kept)
-        skipped = len(middle) - kept_size
-        note = (f"\n…（中间省略约 {skipped} 字符；其中的错误行保留如下）…\n" if kept
-                else f"\n…（中间省略约 {skipped} 字符/{middle.count(chr(10))} 行）\n")
-        return text[:head] + note + ("".join(item + "\n" for item in kept)) + text[-tail:]
+        skipped = len(text) - head - tail
+        lines = text.count("\n")
+        return (text[:head]
+                + f"\n…（中间省略约 {skipped} 字符/{lines} 行）\n"
+                + text[-tail:])
+
+    @classmethod
+    def _command_result(cls, exit_code, out_bytes, err_bytes, *, directory, timeout=False, reason="", **extra):
+        out_text = (out_bytes or b"").decode("utf-8", "replace")
+        err_text = (err_bytes or b"").decode("utf-8", "replace") or ("timeout" if timeout else "")
+        return {"exit": exit_code,
+                "stdout": cls._clip_output(out_text),
+                "stderr": cls._clip_output(err_text, head=800, tail=1500),
+                # 真实编译错误常落在被裁掉的中段：从完整输出里取，不依赖头尾
+                "diagnostics": diagnostics(out_text + "\n" + err_text, base=str(directory)),
+                "timeout": timeout, "reason": reason, **extra}
 
     def _read_full(self, path: str) -> str:
         target = self._abs(path)
@@ -235,13 +242,33 @@ class CodeTools:
 
     def edit_file(self, path: str, old: str, new: str, replace_all: bool = False) -> int:
         text = self._read_full(path)
-        if old not in text:
-            raise ValueError(f"未找到要替换的文本片段")
-        count = text.count(old)
-        if count > 1 and not replace_all:
-            raise ValueError(f"片段出现 {count} 次，需 replace_all=True 或更长的唯一片段")
-        self.write_file(path, text.replace(old, new) if replace_all else text.replace(old, new, 1))
-        return 1 if not replace_all else count
+        if old in text:
+            count = text.count(old)
+            if count > 1 and not replace_all:
+                raise ValueError(f"片段出现 {count} 次，需 replace_all=True 或更长的唯一片段")
+            self.write_file(path, text.replace(old, new) if replace_all else text.replace(old, new, 1))
+            return 1 if not replace_all else count
+        # 逐字没找到：按行忽略首尾空白再找一次（模型常把 tab 记成空格、4 格记成 2 格）
+        lines = text.split("\n")
+        target = [line.strip() for line in old.split("\n")]
+        width = len(target)
+        hits = [index for index in range(len(lines) - width + 1)
+                if [line.strip() for line in lines[index:index + width]] == target] if width else []
+        if not hits:
+            if new and new in text:
+                raise ValueError("未找到要替换的文本片段——新内容已经在文件里：这个修改已经生效，不要重复提交")
+            existing = [line.strip() for line in lines if line.strip()]
+            close = difflib.get_close_matches(old.strip(), existing, n=1, cutoff=0.5)
+            hint = f"；文件里最接近的一行是：{close[0][:160]}" if close else ""
+            raise ValueError("未找到要替换的文本片段" + hint
+                             + "。old 必须与文件现有文本逐字一致；不确定就先 read_file 读取相关行")
+        if len(hits) > 1 and not replace_all:
+            raise ValueError(f"片段出现 {len(hits)} 次，需 replace_all=True 或更长的唯一片段")
+        chosen = hits if replace_all else hits[:1]
+        for index in reversed(chosen):
+            lines[index:index + width] = new.split("\n")
+        self.write_file(path, "\n".join(lines))
+        return len(chosen)
 
     def list_dir(self, path: str = "") -> str:
         """列目录（相对被列目录：子目录 2 层 + 再往里的文件 1 层）。降本（M45）：
@@ -366,13 +393,8 @@ class CodeTools:
                     capture_output=True,
                     env=env,
                     preexec_fn=_limit_resources)
-                return {"exit": proc.returncode,
-                        "stdout": self._clip_output(
-                            proc.stdout.decode("utf-8", "replace")),
-                        "stderr": self._clip_output(
-                            proc.stderr.decode("utf-8", "replace"),
-                            head=800, tail=1500),
-                        "timeout": False, "backend": backend}
+                return self._command_result(proc.returncode, proc.stdout, proc.stderr,
+                                            directory=self.root, backend=backend)
             except subprocess.TimeoutExpired:
                 return {"exit": -1, "stdout": "", "stderr": "timeout",
                         "timeout": True, "backend": backend}
@@ -492,17 +514,12 @@ class CodeTools:
                 proc = subprocess.run(
                     cmd, cwd=directory, timeout=timeout_s,
                     capture_output=True, env=env, preexec_fn=_limit_resources)
-                return {"exit": proc.returncode,
-                        "stdout": self._clip_output(
-                            proc.stdout.decode("utf-8", "replace")),
-                        "stderr": self._clip_output(
-                            proc.stderr.decode("utf-8", "replace"),
-                            head=800, tail=1500),
-                        "timeout": False, "reason": "nonzero_exit" if proc.returncode else "", **args}
+                return self._command_result(
+                    proc.returncode, proc.stdout, proc.stderr, directory=directory,
+                    reason="nonzero_exit" if proc.returncode else "", **args)
             except subprocess.TimeoutExpired as exc:
-                return {"exit": -1, "stdout": self._clip_output((exc.stdout or b"").decode("utf-8", "replace")),
-                        "stderr": self._clip_output((exc.stderr or b"timeout").decode("utf-8", "replace")),
-                        "timeout": True, "reason": "timeout", **args}
+                return self._command_result(-1, exc.stdout, exc.stderr, directory=directory,
+                                            timeout=True, reason="timeout", **args)
             except (OSError, subprocess.SubprocessError) as exc:
                 return rejected("launch_failed", str(exc)[:300], backend)
 

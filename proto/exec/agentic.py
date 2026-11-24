@@ -271,16 +271,26 @@ class AgenticLoop:
                                      "ok": False, "ts": time.time()})
         else:
             observation = result.step_results[-1] if result.step_results else ""
-            if tool in ("run_command", "run_python") and isinstance(observation, dict):
+            if tool in COMMAND_TOOLS and isinstance(observation, dict):
                 # M82：命令结果诊断优先（退出码→错误摘要→输出尾部）。字典字符串把
                 # stdout 放在最前，压缩裁尾后模型只剩构建横幅，编译错误全部丢失。
                 excerpt = command_view(observation, self._agent.tools.obs_limit(tool),
                                        base=self._command_base(pending["args"]))
             else:
                 excerpt = _clip(self._agent.tools, tool, observation)
+            # 轨迹行的 result 保持工具原始输出（接力日志等按 `written:` 统计产出）；
+            # 只改写给模型看的那句：光给一个数字，模型分不清 edit_file 是成功还是错误码，
+            # 会反复提交同一个修改（真实模型第二轮实证：盲改 6 次）。
+            shown = excerpt
+            if tool == "edit_file" and type(observation) is int:
+                shown = ("已替换 {} 处：{} → {}（文件已更新）".format(
+                    observation, json.dumps(str(pending["args"].get("old", ""))[:160], ensure_ascii=False),
+                    json.dumps(str(pending["args"].get("new", ""))[:160], ensure_ascii=False)))
+            elif tool == "write_file" and isinstance(observation, str) and observation.startswith("written:"):
+                shown = f"已写入 {observation[len('written:'):]}（{len(str(pending['args'].get('content', '')))} 字符）"
             call_summary = target_args(pending["args"])
             path = written_file(tool, pending["args"], observation)
-            session["observations"].append(f"{tool}({call_summary}) → {excerpt}")
+            session["observations"].append(f"{tool}({call_summary}) → {shown}")
             row = {"step": pending["step"], "tool": tool, "args": pending["args"],
                    "category": pending["category"], "note": note,
                    "result": excerpt, "ok": True, "ts": time.time(),

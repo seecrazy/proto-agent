@@ -194,13 +194,16 @@ def test_compact_keeps_recent_file_bodies_and_errors():
     assert observations == original                                 # 原观察不被改写
 
 
-def test_compact_marks_stale_reads_after_write():
+def test_compact_keeps_stale_read_but_flags_it():
+    # 真实模型第二轮：编辑成功后把读过的正文折叠掉，模型看不到文件、也不知道刚才的
+    # 修改已生效，于是对着同一个问题盲改了 6 次。正文大部分仍然有效，保留并标出改动。
     observations = [read_obs("projects/wengu/a.swift", "ALINE", 20),
                     'edit_file({"path": "projects/wengu/a.swift"}) → 1',
                     build_obs("a.swift:3:1: error: boom")]
     text = compacted(observations)
-    assert "ALINE" not in text                                      # 过期正文不再给
-    assert "a.swift" in text and "已过期" in text
+    assert "ALINE line 1" in text
+    flagged = [line for line in text.splitlines() if "a.swift" in line and "此后该文件被修改过" in line]
+    assert flagged
     assert "a.swift:3:1: error:" in text
 
 
@@ -596,15 +599,21 @@ def test_sandbox_still_denies_outside_writes_and_tcp(tmp_path):
 
 # ---- 原始输出裁剪不丢错误行；shell 语法直接拒并给出路（真实模型首跑发现） -------
 
-def test_clip_output_keeps_error_lines_from_the_middle():
-    noise = "compiling module part number one\n" * 300
-    text = ("HEAD-BANNER\n" + noise + "src/a.swift:7:6: error: boom here\n  7 | let x = \\\n"
-            + noise + "TAIL-END\n")
-    clipped = CodeTools._clip_output(text, head=200, tail=200)
-    assert "HEAD-BANNER" in clipped and "TAIL-END" in clipped
-    assert "src/a.swift:7:6: error: boom here" in clipped and "let x" in clipped
-    assert len(clipped) < len(text) // 3
-    assert CodeTools._clip_output("short output\n") == "short output\n"
+def test_run_command_result_carries_diagnostics_from_the_full_output(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROTO_EXEC_BACKEND", "sandbox-exec")
+    tools = CodeTools(tmp_path)
+    (tmp_path / "p").mkdir()
+    script = (
+        "import sys\n"
+        "for i in range(300): sys.stderr.write('noise %d\\n' % i)\n"
+        "sys.stderr.write('p/Sources/a.swift:7:6: error: first problem\\n  7 | let x = foo\\n  8 | next\\n')\n"
+        "for i in range(300): sys.stderr.write('more noise %d\\n' % i)\n"
+        "sys.exit(1)\n")
+    result = tools.run_command(["python3", "-c", script], cwd="p")
+    assert "p/Sources/a.swift:7:6: error: first problem" in "\n".join(result["diagnostics"])
+    assert "  7 | let x = foo" in "\n".join(result["diagnostics"])          # 源码摘录跟着诊断走
+    assert result["diagnostics"]                                   # 即使头尾裁剪把报错裁掉
+    assert len(result["stderr"]) < 4000
 
 
 @MACOS_SANDBOX
@@ -640,3 +649,39 @@ def test_run_command_rejects_shell_syntax_with_a_way_forward(tmp_path):
     for argv in (["python3", "-c", "print(1 > 0)"], ["swift", "test", "--filter", "WenguTests.Suite"],
                  ["xcrun", "swiftc", "-typecheck", "p/Notes.swift"]):
         assert tools.run_command(argv, cwd="")["reason"] != "shell_syntax_not_supported", argv
+
+
+# ---- 真实模型第二轮：编辑反馈与容错 ------------------------------------------
+
+def test_edit_file_tolerates_indentation_and_reports_already_applied(tmp_path):
+    tools = CodeTools(tmp_path)
+    tools.write_file("a.swift", "struct Deck {\n\tlet name: String\n}\n")
+    assert tools.edit_file("a.swift", "    let name: String", "    let id: UUID") == 1   # tab 与空格不同也能唯一命中
+    assert (tmp_path / "a.swift").read_text() == "struct Deck {\n    let id: UUID\n}\n"
+    with pytest.raises(ValueError, match="已经生效"):
+        tools.edit_file("a.swift", "    let name: String", "    let id: UUID")
+    with pytest.raises(ValueError) as info:
+        tools.edit_file("a.swift", "    let nmae: UUID", "x")
+    assert "最接近" in str(info.value) and "let id: UUID" in str(info.value)
+    tools.write_file("b.swift", "let a = 1\nlet a = 1\n")
+    with pytest.raises(ValueError, match="出现 2 次"):
+        tools.edit_file("b.swift", "  let a = 1", "let b = 2")
+
+
+def session_of(agent, result):
+    return agent.sessions.lookup(result["session_id"])
+
+
+def test_edit_observation_shows_what_changed(tmp_path):
+    model = ScriptedEngineer([tool_step("edit_file", path="a.txt", old="old line", new="new line"),
+                              tool_step("write_file", path="b.txt", content="12345"),
+                              {"done": True, "summary": "改了"}])
+    agent = ProtoAgent(tmp_path, llm=model, goal_interval_s=0)
+    agent.code_workspace.write_file("a.txt", "old line\nother\n")
+    result = AgenticLoop(agent, max_steps=6).run("把 old line 换成 new line", "")
+    notes = [text for text in session_of(agent, result)["observations"] if text.split("(")[0] in ("edit_file", "write_file")]
+    assert "已替换 1 处" in notes[0] and "old line" in notes[0] and "new line" in notes[0]
+    assert "已写入 b.txt" in notes[1] and "5 字符" in notes[1]
+    rows = [row for row in result["trace"] if row["tool"] in ("edit_file", "write_file")]
+    assert [row["written_path"] for row in rows] == ["a.txt", "b.txt"]
+    assert [row["result"] for row in rows] == ["1", "written:b.txt"]      # 轨迹行仍是工具原始输出
