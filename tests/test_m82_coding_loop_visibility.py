@@ -261,3 +261,90 @@ def test_decision_input_compacts_once_history_exceeds_the_raw_ceiling():
     assert "OLD line" not in output and "MODELS line 1" in output
     assert "Models.swift:7:6: error:" in output and "固定规则" in output and "辅助信息" in output
     assert wc.size("系统" + output) <= 65536
+
+
+# ---- Task 3：重复验证重放与判重 ---------------------------------------------
+
+COUNT = "open('count.txt','a').write('x'); "
+BANNER = "print('B' * 150); "
+
+
+def failing(reason):
+    return run_step("python3", "-c", BANNER + COUNT + f"import sys; sys.exit({reason!r})")
+
+
+def read_step(index):
+    return tool_step("read_file", path=f"notes{index}.txt")
+
+
+def run_slice(tmp_path, monkeypatch, steps, task="验证一段会失败的脚本"):
+    monkeypatch.setenv("PROTO_EXEC_BACKEND", "sandbox-exec")
+    model = ScriptedEngineer(list(steps))
+    agent = ProtoAgent(tmp_path, llm=model, goal_interval_s=0)
+    result = AgenticLoop(agent, max_steps=12).run(task, "看到失败原因")
+    return agent, result, agent.sessions.lookup(result["session_id"])
+
+
+def executions(agent):
+    """命令在 cwd="" 下写工作区根；每个 x 是一次真实执行。"""
+    counter = agent.code_workspace.root / "count.txt"
+    return counter.read_text() if counter.exists() else ""
+
+
+@pytest.mark.skipif(not shutil.which("sandbox-exec"), reason="真实命令执行需要 macOS 沙盒")
+def test_repeated_verification_replays_after_read_only_steps(tmp_path, monkeypatch):
+    agent, result, session = run_slice(tmp_path, monkeypatch,
+                                       [failing("first"), read_step(1), failing("first"), {"done": True, "summary": "还坏着"}])
+    assert executions(agent) == "x"                            # 只真实执行了一次
+    rows = [row for row in session["trace"] if row["tool"] == "run_command"]
+    assert len(rows) == 2 and rows[1]["replay"] is True and rows[1]["step"] == 2
+    notes = [text for text in session["observations"] if text.startswith("run_command(")]
+    assert "与第 1 步结果相同" in notes[1] and "只做过读取" in notes[1]
+    assert "first" in notes[1]                                  # 重放时带回原来的失败原因
+    assert result["trace"][2]["replay"] is True                 # 时间线也能看出这是重放
+
+
+@pytest.mark.skipif(not shutil.which("sandbox-exec"), reason="真实命令执行需要 macOS 沙盒")
+def test_repeated_verification_reruns_after_write_or_other_command(tmp_path, monkeypatch):
+    agent, _, session = run_slice(tmp_path, monkeypatch, [
+        failing("first"), tool_step("write_file", path="fix.txt", content="v2"), failing("first"),
+        read_step(1), run_step("python3", "-c", "print('other')"), read_step(2), failing("first"),
+        {"done": True, "summary": "改过了"}])
+    assert executions(agent) == "xxx"                          # 写入之后、别的命令之后都真实重跑
+    assert not any(row.get("replay") for row in session["trace"])
+
+
+def test_repeated_verification_skips_timeouts_and_unrecorded_outcomes(tmp_path):
+    agent = ProtoAgent(tmp_path, llm=ScriptedEngineer(), goal_interval_s=0)
+    loop = AgenticLoop(agent)
+    args = {"argv": ["swift", "build"], "cwd": "p"}
+    row = {"step": 0, "tool": "run_command", "args": args, "ok": True}
+    loop._session = {"trace": [dict(row, outcome={"exit": -1, "timeout": True, "reason": "timeout"})]}
+    assert loop._repeated_verification("run_command", args) is None     # 超时的结果不能重放
+    loop._session = {"trace": [dict(row)]}
+    assert loop._repeated_verification("run_command", args) is None     # 旧会话没有 outcome：保守不重放
+    finished = dict(row, outcome={"exit": 1, "timeout": False, "reason": "nonzero_exit"})
+    loop._session = {"trace": [finished, {"step": 1, "tool": "read_file", "args": {"path": "a"}, "ok": True}]}
+    assert loop._repeated_verification("run_command", args) is finished
+    assert loop._repeated_verification("write_file", {"path": "a"}) is None
+    loop._session = {"trace": [finished]}
+    assert loop._repeated_verification("run_command", args, ios_required=True) is None   # 交付取证命令要求全新的构建目录
+
+
+@pytest.mark.skipif(not shutil.which("sandbox-exec"), reason="真实命令执行需要 macOS 沙盒")
+def test_fail_repeat_hint_counts_identical_failures_only(tmp_path, monkeypatch):
+    agent, _, session = run_slice(tmp_path, monkeypatch, [
+        failing("reason A"), read_step(1),
+        failing("reason B"), read_step(2), failing("reason B"), read_step(3), failing("reason B"),
+        {"done": True, "summary": "同一处反复失败"}])
+    hints = [text for text in session["observations"] if "3 次以相同方式失败" in text]
+    assert len(hints) == 1 and "reason B" in hints[0]           # 按诊断计数：B 的第三次才提醒，A 不混入
+
+
+@pytest.mark.skipif(not shutil.which("sandbox-exec"), reason="真实命令执行需要 macOS 沙盒")
+def test_eight_dry_steps_point_at_the_first_error(tmp_path, monkeypatch):
+    compiler = run_step("python3", "-c", "import sys; sys.stderr.write('src/a.swift:7:6: error: broken thing\\n'); sys.exit(1)")
+    steps = [compiler] + [read_step(index) for index in range(1, 8)] + [{"done": True, "summary": "只是读"}]
+    agent, _, session = run_slice(tmp_path, monkeypatch, steps)
+    pointer = [text for text in session["observations"] if "连续 8 步没有落盘" in text]
+    assert len(pointer) == 1 and "src/a.swift:7:6" in pointer[0] and "edit_file" in pointer[0]

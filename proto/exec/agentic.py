@@ -23,10 +23,10 @@ from proto.exec.engineering import (engineering_topic, inspect_build, missing_ch
 from proto.exec.exploration import bind_explorer, investigate
 from proto.exec.subagent import bind_subagent
 from proto.exec.plan_evidence import EvidenceError, OutputEvidence
-from proto.exec.observations import command_view
+from proto.exec.observations import command_view, failure_key
 from proto.exec.router import Task, TaskResult, VARIANT_ID
 from proto.exec.sessions import SESSION_SCHEMA_VERSION, TERMINAL_STATES
-from proto.exec.work_context import (actor_input_budget, decision_input, size, target_args,
+from proto.exec.work_context import (COMMAND_TOOLS, actor_input_budget, decision_input, size, target_args,
                                      tool_receipt, written_file)
 from proto.llm.breaker import TRANSIENT_MODEL_REASONS, model_wait_reason
 from proto.llm.client import ModelPressureWait
@@ -195,6 +195,67 @@ class AgenticLoop:
             return os.path.realpath(cwd) if cwd else ""
         return os.path.realpath(Path(self._agent.code_workspace.root) / cwd)
 
+    def _note_failure(self, key):
+        session = self._session
+        repeats = session.get("fail_repeat") or {}
+        repeats = {"key": key, "count": repeats["count"] + 1} if repeats.get("key") == key \
+            else {"key": key, "count": 1}
+        session["fail_repeat"] = repeats
+        if repeats["count"] == 3:
+            session["observations"].append(
+                "提示：同一验证命令已 3 次以相同方式失败（"
+                + key[:80] + "…）。重复同样的诊断不会改变结果——"
+                "下一步必须修改相关文件（edit_file/write_file）或根本性更换方法。")
+
+    def _first_error_brief(self):
+        """最近一次失败验证的第一条诊断，给「下一步改哪里」一个具体指向。"""
+        for row in reversed(self._session["trace"]):
+            if row.get("tool") in COMMAND_TOOLS and "错误摘要" in str(row.get("result")):
+                for line in str(row["result"]).splitlines():
+                    if ": error:" in line or ": fatal error:" in line:
+                        return "最近一次验证的第一条错误：" + line.strip()[:160] + "。"
+                return ""
+        return ""
+
+    def _repeated_verification(self, tool, arguments, *, ios_required=False):
+        """只读步之间重复同一验证命令：文件没变，结果不会变。返回可重放的轨迹行。
+
+        任何非只读步骤（写入、别的命令）都会让结果可能变化，照常执行；超时的
+        结果与没有结构化回执的旧记录不重放；交付取证命令要求全新的构建目录。"""
+        if tool not in COMMAND_TOOLS or ios_required:
+            return None
+        trace = self._session["trace"]
+        read_only = self._agent.tools.read_only_tools()
+        clean = True
+        for row in reversed(trace):
+            if row.get("tool") == tool and row.get("args") == arguments:
+                if row.get("replay"):
+                    continue
+                outcome = row.get("outcome")
+                if clean and row.get("ok") and isinstance(outcome, dict) and outcome.get("timeout") is False:
+                    return row
+                return None
+            if row.get("tool") not in read_only:
+                clean = False
+        return None
+
+    def _observe_replay(self, row):
+        session = self._session
+        pending = session["pending_call"]
+        tool = pending["tool"]
+        session["observations"].append(
+            f"{tool}({target_args(pending['args'])}) → 与第 {row['step'] + 1} 步结果相同"
+            "（此后只做过读取，没有文件修改；重跑不会改变结果，所以没有真实执行）。"
+            "要改变结果就先修改文件。\n" + str(row.get("result") or ""))
+        session["trace"].append(dict(row, step=pending["step"], ts=time.time(), replay=True,
+                                     note=(pending.get("note") or "")[:60]))
+        session["explore_run"] += 1
+        session["dry_run"] = session.get("dry_run", 0) + 1
+        if row.get("failure_key"):
+            self._note_failure(row["failure_key"])
+        session["pending_call"] = None
+        self._save()
+
     def _observe(self, result):
         session = self._session
         pending = session["pending_call"]
@@ -243,29 +304,29 @@ class AgenticLoop:
             # 无落盘步计数（M45 探索配额，2026-11-23 修正计数键）：原实现只数
             # 只读工具，run_command 跑诊断脚本会把计数清零——生产实证出现过
             # 「跑校验→读文件→跑校验」交替 24 步零写入烧完整个工作片。
-            session["explore_run"] = session["explore_run"] + 1 if not path else 0
+            wrote = bool(path)
+            session["explore_run"] = 0 if wrote else session["explore_run"] + 1
+            session["dry_run"] = 0 if wrote else session.get("dry_run", 0) + 1
             if session["explore_run"] >= 4:
                 session["observations"].append(
                     "提示：已连续 4 步没有落盘修改。若这是只读分析，给出结论和可回查位置即可结束；"
                     "交付任务禁止继续 list_dir/read_file/grep/重复跑诊断命令——"
                     "下一步必须用 write_file/edit_file 修改文件，或跑能推进验收的验证命令。")
                 session["explore_run"] = 0
+            if session["dry_run"] == 8:
+                session["observations"].append(
+                    "本工作片已连续 8 步没有落盘。" + self._first_error_brief() +
+                    "只做一件事：用 edit_file 修复上面『错误摘要』的第一条；没有待修错误就用 write_file "
+                    "写下下一个最小增量。再读一遍文件不会产生新信息。")
             # 同一验证反复同样失败 → 强制换法（2026-11-23 生产实证：同一 FAIL
             # 看了 8 遍仍在原样重跑）。只在第 3 次提醒一次，不反复刷屏。
-            if tool in ("run_command", "run_python") and isinstance(observation, dict) \
-                    and type(observation.get("exit")) is int and observation["exit"] != 0:
-                text = " ".join(str(observation.get(key, ""))
-                                for key in ("stdout", "stderr", "reason") if key in observation)
-                key = " ".join(text.split())[:120]
-                repeats = session.get("fail_repeat") or {}
-                repeats = {"key": key, "count": repeats["count"] + 1} if repeats.get("key") == key \
-                    else {"key": key, "count": 1}
-                session["fail_repeat"] = repeats
-                if repeats["count"] == 3:
-                    session["observations"].append(
-                        "提示：同一验证命令已 3 次以相同方式失败（"
-                        + key[:80] + "…）。重复同样的诊断不会改变结果——"
-                        "下一步必须修改相关文件（edit_file/write_file）或根本性更换方法。")
+            if tool in COMMAND_TOOLS and isinstance(observation, dict) and type(observation.get("exit")) is int:
+                row["outcome"] = {"exit": observation["exit"], "timeout": bool(observation.get("timeout")),
+                                  "reason": str(observation.get("reason") or "")}
+                if observation["exit"] != 0:
+                    # M82：判重看诊断，不看构建横幅——横幅每次都一样，分不清错误变没变
+                    row["failure_key"] = failure_key(observation, base=self._command_base(pending["args"]))
+                    self._note_failure(row["failure_key"])
         session["events"].append({"kind": "tool_result", "task_id": pending["task_id"],
                                   "status": result.status,
                                   "results": json.loads(json.dumps(result.step_results, ensure_ascii=False, default=str)),
@@ -709,6 +770,10 @@ class AgenticLoop:
             session["pending_call"] = {"task_id": step_task_id, "step": step, "tool": tool,
                                        "args": arguments, "category": decision.get("category", "read_draft"),
                                        "note": step_note[:60]}
+            replay = self._repeated_verification(tool, arguments, ios_required=ios_required)
+            if replay is not None:
+                self._observe_replay(replay)
+                continue
             if ios_required and tool == "run_command":
                 proof = ios_build_start(self._agent.code_workspace, directory, arguments)
                 if proof:

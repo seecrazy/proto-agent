@@ -159,8 +159,9 @@ def failure_key(result, *, base: str = "") -> str:
     """同一验证是否以同样方式失败：看诊断，不看构建横幅与进度行。"""
     if not isinstance(result, dict):
         return ""
-    raw = str(result.get("stdout", "")) + "\n" + str(result.get("stderr", ""))
-    found = diagnostics(raw, base=base)
+    stdout, stderr = str(result.get("stdout", "")), str(result.get("stderr", ""))
+    found = diagnostics(stdout + "\n" + stderr, base=base)
     if found:
         return " ".join("\n".join(found).split())[:KEY_CHARS]
-    return " ".join((raw + " " + str(result.get("reason", ""))).split())[:KEY_CHARS]
+    # 没有可识别的诊断时取报错流的尾部：失败原因几乎总在末尾，开头是横幅与进度
+    return " ".join(((stderr or stdout) + " " + str(result.get("reason", ""))).split())[-KEY_CHARS:]
