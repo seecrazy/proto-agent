@@ -522,6 +522,12 @@ class AgentManager:
                 if agent is None:
                     continue
                 with self.active_access(agent):
+                    # 交付自动恢复先于模型可用性判断——否则模型冷却期间
+                    # heartbeat_ready 短路，恢复永远进不来（鸡生蛋）。
+                    try:
+                        agent._auto_recover_delivery(agent.goal_tree.all_active())
+                    except Exception:
+                        logging.exception("delivery auto-recover failed: %s", info["id"])
                     if not agent.autonomy_blocker(suggestions=True) and agent.heartbeat_ready():
                         self.runs.enqueue(info["id"], "tick")
             except CoordinationError as exc:
