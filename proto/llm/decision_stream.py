@@ -37,6 +37,9 @@ def _provider_error(payload):
     raise ModelResponseError("model_provider_error", "stream")
 
 
+_INVALID = object()
+
+
 class _Decision:
     def __init__(self, style):
         self.style = style
@@ -237,15 +240,36 @@ class _Decision:
             return decision_json(parse_decision("".join(self.text)))
         if self.style == "anthropic" and self.call_index is not None and not self.block_closed:
             raise ValueError("unknown_or_incomplete_decision_tool")
-        value = parse_decision("".join(self.arguments), strict=True) if self.arguments else self.input
+        value = self._decision_value()
+        if value is _INVALID:
+            # 参数不是 JSON 对象：这才是协议破裂
+            raise ValueError("decision_arguments_not_json")
+        try:
+            return decision_json(value)
+        except (ValueError, TypeError):
+            # JSON 合法但没过决策校验（如缺 tool）：原样交回，由执行循环走
+            # 「决策格式错误，请修正」的软重试——不是模型故障，不触发熔断/停任务
+            # （2026-11-24 生产 13:09：detail=工具决策需要非空 tool）
+            if isinstance(value, dict):
+                return json.dumps(value, ensure_ascii=False, allow_nan=False)[:65536]
+            raise
+
+    def _decision_value(self):
+        """工具参数 → 决策对象。非 JSON 或非对象返回哨兵 _INVALID。"""
+        raw = "".join(self.arguments) if self.arguments else None
+        if raw is None and not isinstance(self.input, dict):
+            return _INVALID
+        try:
+            value = json.loads(raw) if raw is not None else dict(self.input)
+        except ValueError:
+            return _INVALID
+        if not isinstance(value, dict):
+            return _INVALID
         if self.name != DECISION_NAME:
-            # 模型没走决策信封、直接按具体工具名发起了调用（生产仅剩的 invalid_response
-            # 形态）。它的参数往往就是决策本身——按决策解析；解析不出才是协议错误。
-            try:
-                return decision_json(value)
-            except (ValueError, TypeError):
-                raise ValueError("unknown_or_incomplete_decision_tool") from None
-        return decision_json(value)
+            # 模型没走决策信封、直接按具体工具名发起了调用。它的参数往往就是
+            # 决策本身（或就是工具参数）——按 dict 交回，校验交给执行循环。
+            return value
+        return value
 
 
 class _Reader:

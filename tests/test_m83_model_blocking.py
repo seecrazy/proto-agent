@@ -26,7 +26,10 @@ from tests.test_m64_live_models import profile
 from tests.test_m76_model_groups import complete, configured, provider  # noqa: F401  (fixtures)
 from tests.test_m71_continuity import WRITE
 from tests.test_model_decision_transport import (  # noqa: F401  (fixtures/helpers)
-    LOOP_SYSTEM, anthropic_decision, openai_delta, openai_tool, sse, wire)
+    LOOP_SYSTEM, anthropic_decision, openai_decision, openai_delta, openai_tool, sse, wire)
+from proto.exec.agentic import AgenticLoop  # noqa: E402
+from proto.runtime.agent import ProtoAgent  # noqa: E402
+from tests.test_engineering_skills import ScriptedEngineer  # noqa: E402
 
 QUOTA = {"error": {"code": 1310, "message": "您已达到每周/每月使用上限，您的限额将在 2026-11-28 18:59:13 重置。"}}
 
@@ -295,11 +298,11 @@ def test_model_calling_a_real_tool_name_instead_of_the_envelope_is_recovered(wir
                                                    cancelled=lambda: ""))["tool"] == "write_file"
 
 
-def test_tool_named_call_with_non_decision_arguments_stays_a_protocol_error(wire):
+def test_tool_named_call_with_non_json_arguments_stays_a_protocol_error(wire):
     from proto.llm.client import OpenAICompatClient
     from proto.llm.errors import ModelResponseError
 
-    wire.replies.append([openai_tool(json.dumps({"path": "a.txt", "content": "x"}), name="write_file"),
+    wire.replies.append([openai_tool("不是 JSON{", name="write_file"),
                          openai_delta({}, "tool_calls"), sse("[DONE]")])
     client = OpenAICompatClient(wire.url, "test-key", execution_mode="native")
     with pytest.raises(ModelResponseError, match="model_invalid_response"):
@@ -336,3 +339,27 @@ def test_execution_log_keeps_cjk_failure_detail(tmp_path):
     rows = [jsonlib.loads(line) for line in (tmp_path / ".runtime-logs" / "execution.jsonl").read_text(encoding="utf-8").splitlines()]
     failed = [row for row in rows if row["event"] == "model_failed"]
     assert failed and failed[-1]["detail"].startswith("ValueError-决策必须是")
+
+
+def test_shape_invalid_decision_stream_returns_for_the_loops_soft_retry(wire):
+    # 生产 13:09 detail='ValueError-工具决策需要非空 tool'：模型交的 JSON 缺 tool。
+    # 这不是协议破裂，不该触发熔断/停任务——原样返回，交给循环既有的
+    # 「决策格式错误，请修正」观察重试。
+    from proto.llm.client import OpenAICompatClient
+    from proto.llm.decision import parse_decision
+
+    wire.replies.append(openai_decision({"tool": "", "args": {"path": "a"}}))
+    client = OpenAICompatClient(wire.url, "test-key", execution_mode="native")
+    raw = client.complete_decision(LOOP_SYSTEM, "task", first_event=lambda _: None, cancelled=lambda: "")
+    assert json.loads(raw) == {"tool": "", "args": {"path": "a"}}
+    with pytest.raises(ValueError, match="非空 tool"):
+        parse_decision(raw)
+
+
+def test_loop_turns_a_shape_invalid_stream_into_a_soft_retry_not_a_model_failure(tmp_path):
+    model = ScriptedEngineer([{"tool": "", "args": {}}, WRITE, {"done": True, "summary": "写好了"}])
+    agent = ProtoAgent(tmp_path, llm=model, goal_interval_s=0)
+    result = AgenticLoop(agent, max_steps=5).run("把产品名称写进 Report.md", "Report.md 已写入")
+    assert result["status"] in ("completed", "verified") and (agent.code_workspace.root / "Report.md").exists()
+    notes = [text for text in agent.sessions.lookup(result["session_id"])["observations"] if text.startswith("决策格式错误")]
+    assert notes and "非空 tool" in notes[0]
