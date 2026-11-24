@@ -685,3 +685,34 @@ def test_edit_observation_shows_what_changed(tmp_path):
     rows = [row for row in result["trace"] if row["tool"] in ("edit_file", "write_file")]
     assert [row["written_path"] for row in rows] == ["a.txt", "b.txt"]
     assert [row["result"] for row in rows] == ["1", "written:b.txt"]      # 轨迹行仍是工具原始输出
+
+
+# ---- Task 7：阻塞通知 --------------------------------------------------------
+
+def test_pauses_say_whether_they_self_recover_and_exhaustion_asks_the_owner(tmp_path):
+    from proto.runtime.agent import ProtoAgent
+    from proto.work.delivery import DELIVERY_AUTO_RETRY_MAX
+
+    agent = ProtoAgent(tmp_path, llm=ScriptedEngineer(), goal_interval_s=0)
+    goal = agent.goal_tree.add("做出能编译的 App", "mid", acceptance="swift build 退出 0")
+    node = agent.goal_tree.get(goal.id)
+
+    def slice_result(token, progress):
+        return {"status": "max_steps", "session_id": token, "delivery_progress": progress,
+                "trace": [], "observations": [], "summary": "卡在编译错误"}
+
+    agent._record_delivery(node, slice_result("s1", False), "projects/x")
+    agent._record_delivery(node, slice_result("s2", False), "projects/x")
+    pauses = [message for message in agent._inbox if "交付暂停" in message]
+    assert len(pauses) == 1 and "自动恢复" in pauses[0]          # 第一次暂停：说明会自己恢复
+    assert not [message for message in agent._inbox if "需要你" in message]
+    # 自动恢复配额用尽之后再次停滞：这才是真的需要主人
+    # 自动恢复的真实形态：计数清零、解除阻塞、auto_retries 累加（见 _auto_recover_delivery）
+    agent.spine.store.put("goal_delivery", node.id, {
+        "slices": 0, "stalled": 0, "auto_retries": DELIVERY_AUTO_RETRY_MAX, "blocked": False, "verified": False})
+    agent._record_delivery(node, slice_result("s3", False), "projects/x")
+    agent._record_delivery(node, slice_result("s4", False), "projects/x")
+    asks = [message for message in agent._inbox if "需要你" in message]
+    assert len(asks) == 1 and "projects/x" in asks[0] and "编译" in asks[0]
+    assert len([message for message in agent._inbox if "交付暂停" in message]) == 1
+    assert agent.delivery_state(node.id)["blocked"] is True

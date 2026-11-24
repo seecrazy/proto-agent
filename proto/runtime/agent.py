@@ -1220,9 +1220,25 @@ class ProtoAgent:
                              **({"blocked_at": self._now()} if reason else {})})
         if reason:
             self.spine.append("goal_delivery_hold", {"goal_id": node.id, "reason": reason, "slices": slices})
-            self._inbox.append(f"〔交付暂停〕{node.text[:60]}未形成可验证成果；保留原工位和验收。"
-                               "补齐缺失条件后，可在活动中心恢复该目标。")
+            self._inbox.append(self._delivery_pause_message(node, project_dir, reason, result,
+                                                            prior.get("auto_retries", 0)))
             result.update(status="blocked", reason=reason)
+
+    @staticmethod
+    def _delivery_pause_message(node, project_dir, reason, result, retries):
+        """M82：暂停时分清「会自己恢复」和「真的需要主人」——配额用尽后那条要让人一眼看出。"""
+        what = {"delivery_no_progress": "没有实质进展", "delivery_not_verified": "多轮仍未通过验收"}.get(
+            reason, "未形成可验证成果")
+        last = str((result or {}).get("summary") or "")[:120]
+        detail = f"；最后一轮：{last}" if last else ""
+        if retries >= DELIVERY_AUTO_RETRY_MAX:
+            return (f"〔需要你〕{node.text[:60]}停下来了：{what}，自动恢复 {retries} 次已用完{detail}。"
+                    f"它自己换过打法也没走通——请看一眼工位 {project_dir}/，给一条新方向，"
+                    "或在活动中心手动恢复。")
+        wait = DELIVERY_AUTO_RETRY_FIRST_S // 60 if retries == 0 else DELIVERY_AUTO_RETRY_COOLDOWN_S // 60
+        return (f"〔交付暂停〕{node.text[:60]}{what}；保留原工位和验收{detail}。"
+                f"{wait} 分钟后会自动恢复并要求换打法（已用 {retries}/{DELIVERY_AUTO_RETRY_MAX} 次），"
+                "也可以在活动中心手动恢复。")
 
     def _finish_goal_result(self, node, result, project_dir):
         result["project_dir"] = project_dir
