@@ -231,9 +231,16 @@ class _Decision:
             if self.finish == tool_finish:
                 raise ValueError("missing_tool_call")
             return decision_json(parse_decision("".join(self.text)))
-        if self.name != DECISION_NAME or (self.style == "anthropic" and not self.block_closed):
+        if self.style == "anthropic" and self.call_index is not None and not self.block_closed:
             raise ValueError("unknown_or_incomplete_decision_tool")
         value = parse_decision("".join(self.arguments), strict=True) if self.arguments else self.input
+        if self.name != DECISION_NAME:
+            # 模型没走决策信封、直接按具体工具名发起了调用（生产仅剩的 invalid_response
+            # 形态）。它的参数往往就是决策本身——按决策解析；解析不出才是协议错误。
+            try:
+                return decision_json(value)
+            except (ValueError, TypeError):
+                raise ValueError("unknown_or_incomplete_decision_tool") from None
         return decision_json(value)
 
 

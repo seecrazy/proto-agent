@@ -25,7 +25,8 @@ from proto.runtime.model_pressure import ModelPressure
 from tests.test_m64_live_models import profile
 from tests.test_m76_model_groups import complete, configured, provider  # noqa: F401  (fixtures)
 from tests.test_m71_continuity import WRITE
-from tests.test_model_decision_transport import anthropic_decision, sse, wire  # noqa: F401  (fixtures)
+from tests.test_model_decision_transport import (  # noqa: F401  (fixtures/helpers)
+    LOOP_SYSTEM, anthropic_decision, openai_delta, openai_tool, sse, wire)
 
 QUOTA = {"error": {"code": 1310, "message": "您已达到每周/每月使用上限，您的限额将在 2026-11-28 18:59:13 重置。"}}
 
@@ -262,3 +263,44 @@ def test_cache_read_tokens_are_reported_for_diagnosis(wire):
     client = AnthropicCompatClient(wire.url, "test-key", execution_mode="native")
     client.complete_decision(LOOP_SYSTEM, "task", first_event=lambda _: None, cancelled=lambda: "")
     assert client.last_usage == {"input_tokens": 20, "output_tokens": 11, "cache_read": 1536}
+
+
+def test_model_calling_a_real_tool_name_instead_of_the_envelope_is_recovered(wire):
+    # 部署后仅剩的 invalid_response 形态：模型直接调了 write_file 而不是 proto_decision。
+    # 它的参数就是决策本身——接受；解析不出决策才保持协议错误。
+    from proto.llm.client import OpenAICompatClient
+    from proto.llm.decision import parse_decision
+
+    arguments = json.dumps({"tool": "write_file", "args": WRITE["args"], "category": "workspace_write"},
+                           ensure_ascii=False)
+    frames = [openai_tool(arguments, name="write_file", identifier="first"),
+              openai_delta({}, "tool_calls"), sse("[DONE]")]
+    wire.replies.append(frames)
+    client = OpenAICompatClient(wire.url, "test-key", execution_mode="native")
+    decision = parse_decision(client.complete_decision(LOOP_SYSTEM, "task", first_event=lambda _: None,
+                                                       cancelled=lambda: ""))
+    assert decision["tool"] == "write_file" and decision["args"] == WRITE["args"]
+
+    anthropic = [sse({"type": "message_start", "message": {"usage": {"input_tokens": 3, "output_tokens": 4}}}),
+                 sse({"type": "content_block_start", "index": 0, "content_block": {
+                     "type": "tool_use", "id": "x", "name": "edit_file", "input": WRITE}}),
+                 sse({"type": "content_block_stop", "index": 0}),
+                 sse({"type": "message_delta", "delta": {"stop_reason": "tool_use"},
+                      "usage": {"output_tokens": 4}}),
+                 sse({"type": "message_stop"})]
+    from proto.llm.client import AnthropicCompatClient
+    wire.replies.append(anthropic)
+    second = AnthropicCompatClient(wire.url, "test-key", execution_mode="native")
+    assert parse_decision(second.complete_decision(LOOP_SYSTEM, "task", first_event=lambda _: None,
+                                                   cancelled=lambda: ""))["tool"] == "write_file"
+
+
+def test_tool_named_call_with_non_decision_arguments_stays_a_protocol_error(wire):
+    from proto.llm.client import OpenAICompatClient
+    from proto.llm.errors import ModelResponseError
+
+    wire.replies.append([openai_tool(json.dumps({"path": "a.txt", "content": "x"}), name="write_file"),
+                         openai_delta({}, "tool_calls"), sse("[DONE]")])
+    client = OpenAICompatClient(wire.url, "test-key", execution_mode="native")
+    with pytest.raises(ModelResponseError, match="model_invalid_response"):
+        client.complete_decision(LOOP_SYSTEM, "task", first_event=lambda _: None, cancelled=lambda: "")
