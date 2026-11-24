@@ -123,6 +123,18 @@ class _HttpClient(LLMClient):
         return decision
 
 
+def _silence_thinking(payload, client):
+    """智谱原生端点上普通补全默认关思考。
+
+    思考会把 max_tokens 全部吃光，正文只剩两三个字符（2026-11-24 生产实证：
+    独立验收员的回复是 `{"`，于是每一片都「验证器输出不可解析」）。
+    PROTO_LLM_THINKING=enabled 可恢复各家默认行为。"""
+    if os.environ.get("PROTO_LLM_THINKING", "").strip().lower() in ("enabled", "on", "1", "true"):
+        return
+    if native_decisions(client._style, client._base, client._model, client._execution_mode):
+        payload["thinking"] = {"type": "disabled"}
+
+
 class OpenAICompatClient(_HttpClient):
     _style = "openai"
     _path = "/chat/completions"
@@ -166,8 +178,10 @@ class OpenAICompatClient(_HttpClient):
 
     def complete(self, system: str, user: str) -> str:
         self.last_usage = None
+        payload = self._payload(system, user)
+        _silence_thinking(payload, self)
         try:
-            with self._post(self._payload(system, user)) as resp:
+            with self._post(payload) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             raise _http_failure(exc) from exc
@@ -224,8 +238,10 @@ class AnthropicCompatClient(_HttpClient):
 
     def complete(self, system: str, user: str) -> str:
         self.last_usage = None
+        payload = self._payload(system, user)
+        _silence_thinking(payload, self)
         try:
-            with self._post(self._payload(system, user)) as resp:
+            with self._post(payload) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             raise _http_failure(exc) from exc

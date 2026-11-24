@@ -755,8 +755,11 @@ class AgenticLoop:
                     if missing:
                         return _finish(dict(result, status="awaiting_retry", verified=False,
                                             reason="plan_evidence_failed", missing=missing))
+                # M82：验收员此前只看得到本片写过的文件；多片做完的目标里，前几片的源码
+                # 对它而言是「没有证据」。把工位当前的源码、清单与文档一并交给它。
                 verdict = verify(task_text, acceptance, trace,
-                                 ios_receipt + artifacts_from_trace(trace, workspace=self._agent.code_workspace),
+                                 ios_receipt + artifacts_from_trace(trace, workspace=self._agent.code_workspace,
+                                                                    project_dir=directory, budget=24000),
                                  self._agent.llm, complete=self._complete)
                 reason = self._autonomy_reason()
                 if reason or self._goal_stopped():
