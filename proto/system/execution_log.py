@@ -22,7 +22,8 @@ _MAX_BYTES = 2 * 1024 * 1024
 _BACKUP_COUNT = 3
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,80}")
 _IDENTIFIERS = frozenset({"agent_id", "run_id", "call_id", "profile_id", "role", "pool",
-                          "kind", "status", "tool", "stage", "exception_type", "backend", "rules_version"})
+                          "kind", "status", "tool", "stage", "exception_type", "backend", "rules_version",
+                          "detail"})
 _NUMBERS = frozenset({"attempt", "duration_ms", "http_status", "retry_at", "generation",
                      "estimated_input_tokens", "tokens", "model_retries", "restart_attempts", "exit_code",
                      "hits_before", "hits_after"})
@@ -41,6 +42,7 @@ _REASONS = frozenset({
     "context_budget_exceeded", "project_directory_unavailable", "ios_delivery_evidence_missing",
     "local_verification_evidence_missing", "execution_disabled", "executable_not_found", "nonzero_exit", "timeout",
     "launch_failed", "command_not_allowed", "xcrun_tool_not_allowed", "cwd_unavailable", "cwd_outside_workspace",
+    "shell_syntax_not_supported",
 })
 
 

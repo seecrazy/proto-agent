@@ -697,7 +697,8 @@ class ProtoAgent:
             model_event("model_call_failed", reason=code if code not in (None, "other") else failure.reason,
                         grouped=bool(group), profile_id=profile_id,
                         retry_at=exc.retry_at if isinstance(exc, ModelPressureWait) else None,
-                        stage=failure.stage, duration_ms=round((time.monotonic() - started) * 1000))
+                        stage=failure.stage, duration_ms=round((time.monotonic() - started) * 1000),
+                        detail=getattr(exc, "detail", ""))
             raise
 
     def _complete_group(self, name, bindings, pressure, system, user, pool, model_event, *, decision, foreground):
@@ -813,7 +814,7 @@ class ProtoAgent:
             attempt_event("model_failed", reason=incident, http_status=failure.http_status,
                           exception_type=failure.exception_type, failover_eligible=can_failover,
                           duration_ms=round((time.monotonic() - started) * 1000), stage=failure.stage, streamed=streamed,
-                          retry_at=limited.retry_at if limited else None)
+                          retry_at=limited.retry_at if limited else None, detail=getattr(exc, "detail", ""))
             if ticket is not None:
                 fleet_budget.settle(ticket.id)
             self.kernel.pools.finish_model(request_id, elapsed=time.monotonic() - started)

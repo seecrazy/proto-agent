@@ -729,3 +729,42 @@ def test_diagnostics_strip_an_absolute_base_even_for_a_relative_workspace(tmp_pa
               "sys.exit(1)\n")
     joined = "\n".join(tools.run_command(["python3", "-c", script], cwd="p")["diagnostics"])
     assert joined == "Sources/a.swift:7:6: error: boom"      # 裁成工位相对路径，而不是被截断的假绝对路径
+
+
+# ---- 模型协议错误要留下「哪条假设被打破」------------------------------------
+
+def test_invalid_response_names_the_broken_protocol_assumption():
+    import time
+    from proto.llm.decision_stream import read_decision
+    from proto.llm.errors import ModelResponseError
+
+    class Response:
+        def __init__(self, frames):
+            self.headers = {"Content-Type": "text/event-stream"}
+            self.length = None
+            self._data = b"".join(b"data: " + json.dumps(frame).encode() + b"\n\n" for frame in frames)
+            self._position = 0
+
+        def read1(self, size):
+            chunk = self._data[self._position:self._position + size]
+            self._position += len(chunk)
+            return chunk
+
+    frames = [
+        {"type": "message_start", "message": {"usage": {"input_tokens": 1, "output_tokens": 1}}},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 1,       # 工具块还没开始就来了参数增量
+         "delta": {"type": "input_json_delta", "partial_json": "{"}},
+    ]
+    with pytest.raises(ModelResponseError) as info:
+        read_decision(Response(frames), "anthropic", started=time.monotonic(), timeout=5,
+                      first_event=lambda ms: None, cancelled=lambda: None)
+    assert info.value.reason == "model_invalid_response" and info.value.stage == "stream"
+    assert info.value.detail.startswith("ValueError-invalid_argument_delta")
+
+
+def test_execution_log_accepts_the_new_reason_and_detail():
+    from proto.system.execution_log import execution_reason, record_execution, _IDENTIFIERS
+
+    assert execution_reason("shell_syntax_not_supported") == "shell_syntax_not_supported"
+    assert "detail" in _IDENTIFIERS

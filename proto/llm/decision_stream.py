@@ -315,5 +315,8 @@ def read_decision(response, style, *, started, timeout, first_event, cancelled):
         result = decision.result()
         reader.check(force_cancel=True)
         return result, decision.usage if len(decision.usage) == 2 else None
-    except (ValueError, TypeError, RecursionError):
-        raise ModelResponseError("model_invalid_response", "decision" if decision.finish else reader.stage) from None
+    except (ValueError, TypeError, RecursionError) as exc:
+        # 协议哪条假设被打破要能查到：stage 只说了「在哪一步」，detail 说「是什么」
+        error = ModelResponseError("model_invalid_response", "decision" if decision.finish else reader.stage)
+        error.detail = f"{type(exc).__name__}-{exc}"[:80]
+        raise error from None
