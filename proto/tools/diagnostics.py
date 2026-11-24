@@ -19,6 +19,11 @@ PY_FILE = re.compile(r'^\s*File "[^"]+", line \d+(?:, in \S+)?')
 PYTEST_SUMMARY = re.compile(r"^(?:FAILED|ERROR) \S.*$")
 PYTEST_DETAIL = re.compile(r"^E {3,}\S.*$")
 FAILED_COMMANDS = re.compile(r"^The following build commands failed:$")
+# 链接器：重复符号 / 未定义符号（没有文件:行，但指名道姓到符号与目标文件）
+DUPLICATE_SYMBOL = re.compile(r"^duplicate symbol '([^']+)' in:$")
+UNDEFINED_SYMBOL = re.compile(r'^\s+"([^"]+)", referenced from:$')
+MAYBE_YOU_MEANT = re.compile(r"^\s*\(maybe you meant: (.*?)\)?\s*$")
+OBJECT_FILE = re.compile(r"^[\w./+\-()]+\.o$")
 INDENTED = re.compile(r"^\s+\S.*$")
 GENERIC = re.compile(
     r"^(?:"
@@ -74,6 +79,40 @@ def _bound(items: List[str], limit: int, budget: int) -> List[str]:
     return kept
 
 
+def _linker_symbols(lines):
+    """`duplicate symbol '_main' in: a.o b.o` 与 `Undefined symbols` 两条链接器报告。
+
+    只有文件:行:列 的编译错误才过得了前面的分支；链接错误出现在编译全过之后，
+    此前模型只能看到「error: Ld … failed」，不知道撞的是哪个符号。"""
+    found, index = [], 0
+    while index < len(lines):
+        match = DUPLICATE_SYMBOL.match(lines[index])
+        if match:
+            objects = []
+            for follow in lines[index + 1:index + 6]:
+                if follow[:1] in (" ", "\t") and OBJECT_FILE.match(follow.strip()):
+                    objects.append(follow.strip().rsplit("/", 1)[-1])
+                else:
+                    break
+            found.append(f"duplicate symbol '{match.group(1)}' in: {', '.join(objects) or '?'}")
+            index += 1 + len(objects)
+            continue
+        match = UNDEFINED_SYMBOL.match(lines[index])
+        if match:
+            origin, note = "", ""
+            for follow in lines[index + 1:index + 6]:
+                stripped = follow.strip()
+                maybe = MAYBE_YOU_MEANT.match(follow)
+                if maybe:
+                    note = f" (maybe you meant: {maybe.group(1)})"
+                    break
+                if OBJECT_FILE.match(stripped):
+                    origin = origin or stripped
+            found.append(f'Undefined symbol "{match.group(1)}" referenced from: {origin or "?"}{note}')
+        index += 1
+    return _dedupe(found), len(lines)
+
+
 def diagnostics(text, *, base: str = "", limit: int = DIAGNOSTIC_LIMIT,
                 budget: int = DIAGNOSTIC_BYTES) -> List[str]:
     """带位置的编译错误优先；没有时退回通用错误行（Python 栈、pytest 汇总、构建清单）。"""
@@ -93,6 +132,9 @@ def diagnostics(text, *, base: str = "", limit: int = DIAGNOSTIC_LIMIT,
         index += 1
     if located:
         return _bound(_dedupe(located), limit, budget)
+    linked, index = _linker_symbols(lines)
+    if linked:
+        return _bound(_dedupe(linked), limit, budget)
     selected, index = [], 0
     while index < len(lines):
         line = lines[index]

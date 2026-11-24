@@ -442,9 +442,10 @@ class CodeTools:
             timeout_s = int(timeout_s)
         except (TypeError, ValueError):
             return rejected("invalid_timeout")
-        if testing and timeout_s == 120:
-            # 冷启动的模拟器首次测试约 8 分钟后才就绪（2026-11-24 实测 481 秒），
-            # 默认时长必然超时；显式给了别的时长就照办
+        if testing:
+            # 冷启动的模拟器首次测试约 8 分钟后才就绪（2026-11-24 实测 481 秒）。
+            # 模型不知道这件事，显式给的 300 秒照样超时（生产第 5 片），所以测试动作一律给足；
+            # 它只约束最长等待，测试本身跑完就返回。
             timeout_s = XCODEBUILD_TEST_TIMEOUT_S
         timeout_s = max(1, min(XCODEBUILD_TEST_TIMEOUT_S if testing else 300, timeout_s))
         try:

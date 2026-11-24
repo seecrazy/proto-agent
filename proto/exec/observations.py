@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Dict, List
 
 from proto.tools.diagnostics import clean, diagnostics, strip_ansi  # noqa: F401  (re-exported)
@@ -13,6 +14,47 @@ from proto.tools.diagnostics import clean, diagnostics, strip_ansi  # noqa: F401
 HEAD_BYTES = 1500
 TAIL_BYTES = 1200
 KEY_CHARS = 160
+# 成功回执里的结论行：放在最前面，模型和独立验收员都不用翻到输出尾部找证据
+RESULT_MARKER = re.compile(
+    r"^(?:\*\* (?:BUILD|TEST|TEST BUILD|ARCHIVE|ANALYZE|CLEAN) (?:SUCCEEDED|FAILED) \*\*"
+    r"|\*\* TEST EXECUTE (?:SUCCEEDED|FAILED) \*\*"
+    r"|Executed \d+ tests?, with .*"
+    r"|Test Suite '(?:All tests|[^']*\.xctest)' (?:passed|failed).*"
+    r"|\d+ passed.*|.*\d+ failed.*|Build complete! .*)$")
+
+
+def result_markers(text: str) -> List[str]:
+    seen, kept = set(), []
+    for line in text.splitlines():
+        line = line.strip()
+        if RESULT_MARKER.match(line) and line not in seen:
+            seen.add(line)
+            kept.append(line)
+    summary = [line for line in kept if line.startswith("**") or line.startswith("Executed")]
+    return (summary + [line for line in kept if line not in summary])[:6]
+
+
+def dead_end_hints(command, text: str, reason: str, found: List[str]) -> List[str]:
+    """几种每次都会撞、且模型自己很难猜出来的死路，直接给出路。"""
+    command = [str(item) for item in (command or [])]
+    program = command[0] if command else ""
+    testing = program in ("xcodebuild", "swift") and "test" in command
+    hints = []
+    if "Unable to find a device matching the provided destination" in text:
+        hints.append("机型或系统版本在本机不存在：用 `xcrun simctl list devices available` 查实际可用的机型，"
+                     "照原样填 name（需要时连同 OS）。")
+    if (program == "xcodebuild" and "DerivedData" in text and "-derivedDataPath" not in command
+            and any(word in text for word in ("Permission", "writable", "Unable to create", "not permitted"))):
+        hints.append("沙盒里写不了 Xcode 默认的 DerivedData 目录：加 `-derivedDataPath .proto-build-01`"
+                     "（路径必须尚不存在；需要重新取证就换一个后缀）。")
+    if any("duplicate symbol '_main'" in item for item in found):
+        hints.append("测试入口和模块里的 @main 撞了：带 `@main` 的 App 入口不能和被测代码放在同一个会被"
+                     "测试链接的目标里。iOS 应用用生成的 .xcodeproj 跑 `xcodebuild test`（测试 target 由应用托管）；"
+                     "要保留 `swift test`，就把 @main 入口拆成单独的 executable target。")
+    if reason == "timeout" and testing:
+        hints.append("模拟器刚启动时，首次测试可能要 8 分钟以上。先用 `xcrun simctl list devices` 确认该设备"
+                     "已是 Booted，再重跑同一条测试命令。")
+    return hints
 
 
 def _tail(text: str, budget: int) -> str:
@@ -44,9 +86,12 @@ def command_view(result, limit: int = 4000, *, base: str = "") -> str:
     combined = stdout + ("\n" if stdout and stderr else "") + stderr
     parts = []
     if isinstance(exit_code, int) and exit_code == 0:
+        markers = result_markers(combined)
+        if markers:
+            parts.append("─ 结果 ─\n" + "\n".join(markers))
         if combined.strip():
             parts.append("─ 输出 ─\n" + (_tail(combined, HEAD_BYTES + TAIL_BYTES)
-                                       if len(combined.encode("utf-8")) <= HEAD_BYTES + TAIL_BYTES
+                                       if len(combined.encode("utf-8")) <= HEAD_BYTES + TAIL_BYTES and not markers
                                        else combined[:HEAD_BYTES] + "\n…（中间省略）\n" + _tail(combined, TAIL_BYTES)))
     else:
         found = _found(result, combined)
@@ -55,6 +100,9 @@ def command_view(result, limit: int = 4000, *, base: str = "") -> str:
         if combined.strip():
             # 有摘要时尾部只留补充信息（链接器报错、说明行），不重复诊断正文
             parts.append("─ 输出尾部 ─\n" + _tail(combined, TAIL_BYTES // 2 if found else TAIL_BYTES))
+        hints = dead_end_hints(result.get("command") or [], combined, reason, found)
+        if hints:
+            parts.append("─ 怎么改 ─\n" + "\n".join(hints))
     if isinstance(result.get("hint"), str) and result["hint"]:
         parts.append("─ 怎么改 ─\n" + result["hint"])
     body = "\n".join(parts)

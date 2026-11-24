@@ -70,6 +70,39 @@ def _package_scripts(folder, markers):
         return None, []
 
 
+_SWIFT_TARGET = re.compile(r'\.(target|testTarget)\(\s*name:\s*"([^"]+)"[^)]*?path:\s*"([^"]+)"', re.S)
+_SWIFT_MAIN = re.compile(r"^\s*@main\b", re.M)
+
+
+def _package_structure_hint(folder, manifest):
+    """带 @main 的 App 入口和被测代码放在同一个 library target：`swift test` 链接时
+    duplicate symbol '_main'（2026-11-24 生产实证：专家每片都先撞这一步）。"""
+    targets = _SWIFT_TARGET.findall(manifest or "")
+    if not any(kind == "testTarget" for kind, _, _ in targets):
+        return ""
+    for kind, name, path in targets:
+        if kind != "target":
+            continue
+        try:
+            source = (folder / path).resolve()
+            source.relative_to(Path(folder).resolve())
+        except (OSError, ValueError, RuntimeError):
+            continue
+        if not source.is_dir():
+            continue
+        for index, item in enumerate(sorted(source.rglob("*.swift"))):
+            if index >= 32 or any(part.startswith(".") for part in item.relative_to(source).parts):
+                continue
+            try:
+                if _SWIFT_MAIN.search(item.read_text(encoding="utf-8", errors="replace")[:4000]):
+                    return (f"Swift 包里带 @main 的入口和被测代码都在 target「{name}」：`swift test` 链接时会 "
+                            "duplicate symbol '_main'。iOS 应用以生成的 .xcodeproj 跑 `xcodebuild test` 为准"
+                            "（测试 target 由应用托管）；要保留 swift test，就把 @main 入口拆成单独的 executable target。")
+            except OSError:
+                continue
+    return ""
+
+
 def inspect_build(workspace, cwd=""):
     report = workspace.command_environment(_PROGRAMS)
     report.update(cwd=cwd or ".", project_state="directory_unavailable", inputs=[], next=[], hints=[],
@@ -120,6 +153,13 @@ def inspect_build(workspace, cwd=""):
             # M82：Swift 包能编译不等于拿到 iPhone App；交付门要的是 .xcodeproj 的模拟器回执
             report["hints"].append("工位只有 Swift Package、没有 Xcode 工程：iOS 应用交付需要 .xcodeproj——"
                                    "read_skill ios-app-project 按说明生成")
+        try:
+            structure = _package_structure_hint(folder, (folder / "Package.swift").read_text(
+                encoding="utf-8", errors="replace")[:65536])
+        except OSError:
+            structure = ""
+        if structure:
+            report["hints"].append(structure)
     if markers & _PYTHON:
         report["inputs"].append({"kind": "python", "paths": sorted(markers & _PYTHON)})
         interpreter = next((name for name in ("python3", "python") if programs[name]), None)

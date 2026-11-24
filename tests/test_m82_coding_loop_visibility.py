@@ -366,6 +366,7 @@ def test_eight_dry_steps_point_at_the_first_error(tmp_path, monkeypatch):
 # ---- Task 4：工位清单与接口轮廓 ---------------------------------------------
 
 from proto.exec import outline  # noqa: E402
+from proto.exec.engineering import inspect_build  # noqa: E402
 from proto.tools.codetools import CodeTools  # noqa: E402
 
 PROJECT = "projects/wengu"
@@ -557,7 +558,7 @@ def test_xcodebuild_test_gets_a_cold_start_timeout(tmp_path, monkeypatch):
     tools.run_command(["swift", "build"], cwd="p", timeout_s=999)
     assert seen["timeout"] == 300
     tools.run_command(XCODEBUILD + ["test"], cwd="p", timeout_s=100)
-    assert seen["timeout"] == 100                    # 显式给的更短时间照办
+    assert seen["timeout"] == 900                    # 测试动作一律给足：模型不知道模拟器冷启动要多久
 
 
 def test_sandbox_profile_adds_only_local_ipc_rules():
@@ -909,3 +910,150 @@ def test_loop_runs_the_first_of_several_decisions_and_tells_the_model(tmp_path):
     notes = [text for text in session_of(agent, result)["observations"] if "提交了 3 个决策" in text]
     assert len(notes) == 1 and "只执行了第一个" in notes[0]
     assert result["trace"][0]["args"] == WRITE["args"]        # 标记不混进工具参数
+
+
+# ---- 验收员「输出不可解析」：思考吃光输出预算；以及证据材料不完整 ------------------
+
+def test_plain_completion_disables_thinking_on_zhipu_native_endpoints(wire, monkeypatch):
+    import proto.llm.client as llm_client
+
+    monkeypatch.setattr(llm_client, "native_decisions", lambda style, base, model, mode: True)
+    openai_reply = ("application/json", [json.dumps({"choices": [{"message": {"content": "{\"verdict\":\"fail\"}"},
+                                                                     "finish_reason": "stop"}]}).encode()])
+    wire.replies.append(openai_reply)
+    assert llm_client.OpenAICompatClient(wire.url, "k", "m").complete("s", "u") == '{"verdict":"fail"}'
+    assert wire.requests[-1][1]["thinking"] == {"type": "disabled"}
+    anthropic_reply = ("application/json", [json.dumps({"content": [{"type": "text", "text": "ok"}],
+                                                              "stop_reason": "end_turn"}).encode()])
+    wire.replies.append(anthropic_reply)
+    assert llm_client.AnthropicCompatClient(wire.url, "k", "m").complete("s", "u") == "ok"
+    assert wire.requests[-1][1]["thinking"] == {"type": "disabled"}
+    monkeypatch.setattr(llm_client, "native_decisions", lambda style, base, model, mode: False)
+    wire.replies.append(openai_reply)
+    llm_client.OpenAICompatClient(wire.url, "k", "m").complete("s", "u")
+    assert "thinking" not in wire.requests[-1][1]            # 别家端点不乱加参数
+    monkeypatch.setattr(llm_client, "native_decisions", lambda style, base, model, mode: True)
+    monkeypatch.setenv("PROTO_LLM_THINKING", "enabled")
+    wire.replies.append(openai_reply)
+    llm_client.OpenAICompatClient(wire.url, "k", "m").complete("s", "u")
+    assert "thinking" not in wire.requests[-1][1]            # 主人显式要思考时保留默认行为
+
+
+def test_successful_command_view_leads_with_result_markers():
+    result = {"exit": 0, "reason": "", "command": ["xcodebuild", "test"],
+              "stdout": ("Command line invocation:\n    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild\n"
+                         + "compile noise\n" * 400
+                         + "Test Suite 'All tests' passed at 2026-11-24 17:50:00.000\n"
+                         "\t Executed 5 tests, with 0 failures (0 unexpected) in 0.2 (0.3) seconds\n"
+                         "** TEST SUCCEEDED **\n"), "stderr": ""}
+    view = obs.command_view(result)
+    assert "** TEST SUCCEEDED **" in view[:260] and "Executed 5 tests, with 0 failures" in view[:260]
+    built = obs.command_view({"exit": 0, "reason": "", "command": ["xcodebuild"], "stdout": "noise\n" * 900 + "** BUILD SUCCEEDED **\n", "stderr": ""})
+    assert built.index("** BUILD SUCCEEDED **") < 120
+    quiet = obs.command_view({"exit": 0, "reason": "", "command": ["python3"], "stdout": "hello\n", "stderr": ""})
+    assert "─ 结果 ─" not in quiet
+
+
+def test_diagnostics_report_linker_symbols():
+    duplicate = ("[5 / 9] Compiling\n"
+                 "duplicate symbol '_main' in:\n"
+                 "    /p/.build/out/Intermediates.noindex/Wengu.build/Debug-WenguTests-p.build/Objects-normal/arm64/test_entry_point.o\n"
+                 "    /p/.build/out/Products/Debug/Wengu.o\n"
+                 "ld: 1 duplicate symbols\n"
+                 "/p/Package.swift: WenguTests-product: clang: error: linker command failed with exit code 1 (use -v)\n"
+                 "error: Ld /p/.build/out/Products/Debug/WenguTests.xctest/Contents/MacOS/WenguTests normal failed with a nonzero exit code.\n")
+    assert obs.diagnostics(duplicate, base="/p") == ["duplicate symbol '_main' in: test_entry_point.o, Wengu.o"]
+    undefined = ('ld: Undefined symbols for architecture arm64:\n'
+                 '  "_$s6Wengu4CardV4easeSivau", referenced from:\n'
+                 '      WenguTests.o\n'
+                 '     (maybe you meant: _$s6Wengu4CardV5frontSivau)\n'
+                 'clang: error: linker command failed with exit code 1 (use -v to see invocation)\n')
+    assert obs.diagnostics(undefined) == [
+        'Undefined symbol "_$s6Wengu4CardV4easeSivau" referenced from: WenguTests.o '
+        '(maybe you meant: _$s6Wengu4CardV5frontSivau)']
+    both = "src/a.swift:3:1: error: cannot find x in scope\n" + duplicate
+    assert obs.diagnostics(both) == ["src/a.swift:3:1: error: cannot find x in scope"]   # 编译错误优先于链接错误
+
+
+def test_command_view_points_out_known_dead_ends():
+    destination = {"exit": 70, "reason": "nonzero_exit", "command": ["xcodebuild", "-destination", "platform=iOS Simulator,name=iPhone 16"],
+                   "stdout": "", "stderr": "xcodebuild: error: Unable to find a device matching the provided destination specifier: platform=iOS Simulator,name=iPhone 16.\nAvailable destinations for the \"Wengu\" scheme:\n"}
+    assert "simctl list devices available" in obs.command_view(destination)
+    derived = {"exit": 65, "reason": "nonzero_exit", "command": ["xcodebuild", "-project", "W.xcodeproj", "build"],
+               "stdout": "** BUILD FAILED **\n", "stderr": "error: Unable to create directory at '/Users/u/Library/Developer/Xcode/DerivedData/W-abc' (Permission denied)\n"}
+    assert "-derivedDataPath .proto-build" in obs.command_view(derived)
+    duplicated = {"exit": 1, "reason": "nonzero_exit", "command": ["swift", "test"], "stdout": "", "stderr": "error: fatalError",
+                  "diagnostics": ["duplicate symbol '_main' in: test_entry_point.o, Wengu.o"]}
+    hint = obs.command_view(duplicated)
+    assert "xcodebuild test" in hint and "@main" in hint
+    cold = {"exit": -1, "reason": "timeout", "timeout": True, "command": ["xcodebuild", "test"], "stdout": "", "stderr": "timeout"}
+    assert "模拟器" in obs.command_view(cold)
+    fine = {"exit": 1, "reason": "nonzero_exit", "command": ["swift", "build"], "stdout": "", "stderr": "error: Build failed\n"}
+    assert "─ 怎么改 ─" not in obs.command_view(fine)
+
+
+def test_artifacts_for_the_verifier_cover_the_whole_project_not_only_this_slice(tmp_path):
+    from proto.quality.gate import artifacts_from_trace
+
+    tools = CodeTools(tmp_path)
+    tools.write_file("projects/x/Sources/Wengu/Views.swift", "struct DeckListView: View {\n    var body: some View { EmptyView() }\n}\n")
+    tools.write_file("projects/x/README.md", "# Wengu\n")
+    trace = [{"tool": "write_file", "args": {"path": "projects/x/README.md", "content": "# Wengu\n"}}]
+    this_slice = artifacts_from_trace(trace, tools)
+    assert "README.md" in this_slice and "DeckListView" not in this_slice
+    whole = artifacts_from_trace(trace, tools, project_dir="projects/x")
+    assert "DeckListView" in whole and "README.md" in whole
+    assert whole.index("--- projects/x/README.md") < whole.index("DeckListView")     # 本片写的排前面
+
+
+def test_acceptance_generation_is_told_not_to_hardcode_environment_names():
+    from proto.quality.gate import ACCEPTANCE_PROMPT
+
+    assert "不要写死" in ACCEPTANCE_PROMPT and "机型" in ACCEPTANCE_PROMPT
+
+
+def test_inspect_build_warns_about_main_inside_a_tested_library_target(tmp_path):
+    tools = CodeTools(tmp_path)
+    tools.write_file("p/Package.swift", '// swift-tools-version:5.9\nimport PackageDescription\nlet package = Package(\n'
+                                        '    name: "Wengu",\n    targets: [\n        .target(name: "Wengu", path: "Sources/Wengu"),\n'
+                                        '        .testTarget(name: "WenguTests", dependencies: ["Wengu"], path: "Tests/WenguTests")\n    ])\n')
+    tools.write_file("p/Sources/Wengu/WenguApp.swift", "import SwiftUI\n@main\nstruct WenguApp: App {}\n")
+    tools.write_file("p/Tests/WenguTests/T.swift", "import XCTest\nfinal class T: XCTestCase {}\n")
+    hints = "\n".join(inspect_build(tools, "p")["hints"])
+    assert "duplicate symbol '_main'" in hints and "xcodebuild test" in hints
+    tools.write_file("p/Sources/Wengu/WenguApp.swift", "struct Plain {}\n")
+    assert not [hint for hint in inspect_build(tools, "p")["hints"] if "_main" in hint]
+
+
+class VerifierModel:
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.calls = 0
+
+    def complete(self, system, user):
+        self.calls += 1
+        return self.replies.pop(0)
+
+
+@pytest.mark.parametrize("raw, passed, missing", [
+    ('```json\n{"verdict": "pass"}\n```', True, []),
+    ('{"verdict": "passed", "missing": []}', True, []),
+    ('<think>先看证据……</think>\n{"verdict": "fail", "missing": "缺少无障碍标注"}', False, ["缺少无障碍标注"]),
+    ('前言。{"verdict": "failed", "missing": ["A", "B"]} 后记。', False, ["A", "B"]),
+])
+def test_verifier_parses_common_reply_shapes(raw, passed, missing):
+    from proto.quality.gate import verify
+
+    verdict = verify("任务", "验收", [], "（无）", VerifierModel(raw))
+    assert verdict.passed is passed and verdict.missing == missing
+
+
+def test_verifier_retries_once_when_the_first_reply_is_not_json():
+    from proto.quality.gate import verify
+
+    model = VerifierModel('{"', '{"verdict": "fail", "missing": ["缺测试回执"]}')
+    verdict = verify("任务", "验收", [], "（无）", model)
+    assert model.calls == 2 and verdict.passed is False and verdict.missing == ["缺测试回执"]
+    hopeless = VerifierModel('{"', "还是不行")
+    verdict = verify("任务", "验收", [], "（无）", hopeless)
+    assert hopeless.calls == 2 and verdict.missing == ["验收员两次都没有给出可解析的结论（模型侧问题，不是产物问题）"]
